@@ -248,7 +248,10 @@ def classify_workflow(record):
 
 def chunk_command(offset, payload):
     encoded = base64.b64encode(payload).decode("ascii")
-    return "M998 P1 O%d D%s" % (offset, encoded)
+    # The underscore is an intentional Marlin-parser sentinel. M998's firmware
+    # implementation reads ``parser.string_arg``; without a leading nonnumeric
+    # token that pointer begins at H/D and the handler cannot see its P phase.
+    return "M998 _ P1 O%d D%s" % (offset, encoded)
 
 
 def dialog_response_command(action):

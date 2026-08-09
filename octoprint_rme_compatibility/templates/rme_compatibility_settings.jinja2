@@ -157,7 +157,7 @@
         <label class="control-label">Current theme</label>
         <div class="controls">
             <span data-bind="visible: !currentThemeRows().length">Not reported yet</span>
-            <span data-bind="foreach: currentThemeRows">
+            <span class="rme-theme-row" data-bind="foreach: currentThemeRows">
                 <span class="rme-theme-current">
                     <span class="rme-theme-swatch" data-bind="style: {backgroundColor: color}, attr: {title: label + ' ' + color}"></span>
                     <span data-bind="text: label + ' ' + color"></span>
@@ -166,9 +166,23 @@
         </div>
     </div>
     <div class="control-group">
+        <label class="control-label">Theme presets</label>
+        <div class="controls">
+            <div class="rme-theme-presets" data-bind="foreach: themePresets">
+                <button type="button" class="btn rme-theme-preset" data-bind="click: $parent.selectThemePreset, attr: {title: 'Use ' + name}">
+                    <strong data-bind="text: name"></strong>
+                    <span class="rme-preset-swatches" data-bind="foreach: swatches">
+                        <span data-bind="style: {backgroundColor: $data}"></span>
+                    </span>
+                </button>
+            </div>
+            <p class="help-block">Choose a preset to fill the editable firmware colors below. RME Indigo matches the firmware's bundled theme example.</p>
+        </div>
+    </div>
+    <div class="control-group rme-theme-edit-group">
         <label class="control-label">Edit theme</label>
         <div class="controls">
-            <span data-bind="foreach: themeKeys">
+            <span class="rme-theme-fields" data-bind="foreach: themeKeys">
                 <label class="rme-color-field">
                     <span data-bind="text: label"></span>
                     <span class="rme-theme-editor">
@@ -178,7 +192,9 @@
                     <code data-bind="text: value"></code>
                 </label>
             </span>
-            <button type="button" class="btn btn-primary" data-bind="click: applyTheme, enable: state().supported">Save theme to printer</button>
+            <div class="rme-theme-save">
+                <button type="button" class="btn btn-primary" data-bind="click: applyTheme, enable: state().supported">Save theme to printer</button>
+            </div>
         </div>
     </div>
     <div class="control-group">

@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 import tempfile
+import threading
 import types
 import unittest
 
@@ -403,9 +404,58 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual([], plugin._printer.command_batches)
         self.assertEqual("flashing", plugin._state["firmware"]["status"])
 
+    def test_sd_upload_hook_uses_verified_rme_file_transfer(self):
+        class FileService(object):
+            def __init__(self):
+                self.upload = None
+
+            def write_file(self, path, remote_name, progress=None):
+                self.upload = (path, remote_name)
+                progress(12, 12)
+
+        completed = threading.Event()
+        callbacks = []
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-sd-upload-test")
+        plugin._file_service = FileService()
+        plugin._persist_and_publish = lambda: None
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["storage"].update(supported=True, caps={"write": 1})
+        printer = types.SimpleNamespace(
+            _get_free_remote_name=lambda filename: "jobs/remote.gcode"
+        )
+
+        remote = plugin.sd_card_upload_hook(
+            printer, "local.gcode", "/tmp/local.gcode",
+            lambda local, target: callbacks.append(("start", local, target)),
+            lambda local, target, elapsed: (
+                callbacks.append(("success", local, target)), completed.set()
+            ),
+            lambda local, target, elapsed: completed.set(),
+        )
+
+        self.assertEqual("jobs/remote.gcode", remote)
+        self.assertTrue(completed.wait(2))
+        self.assertEqual(
+            ("/tmp/local.gcode", "jobs/remote.gcode"), plugin._file_service.upload
+        )
+        self.assertEqual("start", callbacks[0][0])
+        self.assertEqual("success", callbacks[-1][0])
+
+    def test_firmware_errors_are_not_persisted(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._state["firmware"].update(
+            status="error", filename="old.bbf", error="old transfer failed"
+        )
+
+        persisted = plugin._persistent_snapshot()["firmware"]
+
+        self.assertEqual("idle", persisted["status"])
+        self.assertIsNone(persisted["error"])
+
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0b12"
+        plugin._plugin_version = "0.1.0b13"
         templates = plugin.get_template_configs()
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])
@@ -418,6 +468,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("Firmware update", settings_template)
         self.assertIn("Current theme", settings_template)
         self.assertIn("rme-theme-swatch", settings_template)
+        self.assertIn("Theme presets", settings_template)
         self.assertIn("Saved lighting", settings_template)
         self.assertIn("Printer lock", settings_template)
         self.assertIn("Printer USB storage", settings_template)
@@ -431,8 +482,13 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("formatDistance", javascript)
         self.assertIn("applyPersistentLights", javascript)
         self.assertIn("stageAndFlashFirmware", javascript)
+        self.assertIn("Filament resynchronization required", javascript)
+        self.assertIn("MMU · idle", javascript)
         self.assertIn("storage/download?path=", javascript)
         self.assertIn('"plugin/rme_compatibility/storage/upload"', javascript)
+        self.assertIn("octoprint.printer.sdcardupload", __import__(
+            "octoprint_rme_compatibility.plugin", fromlist=["__plugin_hooks__"]
+        ).__plugin_hooks__)
         with open(
             "octoprint_rme_compatibility/templates/rme_compatibility_tab.jinja2"
         ) as template_file:

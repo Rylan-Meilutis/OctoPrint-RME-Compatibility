@@ -129,7 +129,7 @@ class ProtocolTests(unittest.TestCase):
     def test_builds_binary_safe_chunk(self):
         payload = b"\x00 firmware bytes \xff"
         command = chunk_command(48, payload)
-        self.assertTrue(command.startswith("M998 P1 O48 D"))
+        self.assertTrue(command.startswith("M998 _ P1 O48 D"))
         self.assertEqual(base64.b64decode(command.split("D", 1)[1]), payload)
 
 

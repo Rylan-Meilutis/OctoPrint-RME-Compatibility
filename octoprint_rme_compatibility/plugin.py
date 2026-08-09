@@ -167,20 +167,19 @@ class RmeCompatibilityPlugin(
         persisted = self._store.load()
         with self._state_lock:
             for key in (
-                "machine", "toolmap", "workflow", "prompt", "firmware",
+                "machine", "toolmap", "workflow", "prompt",
                 "spoolmanager", "loaded_filaments", "active_tool", "internal_spools",
                 "stats",
             ):
                 if key in persisted:
                     self._state[key] = persisted[key]
-            if self._state["firmware"].get("status") in (
-                "starting",
-                "uploading",
-                "verifying",
-            ):
-                self._state["firmware"].update(
-                    status="error", error="OctoPrint restarted during the firmware transfer"
-                )
+            # Transfer failures are process-local diagnostics. Only a verified
+            # staged image is meaningful after restart; old errors and partial
+            # progress must never reappear as if they belonged to a new action.
+            persisted_firmware = persisted.get("firmware") or {}
+            if persisted_firmware.get("status") == "staged":
+                self._state["firmware"].update(persisted_firmware)
+                self._state["firmware"]["error"] = None
             # A one-click flash request is deliberately process-local. Never
             # carry a bootloader handoff intent across an OctoPrint restart.
             self._state["firmware"]["flash_after_stage"] = False
@@ -2033,6 +2032,53 @@ class RmeCompatibilityPlugin(
             self._set_storage_status("error", progress=None, error=str(exc))
             raise
 
+    def sd_card_upload_hook(
+        self, printer, filename, path, start_callback, success_callback,
+        failure_callback, *args, **kwargs
+    ):
+        """Replace OctoPrint's line-based SD upload with verified RME FILE I/O.
+
+        Returning a remote name tells OctoPrint that this plugin owns the
+        transfer. Older RME builds without positively advertised FILE WRITE
+        support return ``None`` and retain OctoPrint's normal M28/M29 path.
+        """
+        with self._state_lock:
+            use_rme_file = bool(
+                self._state.get("connected")
+                and self._state.get("supported")
+                and self._state["storage"].get("supported")
+                and int(self._state["storage"].get("caps", {}).get("write", 0))
+            )
+        if not use_rme_file or not self._file_service:
+            return None
+        remote_name_factory = getattr(printer, "_get_free_remote_name", None)
+        if not callable(remote_name_factory):
+            self._logger.warning("Cannot replace SD upload: OctoPrint remote-name helper is unavailable")
+            return None
+        remote_name = remote_name_factory(filename)
+        if not remote_name:
+            return None
+        start_callback(filename, remote_name)
+
+        def transfer():
+            started = time.monotonic()
+            try:
+                self._set_storage_status("uploading", progress=0, error=None)
+                self._file_service.write_file(
+                    path, remote_name, progress=self._storage_progress
+                )
+                self._set_storage_status("ready", progress=100, error=None)
+                success_callback(filename, remote_name, time.monotonic() - started)
+            except Exception as exc:
+                self._logger.exception("RME SD-card upload failed")
+                self._set_storage_status("error", progress=None, error=str(exc))
+                failure_callback(filename, remote_name, time.monotonic() - started)
+
+        threading.Thread(
+            target=transfer, name="rme-sdcard-upload", daemon=True
+        ).start()
+        return remote_name
+
     # -- Firmware files stored on the Pi ----------------------------------
 
     def _firmware_path(self, filename):
@@ -2076,6 +2122,8 @@ class RmeCompatibilityPlugin(
                 self._firmware_file_thread and self._firmware_file_thread.is_alive()
             ):
                 raise UploadError("A firmware transfer is already active")
+            with self._state_lock:
+                self._state["firmware"]["error"] = None
             with self._state_lock:
                 caps = dict(self._state["storage"].get("caps") or {})
                 file_supported = bool(
@@ -2157,6 +2205,9 @@ class RmeCompatibilityPlugin(
             )
             if status == "error":
                 self._state["firmware"]["flash_after_stage"] = False
+                error_to_clear = self._state["firmware"].get("error")
+            else:
+                error_to_clear = None
         now = time.monotonic()
         if status != "uploading" or now - self._last_fw_publish >= 0.25:
             self._last_fw_publish = now
@@ -2165,6 +2216,21 @@ class RmeCompatibilityPlugin(
             self._defer(self._flash_after_verified_stage)
         elif status in ("staged", "error"):
             self._defer(self._restore_session_after_upload)
+        if error_to_clear:
+            timer = threading.Timer(
+                30, self._clear_firmware_error, args=(error_to_clear,)
+            )
+            timer.daemon = True
+            timer.start()
+
+    def _clear_firmware_error(self, expected_error):
+        """Dismiss only the unchanged terminal error from the latest transfer."""
+        with self._state_lock:
+            firmware = self._state["firmware"]
+            if firmware.get("status") != "error" or firmware.get("error") != expected_error:
+                return
+            firmware.update(status="idle", error=None, progress=0, offset=0)
+        self._persist_and_publish()
 
     def _flash_after_verified_stage(self):
         """Wait for the transfer worker to exit, then perform one-click flash."""
@@ -2239,13 +2305,19 @@ class RmeCompatibilityPlugin(
     def _persistent_snapshot(self):
         """Return refresh/restart-critical state, excluding ephemeral connection data."""
         with self._state_lock:
-            return copy.deepcopy(
+            snapshot = copy.deepcopy(
                 {key: self._state[key] for key in (
-                    "machine", "toolmap", "workflow", "prompt", "firmware",
-                    "spoolmanager", "loaded_filaments", "active_tool", "internal_spools",
-                    "stats",
+                    "machine", "toolmap", "workflow", "prompt", "spoolmanager",
+                    "loaded_filaments", "active_tool", "internal_spools", "stats",
                 )}
             )
+            firmware = copy.deepcopy(self._state["firmware"])
+            if firmware.get("status") != "staged":
+                firmware = self._empty_state()["firmware"]
+            firmware["error"] = None
+            firmware["flash_after_stage"] = False
+            snapshot["firmware"] = firmware
+            return snapshot
 
     def _public_state(self):
         with self._state_lock:
@@ -2290,4 +2362,5 @@ __plugin_hooks__ = {
     "octoprint.comm.protocol.scripts": (__plugin_implementation__.gcode_script_hook, 1),
     "octoprint.server.http.bodysize": __plugin_implementation__.bodysize_hook,
     "octoprint.plugin.softwareupdate.check_config": __plugin_implementation__.get_update_information,
+    "octoprint.printer.sdcardupload": __plugin_implementation__.sd_card_upload_hook,
 }

@@ -10,14 +10,20 @@
 .rme-prompt { border-left: 5px solid #f0ad4e !important; }
 .rme-prompt .btn { margin-right: 6px; margin-bottom: 4px; }
 .rme-workflow-message { margin-bottom: 2px; }
-.rme-color-field { display: inline-flex; flex-direction: column; font-size: 11px; margin-right: 8px; text-transform: capitalize; }
+.rme-color-field { display: inline-flex; flex-direction: column; font-size: 11px; gap: 1px; margin: 0; text-transform: capitalize; }
 .rme-color-field input { height: 28px; padding: 0; width: 48px; }
 .rme-theme-editor { align-items: center; display: inline-flex; gap: 6px; }
 .rme-theme-swatch { border: 1px solid rgba(0, 0, 0, .45); border-radius: 3px; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .25); display: inline-block; height: 26px; vertical-align: middle; width: 48px; }
+.rme-theme-row, .rme-theme-fields, .rme-theme-presets { align-items: flex-start; display: flex; flex-wrap: wrap; gap: 6px; }
+.rme-theme-current { display: inline-flex; flex-direction: column; font-size: 11px; gap: 1px; margin: 0; text-transform: capitalize; }
+.rme-theme-preset { align-items: flex-start; display: inline-flex; flex-direction: column; gap: 3px; padding: 4px 7px; }
+.rme-preset-swatches { display: inline-flex; overflow: hidden; border: 1px solid #888; border-radius: 2px; }
+.rme-preset-swatches > span { display: inline-block; height: 12px; width: 18px; }
+.rme-theme-save { margin-top: 7px; }
+.rme-theme-edit-group { margin-bottom: 10px; }
 .rme-spool-form label { margin: 0 12px 10px 0; }
 .rme-color-dot { display: inline-block; width: 11px; height: 11px; border: 1px solid #777; border-radius: 50%; }
 .rme-assignment { display: inline-block; margin-left: 8px; }
-.rme-theme-current { display: inline-flex; flex-direction: column; gap: 2px; margin: 2px 12px 6px 0; text-transform: capitalize; }
 .rme-light-table .input-mini { width: 52px; }
 
 #navbar_plugin_rme_compatibility > a {

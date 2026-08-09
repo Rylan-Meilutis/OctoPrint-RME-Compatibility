@@ -42,6 +42,18 @@ $(function () {
             {key: "error", label: "error", value: ko.observable("#dd2222")},
             {key: "image", label: "image", value: ko.observable("#101018")}
         ];
+        self.themePresets = [
+            {name: "RME Indigo", colors: {primary: "#4b2e83", progress: "#4b2e83", warning: "#ffcc00", error: "#ff2f2f", image: "#4b2e83"}},
+            {name: "Prusa Orange", colors: {primary: "#fa6831", progress: "#00a878", warning: "#ffb000", error: "#dc3545", image: "#fa6831"}},
+            {name: "Ocean Blue", colors: {primary: "#1976d2", progress: "#00a6a6", warning: "#ffb300", error: "#e53935", image: "#124e78"}},
+            {name: "Forest", colors: {primary: "#2e7d32", progress: "#43a047", warning: "#f9a825", error: "#c62828", image: "#1b5e20"}},
+            {name: "High Contrast", colors: {primary: "#ffffff", progress: "#00ff66", warning: "#ffdd00", error: "#ff3030", image: "#d0d0d0"}}
+        ];
+        ko.utils.arrayForEach(self.themePresets, function (preset) {
+            preset.swatches = self.themeKeys.map(function (entry) { return preset.colors[entry.key]; });
+        });
+        self.providerSyncNotice = null;
+        self.providerSyncNoticeKey = "";
         self.persistentLightProfiles = [
             makeLightProfile("screen", "Screen", 20, 20, 100, 60),
             makeLightProfile("chamber", "Chamber", 20, 20, 100, 100),
@@ -85,7 +97,9 @@ $(function () {
         });
         self.activeToolText = ko.pureComputed(function () {
             var tool = self.activeTool();
-            if (tool.logical === null || tool.logical === undefined) return "Active extruder not reported yet";
+            if (tool.logical === null || tool.logical === undefined) {
+                return self.mmuDetected() ? "MMU idle" : "Active extruder not reported yet";
+            }
             var logical = Number(tool.logical);
             var physical = tool.physical === null || tool.physical === undefined ? logical : Number(tool.physical);
             var label = "Extruder T" + logical;
@@ -247,7 +261,7 @@ $(function () {
         self.navbarMmuText = ko.pureComputed(function () {
             var workflow = self.workflow();
             if (!self.state().supported) return self.connectionText();
-            if (!self.navbarMmuActive()) return self.mmuDetected() ? "MMU ready" : "Multi-tool ready";
+            if (!self.navbarMmuActive()) return self.mmuDetected() ? "MMU idle" : "Multi-tool ready";
             var state = String(workflow.state || "active").replace(/_/g, " ");
             var label = workflow.message || state.charAt(0).toUpperCase() + state.slice(1);
             if (isFinite(Number(workflow.progress))) label += " · " + workflow.progress + "%";
@@ -258,10 +272,13 @@ $(function () {
             if (!self.state().supported) return "RME · not detected";
             if (self.navbarMmuActive()) {
                 var state = String(self.workflow().state || "active").replace(/_/g, " ");
-                return "MMU · " + state + (isFinite(Number(self.workflow().progress)) ? " " + self.workflow().progress + "%" : "");
+                var phase = self.workflow().message || state.charAt(0).toUpperCase() + state.slice(1);
+                return "MMU · " + phase + (isFinite(Number(self.workflow().progress)) ? " " + self.workflow().progress + "%" : "");
             }
             var tool = self.activeTool();
-            if (tool.logical === null || tool.logical === undefined) return "RME · ready";
+            if (tool.logical === null || tool.logical === undefined) {
+                return self.mmuDetected() ? "MMU · idle" : "RME · ready";
+            }
             var label = "T" + Number(tool.logical);
             if (tool.material && tool.material !== "---") label += " · " + tool.material;
             return label;
@@ -319,7 +336,9 @@ $(function () {
             return ["starting", "uploading", "verifying"].indexOf(self.firmware().status) >= 0;
         });
         self.firmwareActive = ko.pureComputed(function () { return self.firmwareBusy() || self.firmware().status === "staged"; });
-        self.firmwareError = ko.pureComputed(function () { return self.firmware().error || ""; });
+        self.firmwareError = ko.pureComputed(function () {
+            return self.firmware().status === "error" ? (self.firmware().error || "") : "";
+        });
         self.firmwareStatus = ko.pureComputed(function () {
             var fw = self.firmware();
             if (!fw.status || fw.status === "idle") return "No firmware staged.";
@@ -361,10 +380,30 @@ $(function () {
                     new PNotify({title: "RME command failed", text: responseError(xhr), type: "error", hide: false});
                 });
         };
+        self.updateProviderSyncNotice = function (pending) {
+            var key = pending ? [pending.tool, pending.database_id, pending.updated].join(":") : "";
+            if (key === self.providerSyncNoticeKey) return;
+            if (self.providerSyncNotice && typeof self.providerSyncNotice.remove === "function") {
+                self.providerSyncNotice.remove();
+            }
+            self.providerSyncNotice = null;
+            self.providerSyncNoticeKey = key;
+            if (pending) {
+                self.providerSyncNotice = new PNotify({
+                    title: "Filament resynchronization required",
+                    text: (pending.message || "Filament selections changed.") + " Use the RME top-bar menu or RME Compatibility Settings to choose.",
+                    type: "notice",
+                    hide: false
+                });
+            }
+        };
         self.acceptState = function (value) {
             if (!value) return;
             var oldPrompt = self.state().prompt || {};
             self.state(value);
+            self.updateProviderSyncNotice(
+                value.spoolmanager && value.spoolmanager.pending_provider_sync
+            );
             var prompt = value.prompt || {};
             if (prompt.kind === "toolmap" && (oldPrompt.kind !== "toolmap" || self.mappingRows().length !== prompt.count)) {
                 var count = Number(prompt.count || 0);
@@ -505,6 +544,11 @@ $(function () {
             var colors = {};
             ko.utils.arrayForEach(self.themeKeys, function (entry) { colors[entry.key] = entry.value(); });
             self.command("set_theme", {colors: colors});
+        };
+        self.selectThemePreset = function (preset) {
+            ko.utils.arrayForEach(self.themeKeys, function (entry) {
+                entry.value(preset.colors[entry.key]);
+            });
         };
         self.applyFilament = function () {
             self.command("set_filament", {

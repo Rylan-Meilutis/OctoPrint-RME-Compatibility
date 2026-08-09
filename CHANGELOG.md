@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.0b13 — 2026-08-09
+
+- Fixed legacy M998 firmware staging on installed RME builds by adding the
+  Marlin string-argument sentinel required for the handler to see `P0`–`P3`.
+- Replaced OctoPrint SD-card uploads with serialized, acknowledged, SHA-256
+  verified RME FILE transfers whenever the printer advertises FILE WRITE.
+- Made firmware transfer errors process-local, cleared them at the next
+  transfer or automatically after 30 seconds, and excluded them from restart
+  persistence.
+- Added compact, visually selectable RME theme presets and tightened theme
+  swatch/editor spacing.
+- Promoted pending filament-provider resynchronization to a persistent global
+  OctoPrint notification in addition to the top-bar actions.
+- Reported `MMU idle` when no tool is active and displayed firmware MMU phase
+  messages such as FINDA/nozzle loading in the compact top-bar status.
+
 ## 0.1.0b12 — 2026-08-09
 
 - Queued firmware staging behind an in-progress USB capability probe or

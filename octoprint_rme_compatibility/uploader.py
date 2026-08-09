@@ -109,7 +109,7 @@ class FirmwareUploader(object):
                 offset=0, progress=0, error=None, staged_path=None,
             )
             self._exchange(
-                "M998 P0 S%d H%s" % (size, digest),
+                "M998 _ P0 S%d H%s" % (size, digest),
                 "upload_ready",
             )
             with self._condition:
@@ -136,13 +136,13 @@ class FirmwareUploader(object):
                     )
 
             self.state_changed(status="verifying", offset=size, progress=100)
-            self._exchange("M998 P2", "upload_complete", timeout=60)
+            self._exchange("M998 _ P2", "upload_complete", timeout=60)
             self.state_changed(
                 status="staged", offset=size, progress=100, staged_path="/usb/FWUPD.BBF"
             )
         except Exception as exc:
             try:
-                self.send_command("M998 P3")
+                self.send_command("M998 _ P3")
             except Exception:
                 pass
             if self.logger:

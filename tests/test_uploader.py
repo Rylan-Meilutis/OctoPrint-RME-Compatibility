@@ -20,16 +20,16 @@ class FirmwareSimulator(object):
 
     def send(self, command):
         self.commands.append(command)
-        if command.startswith("M998 P0"):
+        if command.startswith("M998 _ P0"):
             self.expected_size = int(re.search(r" S(\d+)", command).group(1))
             self.expected_hash = re.search(r" H([0-9a-f]{64})", command).group(1)
             self.reply("FW_UPLOAD READY chunk=48")
-        elif command.startswith("M998 P1"):
+        elif command.startswith("M998 _ P1"):
             offset = int(re.search(r" O(\d+)", command).group(1))
             assert offset == len(self.received)
             self.received.extend(base64.b64decode(command.split(" D", 1)[1]))
             self.reply("FW_UPLOAD OFFSET %d" % len(self.received))
-        elif command == "M998 P2":
+        elif command == "M998 _ P2":
             assert len(self.received) == self.expected_size
             assert hashlib.sha256(self.received).hexdigest() == self.expected_hash
             self.reply("FW_UPLOAD COMPLETE /usb/FWUPD.BBF")
@@ -62,6 +62,6 @@ class UploaderTests(unittest.TestCase):
         self.assertTrue(finished.wait(3))
         self.assertEqual(states[-1]["status"], "staged")
         self.assertEqual(bytes(simulator.received), content)
-        self.assertTrue(simulator.commands[0].startswith("M998 P0"))
-        self.assertEqual(simulator.commands[-1], "M998 P2")
+        self.assertTrue(simulator.commands[0].startswith("M998 _ P0"))
+        self.assertEqual(simulator.commands[-1], "M998 _ P2")
         self.assertTrue(all(len(command) <= 96 for command in simulator.commands))
