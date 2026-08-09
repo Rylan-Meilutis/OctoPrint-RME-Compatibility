@@ -1,6 +1,8 @@
 import ast
 import logging
+import os
 import sys
+import tempfile
 import types
 import unittest
 
@@ -78,6 +80,9 @@ class _Settings(object):
 
     def get(self, path, **kwargs):
         return self.values.get(path[0])
+
+    def global_get(self, path):
+        return {"pathSuffix": "path", "nameSuffix": "name"}.get(path[-1])
 
     def set(self, path, value):
         self.values[path[0]] = value
@@ -206,7 +211,7 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0b6"
+        plugin._plugin_version = "0.1.0b7"
         templates = plugin.get_template_configs()
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])
@@ -237,6 +242,33 @@ class ToolmapGateTests(unittest.TestCase):
             [("POST", r"/firmware", 33 * 1024 * 1024)],
             plugin.bodysize_hook([]),
         )
+
+    def test_firmware_route_accepts_octoprint_spooled_upload(self):
+        """Large uploads are rewritten to file.path/file.name by OctoPrint."""
+        import flask
+        from octoprint.access.permissions import Permissions
+
+        with tempfile.TemporaryDirectory() as source_directory, tempfile.TemporaryDirectory() as firmware_directory:
+            source = os.path.join(source_directory, "octoprint-upload.tmp")
+            with open(source, "wb") as firmware_file:
+                firmware_file.write(b"signed-bbf-test")
+            flask.request.files = {}
+            flask.request.values = {
+                "file.path": source,
+                "file.name": "coreone_6.5.7-RME.bbf",
+            }
+            Permissions.CONTROL = types.SimpleNamespace(can=lambda: True)
+            plugin = RmeCompatibilityPlugin()
+            plugin._settings = _Settings()
+            plugin._logger = logging.getLogger("rme-upload-test")
+            plugin._firmware_directory = firmware_directory
+            plugin._public_state = lambda: {"supported": True}
+
+            response = plugin.upload_firmware()
+
+            self.assertEqual("coreone_6.5.7-RME.bbf", response["file"]["name"])
+            with open(os.path.join(firmware_directory, response["file"]["name"]), "rb") as stored:
+                self.assertEqual(b"signed-bbf-test", stored.read())
 
     def test_package_declares_python_compatibility_before_import(self):
         """OctoPrint's AST preflight must see compatibility in __init__.py."""

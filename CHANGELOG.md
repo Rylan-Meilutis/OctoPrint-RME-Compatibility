@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0b7 — 2026-08-09
+
+- Added support for OctoPrint's spooled-upload contract. Large multipart files
+  arrive as trusted `file.path` and `file.name` fields rather than an entry in
+  Flask's `request.files`; both forms are now validated and stored atomically.
+
 ## 0.1.0b6 — 2026-08-09
 
 - Fixed the OctoPrint body-size hook to return a blueprint-relative route.

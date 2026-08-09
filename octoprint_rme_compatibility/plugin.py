@@ -11,6 +11,7 @@ import copy
 import functools
 import os
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -477,9 +478,23 @@ class RmeCompatibilityPlugin(
         if not Permissions.CONTROL.can():
             flask.abort(403)
         uploaded = flask.request.files.get("file")
-        if uploaded is None or not uploaded.filename:
+        upload_path_suffix = self._settings.global_get(
+            ["server", "uploads", "pathSuffix"]
+        ) or "path"
+        upload_name_suffix = self._settings.global_get(
+            ["server", "uploads", "nameSuffix"]
+        ) or "name"
+        spooled_path = flask.request.values.get("file." + upload_path_suffix)
+        spooled_name = flask.request.values.get("file." + upload_name_suffix)
+
+        # OctoPrint's UploadStorageFallbackHandler replaces larger multipart
+        # files with trusted file.path/file.name fields and removes the entry
+        # from request.files. Reserved-field protection in that handler keeps
+        # clients from forging an arbitrary server-side path.
+        original_name = uploaded.filename if uploaded is not None else spooled_name
+        if not original_name or (uploaded is None and not spooled_path):
             return flask.jsonify({"error": "A .bbf file is required"}), 400
-        filename = secure_filename(uploaded.filename)
+        filename = secure_filename(original_name)
         if not filename or not filename.lower().endswith(".bbf"):
             return flask.jsonify({"error": "Only .bbf firmware files are accepted"}), 400
         destination = self._firmware_path(filename)
@@ -488,7 +503,16 @@ class RmeCompatibilityPlugin(
         )
         os.close(descriptor)
         try:
-            uploaded.save(temporary)
+            if uploaded is not None:
+                uploaded.save(temporary)
+            else:
+                try:
+                    shutil.copyfile(spooled_path, temporary)
+                except (OSError, TypeError) as exc:
+                    self._logger.warning("Could not read OctoPrint-spooled BBF: %s", exc)
+                    return flask.jsonify(
+                        {"error": "OctoPrint could not read the temporary BBF upload"}
+                    ), 400
             size = os.path.getsize(temporary)
             if size <= 0 or size > MAX_FIRMWARE_SIZE:
                 return flask.jsonify(
