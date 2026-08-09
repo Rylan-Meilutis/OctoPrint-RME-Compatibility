@@ -501,8 +501,10 @@ class RmeCompatibilityPlugin(
         return flask.jsonify({"file": firmware_metadata(destination), "state": self._public_state()})
 
     def bodysize_hook(self, current_max_body_sizes, *args, **kwargs):
-        # Includes room for multipart headers above the firmware's 32 MiB ceiling.
-        return [("POST", r"/plugin/rme_compatibility/firmware", 33 * 1024 * 1024)]
+        # OctoPrint prefixes plugin hook routes with /plugin/<identifier>/.
+        # Return only the blueprint-relative path or the prefix is duplicated
+        # and Tornado rejects larger BBFs against its default body limit.
+        return [("POST", r"/firmware", 33 * 1024 * 1024)]
 
     # -- Events and serial receive path -------------------------------------
 

@@ -206,7 +206,7 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0b5"
+        plugin._plugin_version = "0.1.0b6"
         templates = plugin.get_template_configs()
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])
@@ -233,6 +233,10 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertFalse(config["force_base"])
         self.assertEqual("octoprint", config["restart"])
         self.assertIn("{target_version}", config["pip"])
+        self.assertEqual(
+            [("POST", r"/firmware", 33 * 1024 * 1024)],
+            plugin.bodysize_hook([]),
+        )
 
     def test_package_declares_python_compatibility_before_import(self):
         """OctoPrint's AST preflight must see compatibility in __init__.py."""

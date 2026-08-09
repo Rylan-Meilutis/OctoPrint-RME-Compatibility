@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0b6 — 2026-08-09
+
+- Fixed the OctoPrint body-size hook to return a blueprint-relative route.
+  OctoPrint now registers the intended 33 MiB allowance on
+  `/plugin/rme_compatibility/firmware` instead of double-prefixing the path and
+  rejecting normal BBF uploads with a blank HTTP 400 before the plugin runs.
+
 ## 0.1.0b5 — 2026-08-09
 
 - Fixed the native OctoPrint multipart upload path so root installations no
