@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0b3 — 2026-08-09
+
+- Fixed the package-level Python compatibility declaration so OctoPrint 1.11
+  no longer rejects the plugin as Python 2-only before importing it.
+- Made the RME navbar item an always-visible frontend health indicator, with
+  explicit disconnected, unsupported, ready, active-tool, and MMU states.
+- Added live plugin discovery status and the complete firmware upload, staging,
+  progress, verification, flash, and cancellation workflow to Settings.
+
 ## 0.1.0b2 — 2026-08-09
 
 - Added an always-available OctoPrint navbar dropdown for RME multi-tool and

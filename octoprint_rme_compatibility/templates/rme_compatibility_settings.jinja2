@@ -4,6 +4,15 @@
         OctoPrint must restart before the RME serial hooks, navbar, API, and background services are fully initialized. Plugin Manager and Software Update will prompt for this automatically.
     </div>
     <div class="control-group">
+        <label class="control-label">Plugin status</label>
+        <div class="controls">
+            <span class="label" data-bind="css: connectionClass, text: connectionText"></span>
+            <button type="button" class="btn btn-mini" data-bind="click: discover, enable: loginState.isUser">Detect RME firmware</button>
+            <button type="button" class="btn btn-mini" data-bind="click: showRmeTab">Open RME controls</button>
+            <p class="help-block">The RME item in OctoPrint's top bar confirms that the browser integration loaded. It remains visible while disconnected or unsupported and expands with live tool/MMU data after discovery.</p>
+        </div>
+    </div>
+    <div class="control-group">
         <label class="control-label">Protocol session</label>
         <div class="controls">
             <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.auto_open_session"> Open automatically after connection</label>
@@ -47,6 +56,30 @@
         <div class="controls">
             <label>Poll supported firmware every <input class="input-mini" type="number" min="10" data-bind="value: settings.settings.plugins.rme_compatibility.stats_poll_interval"> seconds</label>
             <p class="help-block">The plugin probes once per connection and only continues polling after the firmware returns an RME_STATS, RME_STATS_OPERATIONS, or RME_STATS_FAILURES record.</p>
+        </div>
+    </div>
+    <hr>
+    <h4>Firmware update</h4>
+    <p>Upload a signed BBF to this Pi, transfer and verify it through the RME binary protocol, then explicitly start the printer bootloader.</p>
+    <div class="control-group">
+        <label class="control-label">Upload to Pi</label>
+        <div class="controls">
+            <input type="file" accept=".bbf" data-bind="event: {change: chooseUpload}">
+            <button type="button" class="btn" data-bind="click: uploadToPi, enable: pendingUpload">Upload to Pi</button>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">Firmware on Pi</label>
+        <div class="controls">
+            <select data-bind="options: firmwareFiles, optionsText: firmwareLabel, optionsValue: 'name', value: selectedFirmware, optionsCaption: 'Choose firmware on Pi'"></select>
+            <button type="button" class="btn btn-primary" data-bind="click: stageFirmware, enable: canStage">Stage on printer</button>
+            <button type="button" class="btn btn-danger" data-bind="click: flashFirmware, enable: canFlash">Flash and reboot…</button>
+            <button type="button" class="btn" data-bind="click: cancelFirmware, visible: firmwareBusy">Cancel transfer</button>
+            <div class="progress" data-bind="visible: firmwareActive">
+                <div class="bar" data-bind="style: {width: firmwareProgress}"></div>
+            </div>
+            <p data-bind="text: firmwareStatus"></p>
+            <div class="alert alert-error" data-bind="visible: firmwareError, text: firmwareError"></div>
         </div>
     </div>
 </form>

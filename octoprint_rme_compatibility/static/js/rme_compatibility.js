@@ -194,7 +194,11 @@ $(function () {
             return Number((self.state().machine || {}).logical_tools || 0) > 1;
         });
         self.navbarVisible = ko.pureComputed(function () {
-            return !!self.state().supported && (self.multiToolDetected() || self.mmuDetected());
+            // Keep a small health indicator present even before discovery. If
+            // this item is visible, the plugin assets and view model loaded;
+            // richer tool and MMU data appears after firmware discovery.
+            self.state();
+            return true;
         });
         self.navbarMmuActive = ko.pureComputed(function () {
             return self.workflow().workflow === "mmu" && self.workflowVisible();
@@ -203,10 +207,12 @@ $(function () {
             return self.navbarMmuActive() && self.hasFirmwarePrompt();
         });
         self.navbarModeText = ko.pureComputed(function () {
+            if (!self.state().supported) return "RME Compatibility";
             return self.mmuDetected() ? "RME MMU" : "RME multi-tool";
         });
         self.navbarMmuText = ko.pureComputed(function () {
             var workflow = self.workflow();
+            if (!self.state().supported) return self.connectionText();
             if (!self.navbarMmuActive()) return self.mmuDetected() ? "MMU ready" : "Multi-tool ready";
             var state = String(workflow.state || "active").replace(/_/g, " ");
             var label = workflow.message || state.charAt(0).toUpperCase() + state.slice(1);
@@ -214,17 +220,20 @@ $(function () {
             return label;
         });
         self.navbarCompactText = ko.pureComputed(function () {
+            if (!self.state().connected) return "RME · disconnected";
+            if (!self.state().supported) return "RME · not detected";
             if (self.navbarMmuActive()) {
                 var state = String(self.workflow().state || "active").replace(/_/g, " ");
                 return "MMU · " + state + (isFinite(Number(self.workflow().progress)) ? " " + self.workflow().progress + "%" : "");
             }
             var tool = self.activeTool();
-            if (tool.logical === null || tool.logical === undefined) return self.navbarModeText();
+            if (tool.logical === null || tool.logical === undefined) return "RME · ready";
             var label = "T" + Number(tool.logical);
             if (tool.material && tool.material !== "---") label += " · " + tool.material;
             return label;
         });
         self.navbarTitle = ko.pureComputed(function () {
+            if (!self.state().supported) return self.connectionText();
             var details = self.activeToolText();
             return self.navbarMmuActive() ? details + " · " + self.navbarMmuText() : details;
         });

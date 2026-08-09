@@ -1,3 +1,4 @@
+import ast
 import logging
 import sys
 import types
@@ -205,11 +206,17 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0b2"
+        plugin._plugin_version = "0.1.0b3"
         templates = plugin.get_template_configs()
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])
         self.assertEqual("visible: navbarVisible", navbar["data_bind"])
+        with open(
+            "octoprint_rme_compatibility/templates/rme_compatibility_settings.jinja2"
+        ) as template_file:
+            settings_template = template_file.read()
+        self.assertIn("Plugin status", settings_template)
+        self.assertIn("Firmware update", settings_template)
         config = plugin.get_update_information()["rme_compatibility"]
         self.assertEqual("main", config["stable_branch"]["branch"])
         self.assertEqual("beta", config["prerelease_branches"][0]["branch"])
@@ -217,6 +224,19 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertFalse(config["force_base"])
         self.assertEqual("octoprint", config["restart"])
         self.assertIn("{target_version}", config["pip"])
+
+    def test_package_declares_python_compatibility_before_import(self):
+        """OctoPrint's AST preflight must see compatibility in __init__.py."""
+        with open("octoprint_rme_compatibility/__init__.py") as package_file:
+            package_ast = ast.parse(package_file.read())
+        assignments = {
+            target.id: ast.literal_eval(node.value)
+            for node in package_ast.body
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+        self.assertEqual(">=3.8,<4", assignments["__plugin_pythoncompat__"])
 
     def test_prestart_hold_pauses_timeout_then_configures_validator_before_release(self):
         plugin = RmeCompatibilityPlugin()
