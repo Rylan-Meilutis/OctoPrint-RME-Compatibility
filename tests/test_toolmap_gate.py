@@ -63,6 +63,8 @@ class _Settings(object):
             "prompt_toolmap_on_print": True,
             "toolmap_timeout_seconds": 120,
             "stats_poll_interval": 30,
+            "spool_provider": "auto",
+            "spoolmanager_enabled": True,
             "default_toolmap": {"0": 0, "1": 1},
             "default_toolmap_enabled": True,
         }
@@ -129,9 +131,81 @@ class _Comm(object):
 
 
 class ToolmapGateTests(unittest.TestCase):
+    def test_external_spool_provider_exclusively_disables_internal_backend(self):
+        class Provider(object):
+            def __init__(self, available):
+                self._available = available
+
+            def available(self):
+                return self._available
+
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        spoolmanager = Provider(False)
+        spoolman = Provider(True)
+        internal = Provider(True)
+        plugin._spoolmanager_bridge = spoolmanager
+        plugin._spoolman_bridge = spoolman
+        plugin._internal_spool_bridge = internal
+
+        plugin._settings.values["spool_provider"] = "spoolmanager"
+        provider, name = plugin._resolve_spool_provider()
+        self.assertIs(spoolmanager, provider)
+        self.assertEqual("spoolmanager", name)
+
+        plugin._settings.values["spool_provider"] = "auto"
+        provider, name = plugin._resolve_spool_provider()
+        self.assertIs(spoolman, provider)
+        self.assertEqual("spoolman", name)
+
+        spoolman._available = False
+        provider, name = plugin._resolve_spool_provider()
+        self.assertIs(internal, provider)
+        self.assertEqual("internal", name)
+
+    def test_external_provider_clears_unselected_builtin_tool_assignment(self):
+        record = {
+            "database_id": 7, "display_name": "External PETG", "vendor": "",
+            "material": "PETG", "color_name": "Blue", "color": "#193a8a",
+            "nozzle_temperature": 245, "bed_temperature": 85,
+            "remaining_weight": 600, "is_active": True, "is_template": False,
+        }
+
+        class Provider(object):
+            def available(self):
+                return True
+
+            def inventory(self):
+                return [dict(record)]
+
+            def selected(self):
+                return [dict(record)]
+
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._settings.values["spool_provider"] = "spoolmanager"
+        plugin._spoolmanager_bridge = Provider()
+        plugin._spoolman_bridge = None
+        plugin._internal_spool_bridge = None
+        plugin._printer = _Printer()
+        plugin._logger = logging.getLogger("rme-exclusive-provider-test")
+        plugin._state.update(
+            connected=True,
+            supported=True,
+            machine={"logical_tools": 2},
+        )
+        plugin._state["spoolmanager"].update(provider="internal")
+
+        plugin._sync_spoolmanager(True)
+
+        commands = [command for batch in plugin._printer.command_batches
+                    for command in (batch if isinstance(batch, list) else [batch])]
+        self.assertIn('M865 U0 L0 O"#193a8a"', commands)
+        self.assertIn('M865 S"---" L1', commands)
+
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0.dev2"
+        plugin._plugin_version = "0.1.0.dev3"
         config = plugin.get_update_information()["rme_compatibility"]
         self.assertEqual("main", config["stable_branch"]["branch"])
         self.assertEqual("beta", config["prerelease_branches"][0]["branch"])

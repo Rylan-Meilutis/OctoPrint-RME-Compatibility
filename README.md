@@ -97,10 +97,17 @@ an unlinked built-in material on the printer opens a persistent form in
 OctoPrint. Saving it creates a record in the active provider, selects it for the tool,
 and writes the selected material/color back to firmware with `M865`.
 
+Only one inventory backend is active at a time. SpoolManager and Spoolman each
+disable the built-in RME inventory when selected, and events from an inactive
+provider are ignored. Automatic prefers SpoolManager, then Spoolman, and starts
+the built-in backend only when neither external plugin is available. An
+explicitly selected external provider reports unavailable instead of silently
+switching to built-in storage.
+
 SpoolManager currently exposes events and implementation methods rather than
 registered public helpers. All such access is feature-detected and isolated in
-`spoolmanager.py`; if the optional plugin is absent or incompatible, core RME
-operation continues through the built-in provider.
+`spoolmanager.py`; an unavailable external provider does not affect non-filament
+RME features.
 The Spoolman adapter reuses the companion plugin's configured server URL, TLS
 policy, and API credentials. The built-in provider requires no other service
 and persists its inventory and printer-reported selections on the Pi.
@@ -159,7 +166,7 @@ OctoPrint's Software Update settings expose two release channels:
 - **Beta** follows the `beta` branch and receives beta/development GitHub
   prereleases in addition to stable releases.
 
-Development tags use OctoPrint-safe PEP 440 versions such as `v0.1.0.dev2` and
+Development tags use OctoPrint-safe PEP 440 versions such as `v0.1.0.dev3` and
 are published from `beta`. Stable releases are tagged from `main`.
 
 ## Firmware update safety

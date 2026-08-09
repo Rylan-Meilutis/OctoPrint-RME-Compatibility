@@ -35,7 +35,7 @@
             </label>
             <label>Reconcile every <input class="input-mini" type="number" min="10" data-bind="value: settings.settings.plugins.rme_compatibility.spoolmanager_sync_interval"> seconds</label>
             <label>Default new-spool weight <input class="input-small" type="number" min="1" data-bind="value: settings.settings.plugins.rme_compatibility.spoolmanager_default_weight"> g</label>
-            <p class="help-block">Seven firmware user slots mirror available spools; the eighth is reserved for NEW. If a selected external provider is unavailable, the built-in inventory is used.</p>
+            <p class="help-block">Seven firmware user slots mirror available spools; the eighth is reserved for NEW. External providers are exclusive: the built-in inventory is disabled while SpoolManager or Spoolman is active. Automatic uses built-in only when neither is available.</p>
         </div>
     </div>
     <div class="control-group">

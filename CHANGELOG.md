@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0.dev3 — 2026-08-09
+
+- Made SpoolManager, Spoolman, and built-in inventory mutually exclusive.
+  Inactive-provider events are ignored, external selections clear stale
+  built-in tool assignments, and an unavailable explicitly selected external
+  provider is no longer silently replaced by built-in storage.
+
 ## 0.1.0.dev2 — 2026-08-09
 
 - Added a live active-extruder indicator to both the RME tab and OctoPrint's

@@ -495,7 +495,7 @@ class RmeCompatibilityPlugin(
             self._defer(self._handle_spoolmanager_event, normalized_event, payload or {})
             return
         if normalized_event.startswith("plugin_spoolman_"):
-            self._defer(self._sync_spoolmanager, True)
+            self._defer(self._handle_spoolman_event)
             return
         if event == Events.CONNECTED:
             with self._state_lock:
@@ -1267,6 +1267,7 @@ class RmeCompatibilityPlugin(
                 if self._state["spoolmanager"].get("provider") != provider_name:
                     old_published = []
                 can_send = self._state["connected"] and self._state["supported"]
+                logical_tools = int(self._state.get("machine", {}).get("logical_tools", 0))
 
             # Selected spools have priority, then prior slots, then the remaining
             # inventory. This minimizes menu churn while keeping all active tools.
@@ -1341,6 +1342,11 @@ class RmeCompatibilityPlugin(
                 # physically loaded in Buddy's M865 metadata.
                 slot_by_id = {item["database_id"]: item for item in published}
                 assignments = []
+                selected_tools = {int(item["tool"]) for item in selected}
+                tool_count = max(logical_tools, max(selected_tools, default=-1) + 1)
+                for tool in range(tool_count):
+                    if tool not in selected_tools:
+                        assignments.append('M865 S"---" L%d' % tool)
                 for selected_item in selected:
                     item = slot_by_id.get(selected_item["database_id"])
                     if item:
@@ -1371,7 +1377,12 @@ class RmeCompatibilityPlugin(
             self._spool_sync_lock.release()
 
     def _resolve_spool_provider(self):
-        """Choose an installed provider or the persistent built-in fallback."""
+        """Choose exactly one inventory backend.
+
+        An explicitly selected external provider never falls back silently to
+        the built-in database. In Automatic mode the built-in backend is used
+        only when neither external plugin is available.
+        """
         preference = str(self._settings.get(["spool_provider"], merged=True) or "auto").lower()
         providers = {
             "spoolmanager": getattr(self, "_spoolmanager_bridge", None),
@@ -1379,10 +1390,7 @@ class RmeCompatibilityPlugin(
             "internal": getattr(self, "_internal_spool_bridge", None),
         }
         if preference in ("spoolmanager", "spoolman"):
-            candidate = providers[preference]
-            if candidate is not None and candidate.available():
-                return candidate, preference
-            return providers["internal"], "internal"
+            return providers[preference], preference
         if preference == "internal":
             return providers["internal"], "internal"
         for name in ("spoolmanager", "spoolman"):
@@ -1393,6 +1401,9 @@ class RmeCompatibilityPlugin(
 
     def _handle_spoolmanager_event(self, event, payload):
         """Push SpoolManager-side changes to Buddy, including selected color."""
+        _, provider_name = self._active_spool_provider()
+        if provider_name != "spoolmanager":
+            return
         self._sync_spoolmanager(True)
         if event.endswith("_spool_selected"):
             self._assign_published_spool(
@@ -1406,6 +1417,12 @@ class RmeCompatibilityPlugin(
                 can_send = self._state["connected"] and self._state["supported"]
             if can_send:
                 self._send_commands(['M865 S"---" L%d' % tool, "M865 Q"])
+
+    def _handle_spoolman_event(self):
+        """Reconcile Spoolman events only while it is the active backend."""
+        _, provider_name = self._active_spool_provider()
+        if provider_name == "spoolman":
+            self._sync_spoolmanager(True)
 
     def _assign_published_spool(self, tool, database_id):
         """Apply a selected provider record as firmware loadout metadata."""
@@ -1665,6 +1682,10 @@ class RmeCompatibilityPlugin(
     def _public_state(self):
         with self._state_lock:
             result = copy.deepcopy(self._state)
+        # The built-in database is implementation state, not a second live
+        # provider. Keep it private so an external provider cannot appear to be
+        # running alongside SpoolManager or Spoolman in API/UI snapshots.
+        result.pop("internal_spools", None)
         result["firmware_files"] = self._list_firmware()
         return result
 
