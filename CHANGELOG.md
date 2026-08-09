@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0b11 — 2026-08-09
+
+- Staged and SHA-256-verified firmware through the current RME FILE service,
+  avoiding the firmware's legacy `M998` numeric-phase parsing failure while
+  retaining `M998` as a fallback for older RME builds.
+- Triggered current-firmware bootloader handoff with `RME FILE FLASH` after a
+  verified stage, including the existing one-click stage-and-flash workflow.
+- Added large live color swatches to the current and editable theme fields in
+  Settings while retaining the exact hexadecimal values.
+- Limited firmware cancellation to an active firmware transfer so it cannot
+  interrupt an unrelated USB storage operation.
+
 ## 0.1.0b10 — 2026-08-09
 
 - Added an RME `/usb` storage browser with directory navigation, authenticated

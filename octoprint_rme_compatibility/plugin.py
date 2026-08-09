@@ -72,6 +72,7 @@ class RmeCompatibilityPlugin(
         self._store = None
         self._uploader = None
         self._file_service = None
+        self._firmware_file_thread = None
         self._stop = threading.Event()
         self._keepalive_thread = None
         self._firmware_directory = None
@@ -210,6 +211,12 @@ class RmeCompatibilityPlugin(
         if self._uploader and self._uploader.busy:
             self._uploader.cancel()
         if self._file_service:
+            with self._state_lock:
+                firmware_transfer = self._state["firmware"].get("status") in (
+                    "starting", "uploading", "verifying"
+                )
+            if firmware_transfer:
+                self._file_service.cancel()
             self._file_service.reset("OctoPrint is shutting down")
         if self._keepalive_thread:
             self._keepalive_thread.join(timeout=2)
@@ -470,6 +477,12 @@ class RmeCompatibilityPlugin(
         elif command == "cancel_firmware":
             if self._uploader:
                 self._uploader.cancel()
+            with self._state_lock:
+                file_firmware_active = self._state["firmware"].get("status") in (
+                    "starting", "uploading", "verifying"
+                )
+            if file_firmware_active and self._file_service and self._file_service.busy:
+                self._file_service.cancel()
         elif command == "flash_firmware":
             self._flash_firmware()
         elif command == "delete_firmware":
@@ -2049,7 +2062,7 @@ class RmeCompatibilityPlugin(
         return result
 
     def _start_firmware_upload(self, filename, flash_after_stage=False):
-        """Stage a BBF, optionally handing it to the bootloader when verified."""
+        """Stage a BBF through FILE on current firmware or legacy M998."""
         if self._printer.is_printing() or self._printer.is_paused():
             raise UploadError("Firmware transfer is only allowed while the printer is idle")
         if not self._state.get("supported"):
@@ -2061,16 +2074,77 @@ class RmeCompatibilityPlugin(
             raise UploadError("Firmware file was not found on the Pi")
         metadata = firmware_metadata(path)
         with self._firmware_action_lock:
-            if self._uploader.busy:
+            if self._uploader.busy or (
+                self._firmware_file_thread and self._firmware_file_thread.is_alive()
+            ):
                 raise UploadError("A firmware transfer is already active")
             with self._state_lock:
+                caps = dict(self._state["storage"].get("caps") or {})
+                file_supported = bool(
+                    self._state["storage"].get("supported") and int(caps.get("write", 0))
+                )
+            # Current RME firmware advertises FILE WRITE and should use it. Its
+            # M998 handler relies on Marlin string_arg and can reject otherwise
+            # valid numeric P phases as FW_UPLOAD PHASE.
+            if self._file_service and not file_supported:
+                try:
+                    probed = self._file_service.capabilities()
+                    caps = {key: value for key, value in probed.items() if key != "record"}
+                    file_supported = bool(int(caps.get("write", 0)))
+                    with self._state_lock:
+                        self._state["storage"].update(
+                            supported=file_supported, caps=caps,
+                            status="ready" if file_supported else "unsupported", error=None,
+                        )
+                except Exception:
+                    file_supported = False
+            with self._state_lock:
                 self._state["firmware"]["flash_after_stage"] = bool(flash_after_stage)
+            if file_supported:
+                self._firmware_file_thread = threading.Thread(
+                    target=self._run_file_firmware_upload,
+                    args=(path, metadata),
+                    name="rme-file-firmware-upload",
+                    daemon=True,
+                )
+                self._firmware_file_thread.start()
+                return
             try:
                 self._uploader.start(path, metadata)
             except Exception:
                 with self._state_lock:
                     self._state["firmware"]["flash_after_stage"] = False
                 raise
+
+    def _run_file_firmware_upload(self, path, metadata):
+        """Stage and verify ``FWUPD.BBF`` through the current FILE service."""
+        try:
+            self._firmware_state_changed(
+                status="starting", filename=metadata["name"], size=metadata["size"],
+                sha256=metadata["sha256"], offset=0, progress=0, error=None,
+                staged_path=None,
+            )
+            self._file_service.write_file(
+                path,
+                "FWUPD.BBF",
+                progress=self._firmware_file_progress,
+                finalizing=lambda: self._firmware_state_changed(
+                    status="verifying", offset=metadata["size"], progress=100
+                ),
+            )
+            self._firmware_state_changed(
+                status="staged", offset=metadata["size"], progress=100,
+                staged_path="/usb/FWUPD.BBF",
+            )
+        except Exception as exc:
+            self._logger.exception("RME FILE firmware transfer failed")
+            self._firmware_state_changed(status="error", error=str(exc))
+
+    def _firmware_file_progress(self, offset, size):
+        self._firmware_state_changed(
+            status="uploading", offset=offset,
+            progress=round(offset * 100.0 / max(1, size), 2),
+        )
 
     def _firmware_state_changed(self, **changes):
         status = changes.get("status")
@@ -2093,9 +2167,14 @@ class RmeCompatibilityPlugin(
     def _flash_after_verified_stage(self):
         """Wait for the transfer worker to exit, then perform one-click flash."""
         deadline = time.monotonic() + 5
-        while self._uploader and self._uploader.busy and time.monotonic() < deadline:
+        while (
+            (self._uploader and self._uploader.busy)
+            or (self._firmware_file_thread and self._firmware_file_thread.is_alive())
+        ) and time.monotonic() < deadline:
             time.sleep(0.05)
-        if self._uploader and self._uploader.busy:
+        if (self._uploader and self._uploader.busy) or (
+            self._firmware_file_thread and self._firmware_file_thread.is_alive()
+        ):
             self._firmware_state_changed(
                 status="error",
                 error="Verified transfer did not finish cleanly; automatic flash was stopped",
@@ -2113,7 +2192,10 @@ class RmeCompatibilityPlugin(
         # generic keepalive acknowledgements must not be interleaved with its
         # strict request/response exchange.
         deadline = time.monotonic() + 5
-        while self._uploader and self._uploader.busy and time.monotonic() < deadline:
+        while (
+            (self._uploader and self._uploader.busy)
+            or (self._firmware_file_thread and self._firmware_file_thread.is_alive())
+        ) and time.monotonic() < deadline:
             time.sleep(0.05)
         with self._state_lock:
             should_open = self._state["connected"] and self._state["supported"]
@@ -2126,14 +2208,24 @@ class RmeCompatibilityPlugin(
         with self._state_lock:
             if self._state["firmware"].get("status") != "staged":
                 raise UploadError("Stage and verify firmware on the printer before flashing")
+            use_file_service = bool(
+                self._state["storage"].get("supported")
+                and int(self._state["storage"].get("caps", {}).get("flash", 0))
+            )
+        if use_file_service:
+            self._file_service.mutate("FLASH", "FWUPD.BBF")
+        else:
+            self._send_command("M997 /usb/FWUPD.BBF")
+        with self._state_lock:
             self._state["firmware"].update(
                 status="flashing", error=None, flash_after_stage=False
             )
         self._persist_and_publish()
-        self._send_command("M997 /usb/FWUPD.BBF")
 
     def _delete_firmware(self, filename):
-        if self._uploader and self._uploader.busy:
+        if (self._uploader and self._uploader.busy) or (
+            self._firmware_file_thread and self._firmware_file_thread.is_alive()
+        ):
             raise UploadError("Cannot delete firmware during a transfer")
         path = self._firmware_path(filename)
         if not os.path.isfile(path):

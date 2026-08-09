@@ -158,7 +158,10 @@
         <div class="controls">
             <span data-bind="visible: !currentThemeRows().length">Not reported yet</span>
             <span data-bind="foreach: currentThemeRows">
-                <span class="rme-theme-current"><span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span> <span data-bind="text: label + ' ' + color"></span></span>
+                <span class="rme-theme-current">
+                    <span class="rme-theme-swatch" data-bind="style: {backgroundColor: color}, attr: {title: label + ' ' + color}"></span>
+                    <span data-bind="text: label + ' ' + color"></span>
+                </span>
             </span>
         </div>
     </div>
@@ -166,7 +169,14 @@
         <label class="control-label">Edit theme</label>
         <div class="controls">
             <span data-bind="foreach: themeKeys">
-                <label class="rme-color-field"><span data-bind="text: label"></span> <input type="color" data-bind="value: value"> <code data-bind="text: value"></code></label>
+                <label class="rme-color-field">
+                    <span data-bind="text: label"></span>
+                    <span class="rme-theme-editor">
+                        <input type="color" data-bind="value: value">
+                        <span class="rme-theme-swatch" data-bind="style: {backgroundColor: value}, attr: {title: label + ' ' + value()}"></span>
+                    </span>
+                    <code data-bind="text: value"></code>
+                </label>
             </span>
             <button type="button" class="btn btn-primary" data-bind="click: applyTheme, enable: state().supported">Save theme to printer</button>
         </div>

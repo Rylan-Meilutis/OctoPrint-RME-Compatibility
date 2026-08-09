@@ -47,6 +47,7 @@ class RmeFileService(object):
         self._records = []
         self._error = None
         self._active = False
+        self._cancel = threading.Event()
 
     @property
     def busy(self):
@@ -61,6 +62,18 @@ class RmeFileService(object):
             if self._active:
                 self._error = reason
             self._condition.notify_all()
+
+    def cancel(self):
+        """Cancel an active upload/download at its next response boundary."""
+        self._cancel.set()
+        with self._condition:
+            if self._active:
+                self._error = "cancelled"
+            self._condition.notify_all()
+        try:
+            self.send_command("@RME FILE ABORT")
+        except Exception:
+            pass
 
     def handle_response(self, record):
         """Wake the active HTTP/API worker for relevant parsed file records."""
@@ -90,6 +103,8 @@ class RmeFileService(object):
                 while not any(item.get("record") in expected for item in self._records):
                     if self._error:
                         raise FileServiceError("Printer USB operation failed: %s" % self._error)
+                    if self._cancel.is_set():
+                        raise FileServiceError("Printer USB operation cancelled")
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise FileServiceError("Timed out waiting for printer USB response")
@@ -107,12 +122,14 @@ class RmeFileService(object):
 
     def capabilities(self):
         with self._operation_lock:
+            self._cancel.clear()
             records = self._exchange("@RME FILE CAPS", "file_caps")
         return self._terminal(records, "file_caps")
 
     def list_directory(self, path="/"):
         encoded = normalize_remote_path(path)
         with self._operation_lock:
+            self._cancel.clear()
             records = self._exchange(
                 "@RME FILE LIST path=%s" % encoded, "file_list_end", timeout=30
             )
@@ -121,6 +138,7 @@ class RmeFileService(object):
     def stat(self, path):
         encoded = normalize_remote_path(path)
         with self._operation_lock:
+            self._cancel.clear()
             records = self._exchange("@RME FILE STAT path=%s" % encoded, "file_stat")
         return self._terminal(records, "file_stat")
 
@@ -128,6 +146,7 @@ class RmeFileService(object):
         """Yield decoded 48-byte blocks while holding the filesystem lease."""
         encoded = normalize_remote_path(path)
         with self._operation_lock:
+            self._cancel.clear()
             offset = 0
             while True:
                 records = self._exchange(
@@ -152,11 +171,12 @@ class RmeFileService(object):
                 if not block:
                     raise FileServiceError("Printer file download made no progress")
 
-    def write_file(self, local_path, remote_path, progress=None):
+    def write_file(self, local_path, remote_path, progress=None, finalizing=None):
         """Upload, hash-check, and atomically publish one local file on USB."""
         encoded = normalize_remote_path(remote_path)
         size, digest = self._hash_file(local_path)
         with self._operation_lock:
+            self._cancel.clear()
             try:
                 self._exchange(
                     "@RME FILE WRITE_BEGIN path=%s size=%d sha256=%s"
@@ -166,6 +186,8 @@ class RmeFileService(object):
                 offset = 0
                 with open(local_path, "rb") as source:
                     while True:
+                        if self._cancel.is_set():
+                            raise FileServiceError("Printer USB operation cancelled")
                         block = source.read(FILE_CHUNK_SIZE)
                         if not block:
                             break
@@ -184,6 +206,8 @@ class RmeFileService(object):
                             progress(offset, size)
                 if offset != size:
                     raise FileServiceError("Printer did not acknowledge the complete upload")
+                if finalizing:
+                    finalizing()
                 self._exchange(
                     "@RME FILE WRITE_END path=%s" % encoded,
                     "file_write_complete",
@@ -210,6 +234,7 @@ class RmeFileService(object):
         if action == "RENAME":
             command += " dest=%s" % normalize_remote_path(destination)
         with self._operation_lock:
+            self._cancel.clear()
             self._exchange(command, replies[action])
 
     @staticmethod

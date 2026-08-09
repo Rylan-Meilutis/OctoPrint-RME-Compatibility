@@ -78,9 +78,11 @@ and `doc/gcode/M998.md`.
   rename directories/files, delete entries, start USB prints, and flash BBFs.
   Paths are percent-encoded and cannot escape the printer's user-visible USB
   volume.
-- Accepts signed `.bbf` files up to 32 MiB on the Pi, streams them with the
-  acknowledged M998 Base64 protocol, verifies size and SHA-256 on the printer,
-  and exposes a separate confirmed `M997 /usb/FWUPD.BBF` bootloader handoff.
+- Accepts signed `.bbf` files up to 32 MiB on the Pi. Current RME firmware is
+  staged as `/usb/FWUPD.BBF` through acknowledged RME FILE chunks, verified by
+  size and SHA-256 on the printer, and handed to the bootloader with RME FILE
+  FLASH. Older RME builds retain the acknowledged M998 transfer and confirmed
+  `M997 /usb/FWUPD.BBF` fallback.
 
 The plugin always uses OctoPrint's serialized printer command queue. It never
 opens a competing serial descriptor, suppresses normal Marlin responses, or

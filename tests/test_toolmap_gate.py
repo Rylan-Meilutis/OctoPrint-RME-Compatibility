@@ -338,9 +338,71 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual("flashing", plugin._state["firmware"]["status"])
         self.assertFalse(plugin._state["firmware"]["flash_after_stage"])
 
+    def test_current_firmware_stages_bbf_through_file_service(self):
+        class FileService(object):
+            busy = False
+
+            def __init__(self):
+                self.upload = None
+
+            def write_file(self, local_path, remote_path, progress=None, finalizing=None):
+                self.upload = (local_path, remote_path)
+                size = os.path.getsize(local_path)
+                progress(size, size)
+                finalizing()
+
+        with tempfile.TemporaryDirectory() as firmware_directory:
+            filename = "coreone-rme.bbf"
+            path = os.path.join(firmware_directory, filename)
+            with open(path, "wb") as firmware_file:
+                firmware_file.write(b"signed-rme-bbf")
+
+            plugin = RmeCompatibilityPlugin()
+            plugin._printer = _Printer()
+            plugin._logger = logging.getLogger("rme-file-firmware-test")
+            plugin._uploader = types.SimpleNamespace(busy=False)
+            plugin._file_service = FileService()
+            plugin._firmware_directory = firmware_directory
+            plugin._persist_and_publish = lambda: None
+            plugin._defer = lambda callback, *args: None
+            plugin._state.update(connected=True, supported=True)
+            plugin._state["storage"].update(
+                supported=True, caps={"write": 1, "flash": 1}
+            )
+
+            plugin._start_firmware_upload(filename)
+            plugin._firmware_file_thread.join(timeout=2)
+
+            self.assertEqual((path, "FWUPD.BBF"), plugin._file_service.upload)
+            self.assertEqual("staged", plugin._state["firmware"]["status"])
+            self.assertEqual("/usb/FWUPD.BBF", plugin._state["firmware"]["staged_path"])
+
+    def test_current_firmware_flashes_through_file_service(self):
+        class FileService(object):
+            def __init__(self):
+                self.mutations = []
+
+            def mutate(self, action, path):
+                self.mutations.append((action, path))
+
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+        plugin._file_service = FileService()
+        plugin._persist_and_publish = lambda: None
+        plugin._state["firmware"]["status"] = "staged"
+        plugin._state["storage"].update(
+            supported=True, caps={"write": 1, "flash": 1}
+        )
+
+        plugin._flash_firmware()
+
+        self.assertEqual([("FLASH", "FWUPD.BBF")], plugin._file_service.mutations)
+        self.assertEqual([], plugin._printer.command_batches)
+        self.assertEqual("flashing", plugin._state["firmware"]["status"])
+
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0b10"
+        plugin._plugin_version = "0.1.0b11"
         templates = plugin.get_template_configs()
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])
@@ -352,6 +414,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("Plugin status", settings_template)
         self.assertIn("Firmware update", settings_template)
         self.assertIn("Current theme", settings_template)
+        self.assertIn("rme-theme-swatch", settings_template)
         self.assertIn("Saved lighting", settings_template)
         self.assertIn("Printer lock", settings_template)
         self.assertIn("Printer USB storage", settings_template)
