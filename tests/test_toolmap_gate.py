@@ -211,7 +211,7 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0b7"
+        plugin._plugin_version = "0.1.0b8"
         templates = plugin.get_template_configs()
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])
@@ -282,6 +282,25 @@ class ToolmapGateTests(unittest.TestCase):
             if isinstance(target, ast.Name)
         }
         self.assertEqual(">=3.8,<4", assignments["__plugin_pythoncompat__"])
+
+    def test_rme_atcommand_is_forwarded_to_serial_writer(self):
+        """OctoPrint consumes @ commands unless a sending hook forwards them."""
+        sent = []
+        comm = types.SimpleNamespace(
+            _do_send=lambda command, gcode=None: sent.append((command, gcode))
+        )
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-atcommand-test")
+
+        plugin.atcommand_sending_hook(
+            comm, "sending", "RME", "MACHINE QUERY", tags={"source:api"}
+        )
+        plugin.atcommand_sending_hook(comm, "sending", "pause", "", tags=set())
+        plugin.atcommand_sending_hook(
+            comm, "queuing", "RME", "SESSION QUERY", tags=set()
+        )
+
+        self.assertEqual([("@RME MACHINE QUERY", None)], sent)
 
     def test_prestart_hold_pauses_timeout_then_configures_validator_before_release(self):
         plugin = RmeCompatibilityPlugin()

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0b8 — 2026-08-09
+
+- Added the required OctoPrint `atcommand.sending` hook for the reserved
+  `@RME` namespace. OctoPrint normally consumes every at-command locally and
+  skips its serial write, which prevented machine discovery and all subsequent
+  RME session traffic from ever reaching the firmware.
+
 ## 0.1.0b7 — 2026-08-09
 
 - Added support for OctoPrint's spooled-upload contract. Large multipart files

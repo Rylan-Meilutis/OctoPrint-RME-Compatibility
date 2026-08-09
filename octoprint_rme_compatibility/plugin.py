@@ -625,6 +625,33 @@ class RmeCompatibilityPlugin(
                 if self._state.get("supported"):
                     self._firmware_completed_controls.add(completed)
 
+    def atcommand_sending_hook(
+        self, comm_instance, phase, command, parameters, *args, **kwargs
+    ):
+        """Forward OctoPrint's reserved ``@RME`` host command to firmware.
+
+        OctoPrint consumes all at-commands locally and normally skips their
+        serial write. Registering this sending-phase hook is therefore required
+        for discovery itself as well as every later RME session command. The
+        command still travels through OctoPrint's single serialized writer; no
+        competing serial descriptor is opened.
+        """
+        if phase != "sending" or str(command).upper() != "RME":
+            return
+        parameters = str(parameters or "").strip()
+        if "\r" in parameters or "\n" in parameters:
+            self._logger.warning("Refusing multiline @RME command")
+            return
+        full_command = "@RME" + ((" " + parameters) if parameters else "")
+        do_send = getattr(comm_instance, "_do_send", None)
+        if not callable(do_send):
+            self._logger.error(
+                "OctoPrint does not expose its serialized send primitive; "
+                "%s was not transmitted", full_command
+            )
+            return
+        do_send(full_command, gcode=None)
+
     def _consume_firmware_completed_control(self, action):
         with self._state_lock:
             if action not in self._firmware_completed_controls:
@@ -1759,6 +1786,7 @@ __plugin_pythoncompat__ = ">=3.8,<4"
 __plugin_implementation__ = RmeCompatibilityPlugin()
 __plugin_hooks__ = {
     "octoprint.comm.protocol.action": __plugin_implementation__.action_command_hook,
+    "octoprint.comm.protocol.atcommand.sending": __plugin_implementation__.atcommand_sending_hook,
     "octoprint.comm.protocol.gcode.received": __plugin_implementation__.gcode_received_hook,
     "octoprint.comm.protocol.gcode.queuing": (__plugin_implementation__.gcode_queuing_hook, 1),
     "octoprint.comm.protocol.gcode.sent": __plugin_implementation__.gcode_sent_hook,
