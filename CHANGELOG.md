@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.0b9 — 2026-08-09
+
+- Formatted firmware distance statistics as centimeters, meters, or kilometers
+  and durations as compact seconds, minutes, hours, or days.
+- Added RME printer settings for current/editable theme colors, lock behavior,
+  temporary and persistent state-based lighting, filament presets, and remote
+  screen navigation to the OctoPrint Settings page.
+- Added explicit current-theme swatches and hex values to both Settings and the
+  main RME controls.
+- Added directional Printer → provider and Provider → printer filament sync,
+  connection-time printer import, periodic printer polling, and persistent
+  confirmation prompts before external provider selections change firmware.
+- Added a one-click Stage and flash action that triggers the bootloader only
+  after the selected BBF has transferred and passed printer-side verification.
+- Refocused the RME tab on live firmware activity, tool/filament state, machine
+  information, and telemetry; routine controls, synchronization, inventory
+  management, firmware updates, and configuration now live in Settings.
+
 ## 0.1.0b8 — 2026-08-09
 
 - Added the required OctoPrint `atcommand.sending` hook for the reserved

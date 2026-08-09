@@ -56,15 +56,18 @@ and `doc/gcode/M998.md`.
   live maximum feed rates, then updates the active OctoPrint printer profile.
 - Exposes guarded remote encoder/click/back/home controls, printer lock status
   and PIN unlock, temporary and persistent light services, persistent theme
-  colors, and synchronization of the eight RME user filament presets.
+  colors, and synchronization of the eight RME user filament presets. The RME
+  Settings page shows the printer-reported current theme and provides editors
+  for the firmware-supported lock, theme, lighting, and filament settings.
 - Integrates bidirectionally with either OctoPrint-SpoolManager or
   OctoPrint-Spoolman. If neither is installed, a persistent built-in inventory
   tracks available and per-tool selected spools directly in this plugin.
   Seven active spools are published as stable short aliases in the printer's
   existing filament-load picker and the eighth entry is `NEW`. Printer-side
-  choices update the active provider; selection and deselection update the
-  firmware. Periodic reconciliation also catches inventory, weight, and other
-  edits for which a provider does not emit an event.
+  choices update the active provider. External selection and deselection opens
+  a persistent confirmation before changing firmware, while explicit
+  Printer → provider and Provider → printer controls resolve manual edits.
+  Periodic printer polling also imports LCD-side configuration changes.
 - Exposes authenticated read-only `/plugin/rme_compatibility/selected-spools`
   and `/plugin/rme_compatibility/filament-report` aliases so OrcaSlicer and other
   clients can poll active tool, mapping, material/color loadout, available
@@ -79,7 +82,10 @@ places `@RME` frames in sliced files.
 
 ## Remote prompts and recovery
 
-Tool remapping and firmware action dialogs are rendered in the **RME** tab.
+Live firmware state, tool mapping, and firmware action dialogs are rendered in
+the **RME** tab. Routine configuration, inventory synchronization, remote
+controls, and firmware update operations live in **Settings → RME
+Compatibility**, keeping the main tab focused on status and telemetry.
 This includes MMU loading/errors, filament runout, stuck filament, tool-change
 or pickup failures, purge-bucket/waste-bin warnings, and any future RME dialog
 that supplies named actions. Prompt and workflow state is written to the Pi,
@@ -101,6 +107,10 @@ aliases because that is the RME firmware's preset-name limit. Choosing `NEW` or
 an unlinked built-in material on the printer opens a persistent form in
 OctoPrint. Saving it creates a record in the active provider, selects it for the tool,
 and writes the selected material/color back to firmware with `M865`.
+On connection the plugin first builds the seven-slot alias table, then reads
+the printer's current `M865` assignments into the provider. Provider-originated
+selection changes wait for confirmation rather than silently overwriting the
+printer; both synchronization directions are also available as manual buttons.
 
 Only one inventory backend is active at a time. SpoolManager and Spoolman each
 disable the built-in RME inventory when selected, and events from an inactive
@@ -181,8 +191,10 @@ Beta tags use OctoPrint-safe PEP 440 versions such as `v0.1.0b1` and
 
 ## Firmware update safety
 
-Firmware storage on the Pi, transfer to printer USB, and flashing are three
-separate user-visible operations. Transfer and flashing are rejected while a
+Firmware storage on the Pi, transfer to printer USB, and flashing remain
+separately controllable, and a combined **Stage and flash** action performs the
+last two in one click while still waiting for printer-side verification before
+bootloader handoff. Transfer and flashing are rejected while a
 print is active or paused. The plugin verifies the Pi copy before transfer and
 the printer verifies the declared byte count and SHA-256 before renaming it to
 `/usb/FWUPD.BBF`. The Prusa bootloader remains responsible for signature,

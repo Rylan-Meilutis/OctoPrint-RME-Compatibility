@@ -24,6 +24,12 @@
             <button class="btn btn-mini" data-bind="text: $data, click: $parent.respond"></button>
         </div>
     </li>
+    <li class="rme-navbar-actions" data-bind="visible: pendingProviderSync">
+        <strong>Filament provider changed</strong>
+        <div data-bind="text: pendingProviderSync() && pendingProviderSync().message"></div>
+        <button class="btn btn-mini btn-primary" data-bind="click: confirmProviderSync">Apply to printer</button>
+        <button class="btn btn-mini" data-bind="click: cancelProviderSync">Keep printer</button>
+    </li>
     <li class="divider"></li>
     <!-- ko foreach: navbarToolRows -->
     <li>

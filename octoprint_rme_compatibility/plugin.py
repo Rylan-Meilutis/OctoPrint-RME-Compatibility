@@ -77,6 +77,8 @@ class RmeCompatibilityPlugin(
         self._spoolmanager = None
         self._spool_sync_lock = threading.Lock()
         self._last_spool_sync = 0
+        self._expected_provider_events = {}
+        self._expected_spoolman_event_until = 0
         self._toolmap_hold_active = False
         self._toolmap_timer_generation = 0
         self._preflight_gate_started = False
@@ -86,6 +88,7 @@ class RmeCompatibilityPlugin(
         self._last_stats_poll = 0
         self._priority_controls_sent = set()
         self._firmware_completed_controls = set()
+        self._firmware_action_lock = threading.Lock()
 
     @staticmethod
     def _empty_state():
@@ -122,6 +125,7 @@ class RmeCompatibilityPlugin(
                 "published": [],
                 "selected": [],
                 "pending_new": None,
+                "pending_provider_sync": None,
                 "last_sync": None,
                 "error": None,
             },
@@ -136,6 +140,7 @@ class RmeCompatibilityPlugin(
                 "progress": 0,
                 "error": None,
                 "staged_path": None,
+                "flash_after_stage": False,
             },
             "errors": [],
         }
@@ -167,6 +172,9 @@ class RmeCompatibilityPlugin(
                 self._state["firmware"].update(
                     status="error", error="OctoPrint restarted during the firmware transfer"
                 )
+            # A one-click flash request is deliberately process-local. Never
+            # carry a bootloader handoff intent across an OctoPrint restart.
+            self._state["firmware"]["flash_after_stage"] = False
         self._store.start()
         self._uploader = FirmwareUploader(
             self._send_command, self._firmware_state_changed, self._logger
@@ -302,10 +310,15 @@ class RmeCompatibilityPlugin(
             "set_persistent_lights": ["screen", "chamber", "status"],
             "set_filament": ["slot", "name", "nozzle", "preheat", "bed", "visible"],
             "stage_firmware": ["filename"],
+            "stage_and_flash_firmware": ["filename"],
             "cancel_firmware": [],
             "flash_firmware": [],
             "delete_firmware": ["filename"],
             "sync_spoolmanager": [],
+            "sync_filaments_from_printer": [],
+            "sync_filaments_to_printer": [],
+            "confirm_provider_sync": [],
+            "cancel_provider_sync": [],
             "select_spool": ["tool", "database_id"],
             "deselect_spool": ["tool"],
             "begin_new_spool": ["tool"],
@@ -434,6 +447,8 @@ class RmeCompatibilityPlugin(
             self._send_command("@RME FILAMENT QUERY")
         elif command == "stage_firmware":
             self._start_firmware_upload(data["filename"])
+        elif command == "stage_and_flash_firmware":
+            self._start_firmware_upload(data["filename"], flash_after_stage=True)
         elif command == "cancel_firmware":
             if self._uploader:
                 self._uploader.cancel()
@@ -442,7 +457,13 @@ class RmeCompatibilityPlugin(
         elif command == "delete_firmware":
             self._delete_firmware(data["filename"])
         elif command == "sync_spoolmanager":
-            self._sync_spoolmanager(True)
+            self._sync_filaments_to_printer()
+        elif command == "sync_filaments_from_printer":
+            self._sync_filaments_from_printer()
+        elif command in ("sync_filaments_to_printer", "confirm_provider_sync"):
+            self._sync_filaments_to_printer()
+        elif command == "cancel_provider_sync":
+            self._sync_filaments_from_printer()
         elif command == "select_spool":
             self._select_spool_from_octoprint(data["tool"], data["database_id"])
         elif command == "deselect_spool":
@@ -743,8 +764,9 @@ class RmeCompatibilityPlugin(
             if kind == "machine":
                 self._state["supported"] = True
                 self._state["machine"].update(record)
-                follow_up.append("sync_spoolmanager")
-                follow_up.append("M865 Q")
+                # Build the provider alias table before M865 Q so printer-side
+                # selections can be resolved without first overwriting them.
+                follow_up.append("initialize_spool_sync")
                 follow_up.append("@RME STATS QUERY")
                 if (
                     int(record.get("logical_tools", 0)) == 1
@@ -870,6 +892,10 @@ class RmeCompatibilityPlugin(
                 self._defer(self._open_session)
             elif item == "sync_spoolmanager":
                 self._defer(self._sync_spoolmanager, True)
+            elif item == "sync_spoolmanager_inventory":
+                self._defer(self._sync_spoolmanager, True, False)
+            elif item == "initialize_spool_sync":
+                self._defer(self._initialize_spool_sync)
             else:
                 self._defer(self._send_command, item)
         if apply_profile:
@@ -1086,7 +1112,7 @@ class RmeCompatibilityPlugin(
                     self._logger.debug("RME keepalive could not be queued", exc_info=True)
             interval = max(10, int(self._settings.get_int(["spoolmanager_sync_interval"]) or 30))
             if time.monotonic() - self._last_spool_sync >= interval:
-                self._defer(self._sync_spoolmanager, False)
+                self._defer(self._periodic_filament_sync)
             self._poll_stats_if_due(connected)
 
     def _poll_stats_if_due(self, connected, now=None):
@@ -1297,7 +1323,7 @@ class RmeCompatibilityPlugin(
         self._spoolmanager, provider_name = self._resolve_spool_provider()
         return self._spoolmanager, provider_name
 
-    def _sync_spoolmanager(self, force=False):
+    def _sync_spoolmanager(self, force=False, push_to_firmware=True):
         """Reconcile the active inventory provider with eight firmware presets.
 
         The firmware limits user material names to seven characters and exposes
@@ -1373,6 +1399,9 @@ class RmeCompatibilityPlugin(
             # still running, and the receive side must recognize every alias.
             with self._state_lock:
                 pending = self._state["spoolmanager"].get("pending_new")
+                pending_provider_sync = self._state["spoolmanager"].get(
+                    "pending_provider_sync"
+                )
                 self._state["spoolmanager"] = {
                     "available": True,
                     "provider": provider_name,
@@ -1381,11 +1410,13 @@ class RmeCompatibilityPlugin(
                     "published": published,
                     "selected": selected,
                     "pending_new": pending,
+                    "pending_provider_sync": pending_provider_sync,
                     "last_sync": int(time.time()),
                     "error": None,
                 }
                 self._refresh_active_tool_locked()
-            if can_send and (force or old_signature != new_signature):
+            should_push = can_send and push_to_firmware and not pending_provider_sync
+            if should_push and (force or old_signature != new_signature):
                 by_slot = {item["slot"]: item for item in published}
                 commands = []
                 for slot in range(7):
@@ -1407,7 +1438,7 @@ class RmeCompatibilityPlugin(
                     "@RME FILAMENT QUERY",
                 ])
                 self._send_commands(commands)
-            if can_send:
+            if should_push:
                 # Reassert selected tool assignments after reconnects and after
                 # inventory edits; publishing a preset alone does not mark it as
                 # physically loaded in Buddy's M865 metadata.
@@ -1429,8 +1460,10 @@ class RmeCompatibilityPlugin(
                 self._send_commands(assignments)
 
             with self._state_lock:
-                if can_send:
+                if should_push:
                     self._state["spoolmanager"]["status"] = "synchronized"
+                elif can_send and pending_provider_sync:
+                    self._state["spoolmanager"]["status"] = "provider change awaiting confirmation"
             self._persist_and_publish()
         except SpoolManagerUnavailable as exc:
             with self._state_lock:
@@ -1471,29 +1504,117 @@ class RmeCompatibilityPlugin(
         return providers["internal"], "internal"
 
     def _handle_spoolmanager_event(self, event, payload):
-        """Push SpoolManager-side changes to Buddy, including selected color."""
+        """Prompt before applying external SpoolManager selection changes."""
         _, provider_name = self._active_spool_provider()
         if provider_name != "spoolmanager":
             return
-        self._sync_spoolmanager(True)
         if event.endswith("_spool_selected"):
-            self._assign_published_spool(
-                self._tool_index(payload.get("toolId", payload.get("tool", 0))),
-                int(payload.get("databaseId", payload.get("database_id"))),
-            )
+            tool = self._tool_index(payload.get("toolId", payload.get("tool", 0)))
+            database_id = int(payload.get("databaseId", payload.get("database_id")))
+            if self._consume_expected_provider_event(tool, database_id):
+                self._sync_spoolmanager(True, False)
+                return
+            self._sync_spoolmanager(True, False)
+            self._queue_provider_sync_prompt(tool, database_id)
         elif event.endswith("_spool_deselected"):
             tool = self._tool_index(payload.get("toolId", payload.get("tool", 0)))
-            # FilamentType::none is represented by the built-in name "---".
-            with self._state_lock:
-                can_send = self._state["connected"] and self._state["supported"]
-            if can_send:
-                self._send_commands(['M865 S"---" L%d' % tool, "M865 Q"])
+            if self._consume_expected_provider_event(tool, None):
+                self._sync_spoolmanager(True, False)
+                return
+            self._sync_spoolmanager(True, False)
+            self._queue_provider_sync_prompt(tool, None)
+        else:
+            self._sync_spoolmanager(True)
 
     def _handle_spoolman_event(self):
-        """Reconcile Spoolman events only while it is the active backend."""
+        """Prompt for Spoolman selection/configuration changes when active."""
         _, provider_name = self._active_spool_provider()
         if provider_name == "spoolman":
-            self._sync_spoolmanager(True)
+            self._sync_spoolmanager(True, False)
+            with self._state_lock:
+                expected = self._expected_spoolman_event_until > time.monotonic()
+                self._expected_spoolman_event_until = 0
+            if expected:
+                return
+            self._queue_provider_sync_prompt(None, None)
+
+    def _mark_expected_provider_event(self, tool, database_id):
+        """Suppress the echo of a provider event initiated from firmware/UI."""
+        with self._state_lock:
+            now = time.monotonic()
+            self._expected_provider_events = {
+                key: expiry for key, expiry in self._expected_provider_events.items()
+                if expiry > now
+            }
+            self._expected_provider_events[(int(tool), database_id)] = now + 5
+            self._expected_spoolman_event_until = now + 5
+
+    def _consume_expected_provider_event(self, tool, database_id):
+        with self._state_lock:
+            key = (int(tool), database_id)
+            expiry = self._expected_provider_events.pop(key, 0)
+        return expiry > time.monotonic()
+
+    def _queue_provider_sync_prompt(self, tool, database_id):
+        """Persist a provider-to-printer confirmation across browser refreshes."""
+        with self._state_lock:
+            selected = copy.deepcopy(self._state["spoolmanager"].get("selected", []))
+            item = next(
+                (entry for entry in selected if tool is not None and int(entry.get("tool", -1)) == int(tool)),
+                None,
+            )
+            if tool is None:
+                message = "The filament provider configuration changed. Apply it to the printer?"
+            elif database_id is None:
+                message = "SpoolManager cleared tool T%d. Clear it on the printer?" % int(tool)
+            else:
+                name = (item or {}).get("display_name", "spool %s" % database_id)
+                message = "SpoolManager selected %s for T%d. Apply it to the printer?" % (
+                    name, int(tool)
+                )
+            self._state["spoolmanager"]["pending_provider_sync"] = {
+                "tool": tool,
+                "database_id": database_id,
+                "message": message,
+                "updated": int(time.time()),
+            }
+            self._state["spoolmanager"]["status"] = "provider change awaiting confirmation"
+        self._persist_and_publish()
+
+    def _sync_filaments_from_printer(self):
+        """Make firmware M865 assignments authoritative for one reconciliation."""
+        with self._state_lock:
+            self._state["spoolmanager"]["pending_provider_sync"] = None
+            can_send = self._state["connected"] and self._state["supported"]
+            self._state["spoolmanager"]["status"] = "reading selections from printer"
+        if not can_send:
+            raise RuntimeError("RME printer is not connected")
+        self._send_command("M865 Q")
+        self._persist_and_publish()
+
+    def _initialize_spool_sync(self):
+        """Load aliases first, then import printer assignments on connection."""
+        self._sync_spoolmanager(True, False)
+        with self._state_lock:
+            pending = self._state["spoolmanager"].get("pending_provider_sync")
+            can_send = self._state["connected"] and self._state["supported"]
+        if can_send and not pending:
+            self._send_command("M865 Q")
+
+    def _periodic_filament_sync(self):
+        """Refresh inventory and poll printer changes without overwriting it."""
+        self._sync_spoolmanager(False, False)
+        with self._state_lock:
+            pending = self._state["spoolmanager"].get("pending_provider_sync")
+            can_send = self._state["connected"] and self._state["supported"]
+        if can_send and not pending:
+            self._send_command("M865 Q")
+
+    def _sync_filaments_to_printer(self):
+        """Publish provider presets and assignments after explicit acceptance."""
+        with self._state_lock:
+            self._state["spoolmanager"]["pending_provider_sync"] = None
+        self._sync_spoolmanager(True, True)
 
     def _assign_published_spool(self, tool, database_id):
         """Apply a selected provider record as firmware loadout metadata."""
@@ -1515,6 +1636,7 @@ class RmeCompatibilityPlugin(
         tool = self._tool_index(tool)
         database_id = int(database_id)
         provider, _ = self._active_spool_provider()
+        self._mark_expected_provider_event(tool, database_id)
         provider.select(tool, database_id)
         self._sync_spoolmanager(True)
         self._assign_published_spool(tool, database_id)
@@ -1523,6 +1645,7 @@ class RmeCompatibilityPlugin(
         """Clear one tool in the active provider and on the printer."""
         tool = self._tool_index(tool)
         provider, _ = self._active_spool_provider()
+        self._mark_expected_provider_event(tool, None)
         provider.deselect(tool)
         with self._state_lock:
             can_send = self._state["connected"] and self._state["supported"]
@@ -1566,13 +1689,15 @@ class RmeCompatibilityPlugin(
         current = next((item for item in selected if int(item.get("tool", -1)) == tool), None)
         if match:
             if not current or current["database_id"] != match["database_id"]:
+                self._mark_expected_provider_event(tool, match["database_id"])
                 provider.select(tool, match["database_id"])
-                self._sync_spoolmanager(False)
+                self._sync_spoolmanager(False, False)
             return
         if material == "---":
             if current:
+                self._mark_expected_provider_event(tool, None)
                 provider.deselect(tool)
-                self._sync_spoolmanager(False)
+                self._sync_spoolmanager(False, False)
             return
 
         # This state is intentionally persisted independently of firmware
@@ -1591,6 +1716,7 @@ class RmeCompatibilityPlugin(
                 "bed_temperature": 60,
             }
         if current:
+            self._mark_expected_provider_event(tool, None)
             provider.deselect(tool)
         self._persist_and_publish()
 
@@ -1686,7 +1812,8 @@ class RmeCompatibilityPlugin(
                     continue
         return result
 
-    def _start_firmware_upload(self, filename):
+    def _start_firmware_upload(self, filename, flash_after_stage=False):
+        """Stage a BBF, optionally handing it to the bootloader when verified."""
         if self._printer.is_printing() or self._printer.is_paused():
             raise UploadError("Firmware transfer is only allowed while the printer is idle")
         if not self._state.get("supported"):
@@ -1695,17 +1822,53 @@ class RmeCompatibilityPlugin(
         if not os.path.isfile(path):
             raise UploadError("Firmware file was not found on the Pi")
         metadata = firmware_metadata(path)
-        self._uploader.start(path, metadata)
+        with self._firmware_action_lock:
+            if self._uploader.busy:
+                raise UploadError("A firmware transfer is already active")
+            with self._state_lock:
+                self._state["firmware"]["flash_after_stage"] = bool(flash_after_stage)
+            try:
+                self._uploader.start(path, metadata)
+            except Exception:
+                with self._state_lock:
+                    self._state["firmware"]["flash_after_stage"] = False
+                raise
 
     def _firmware_state_changed(self, **changes):
+        status = changes.get("status")
         with self._state_lock:
             self._state["firmware"].update(changes)
+            flash_after_stage = bool(
+                self._state["firmware"].get("flash_after_stage")
+            )
+            if status == "error":
+                self._state["firmware"]["flash_after_stage"] = False
         now = time.monotonic()
-        if changes.get("status") != "uploading" or now - self._last_fw_publish >= 0.25:
+        if status != "uploading" or now - self._last_fw_publish >= 0.25:
             self._last_fw_publish = now
             self._persist_and_publish()
-        if changes.get("status") in ("staged", "error"):
+        if status == "staged" and flash_after_stage:
+            self._defer(self._flash_after_verified_stage)
+        elif status in ("staged", "error"):
             self._defer(self._restore_session_after_upload)
+
+    def _flash_after_verified_stage(self):
+        """Wait for the transfer worker to exit, then perform one-click flash."""
+        deadline = time.monotonic() + 5
+        while self._uploader and self._uploader.busy and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if self._uploader and self._uploader.busy:
+            self._firmware_state_changed(
+                status="error",
+                error="Verified transfer did not finish cleanly; automatic flash was stopped",
+            )
+            return
+        with self._state_lock:
+            requested = bool(self._state["firmware"].get("flash_after_stage"))
+            staged = self._state["firmware"].get("status") == "staged"
+            self._state["firmware"]["flash_after_stage"] = False
+        if requested and staged:
+            self._flash_firmware()
 
     def _restore_session_after_upload(self):
         # The event lease normally expires during a long M998 transfer because
@@ -1725,7 +1888,9 @@ class RmeCompatibilityPlugin(
         with self._state_lock:
             if self._state["firmware"].get("status") != "staged":
                 raise UploadError("Stage and verify firmware on the printer before flashing")
-            self._state["firmware"].update(status="flashing", error=None)
+            self._state["firmware"].update(
+                status="flashing", error=None, flash_after_stage=False
+            )
         self._persist_and_publish()
         self._send_command("M997 /usb/FWUPD.BBF")
 

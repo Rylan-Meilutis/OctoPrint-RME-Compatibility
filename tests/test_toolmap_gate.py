@@ -107,6 +107,12 @@ class _Printer(object):
     def is_operational(self):
         return True
 
+    def is_printing(self):
+        return False
+
+    def is_paused(self):
+        return False
+
     def commands(self, commands, tags=None, force=False):
         self.command_batches.append(commands)
         if force:
@@ -209,9 +215,100 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn('M865 U0 L0 O"#193a8a"', commands)
         self.assertIn('M865 S"---" L1', commands)
 
+    def test_pending_provider_change_waits_for_confirmation(self):
+        record = {
+            "database_id": 12, "display_name": "Orange PLA", "vendor": "",
+            "material": "PLA", "color_name": "Orange", "color": "#ff7700",
+            "nozzle_temperature": 215, "bed_temperature": 60,
+            "remaining_weight": 700, "is_active": True, "is_template": False,
+        }
+
+        class Provider(object):
+            def available(self):
+                return True
+
+            def inventory(self):
+                return [dict(record)]
+
+            def selected(self):
+                return [dict(record)]
+
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._settings.values["spool_provider"] = "spoolmanager"
+        plugin._spoolmanager_bridge = Provider()
+        plugin._spoolman_bridge = None
+        plugin._internal_spool_bridge = None
+        plugin._printer = _Printer()
+        plugin._logger = logging.getLogger("rme-provider-confirm-test")
+        plugin._state.update(
+            connected=True, supported=True, machine={"logical_tools": 1}
+        )
+        plugin._state["spoolmanager"]["pending_provider_sync"] = {
+            "tool": 0, "database_id": 12, "message": "Apply?"
+        }
+
+        plugin._sync_spoolmanager(True, True)
+        self.assertEqual([], plugin._printer.command_batches)
+
+        plugin._sync_filaments_to_printer()
+        commands = [
+            command
+            for batch in plugin._printer.command_batches
+            for command in (batch if isinstance(batch, list) else [batch])
+        ]
+        self.assertIn('@RME FILAMENT SET slot=0 name=PLA-00C nozzle=215 preheat=175 bed=60 visible=1', commands)
+        self.assertIn('M865 U0 L0 O"#ff7700"', commands)
+
+    def test_connection_imports_printer_before_publishing_provider_assignments(self):
+        class EmptyProvider(object):
+            def available(self):
+                return True
+
+            def inventory(self):
+                return []
+
+            def selected(self):
+                return []
+
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._settings.values["spool_provider"] = "spoolmanager"
+        plugin._spoolmanager_bridge = EmptyProvider()
+        plugin._spoolman_bridge = None
+        plugin._internal_spool_bridge = None
+        plugin._printer = _Printer()
+        plugin._logger = logging.getLogger("rme-connection-import-test")
+        plugin._state.update(
+            connected=True, supported=True, machine={"logical_tools": 2}
+        )
+
+        plugin._initialize_spool_sync()
+
+        self.assertEqual(["M865 Q"], plugin._printer.command_batches)
+
+    def test_one_click_firmware_flash_waits_for_verified_staged_state(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+        plugin._logger = logging.getLogger("rme-one-click-flash-test")
+        plugin._uploader = types.SimpleNamespace(busy=False)
+        plugin._defer = lambda callback, *args: callback(*args)
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["firmware"]["flash_after_stage"] = True
+
+        plugin._firmware_state_changed(status="verifying", progress=100)
+        self.assertEqual([], plugin._printer.command_batches)
+
+        plugin._firmware_state_changed(
+            status="staged", progress=100, staged_path="/usb/FWUPD.BBF"
+        )
+        self.assertEqual(["M997 /usb/FWUPD.BBF"], plugin._printer.command_batches)
+        self.assertEqual("flashing", plugin._state["firmware"]["status"])
+        self.assertFalse(plugin._state["firmware"]["flash_after_stage"])
+
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0b8"
+        plugin._plugin_version = "0.1.0b9"
         templates = plugin.get_template_configs()
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])
@@ -222,11 +319,25 @@ class ToolmapGateTests(unittest.TestCase):
             settings_template = template_file.read()
         self.assertIn("Plugin status", settings_template)
         self.assertIn("Firmware update", settings_template)
+        self.assertIn("Current theme", settings_template)
+        self.assertIn("Saved lighting", settings_template)
+        self.assertIn("Printer lock", settings_template)
         with open(
             "octoprint_rme_compatibility/static/js/rme_compatibility.js"
         ) as javascript_file:
             javascript = javascript_file.read()
         self.assertIn("OctoPrint.postForm", javascript)
+        self.assertIn("formatDurationLong", javascript)
+        self.assertIn("formatDistance", javascript)
+        self.assertIn("applyPersistentLights", javascript)
+        self.assertIn("stageAndFlashFirmware", javascript)
+        with open(
+            "octoprint_rme_compatibility/templates/rme_compatibility_tab.jinja2"
+        ) as template_file:
+            tab_template = template_file.read()
+        self.assertIn("RME printer statistics", tab_template)
+        self.assertNotIn("Firmware update", tab_template)
+        self.assertNotIn("RME printer controls", tab_template)
         self.assertIn('"plugin/rme_compatibility/firmware"', javascript)
         self.assertNotIn(
             'OctoPrint.postForm(\n                PLUGIN_BASEURL', javascript

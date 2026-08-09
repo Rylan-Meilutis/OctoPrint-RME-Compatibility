@@ -29,12 +29,21 @@ $(function () {
         self.lightScreen = ko.observable(100);
         self.lightChamber = ko.observable(100);
         self.lightStatus = ko.observable(100);
+        self.lockPinConfig = ko.observable("");
+        self.lockTimeout = ko.observable(300);
+        self.lockSerial = ko.observable(true);
+        self.lockEnabled = ko.observable(false);
         self.themeKeys = [
             {key: "primary", label: "primary", value: ko.observable("#3366cc")},
             {key: "progress", label: "progress", value: ko.observable("#00aa55")},
             {key: "warning", label: "warning", value: ko.observable("#ffaa00")},
             {key: "error", label: "error", value: ko.observable("#dd2222")},
             {key: "image", label: "image", value: ko.observable("#101018")}
+        ];
+        self.persistentLightProfiles = [
+            makeLightProfile("screen", "Screen", 20, 20, 100, 60),
+            makeLightProfile("chamber", "Chamber", 20, 20, 100, 100),
+            makeLightProfile("status", "Status", 20, 20, 100, 100)
         ];
         self.filamentSlot = ko.observable(0);
         self.filamentName = ko.observable("PLAplus");
@@ -156,18 +165,15 @@ $(function () {
         self.selectedSpools = ko.pureComputed(function () { return self.spoolmanager().selected || []; });
         self.loadedFilaments = ko.pureComputed(function () { return self.state().loaded_filaments || []; });
         self.pendingNewSpool = ko.pureComputed(function () { return self.spoolmanager().pending_new || null; });
+        self.pendingProviderSync = ko.pureComputed(function () {
+            return self.spoolmanager().pending_provider_sync || null;
+        });
         self.stats = ko.pureComputed(function () { return self.state().stats || {}; });
         self.formatStat = function (key, value) {
             var number = Number(value);
             if (!Number.isFinite(number)) return String(value);
-            if (/_m$/.test(key)) return number.toLocaleString() + " m";
-            if (/_s$/.test(key)) {
-                var seconds = Math.max(0, Math.floor(number));
-                var hours = Math.floor(seconds / 3600);
-                var minutes = Math.floor((seconds % 3600) / 60);
-                var remainder = seconds % 60;
-                return (hours ? hours + "h " : "") + (minutes ? minutes + "m " : "") + remainder + "s";
-            }
+            if (/_m$/.test(key)) return formatDistance(number);
+            if (/_s$/.test(key)) return formatDurationLong(number);
             return number.toLocaleString();
         };
         self.statsRows = ko.pureComputed(function () {
@@ -177,6 +183,23 @@ $(function () {
                 label = label.charAt(0).toUpperCase() + label.slice(1);
                 return {key: key, label: label, value: self.formatStat(key, values[key])};
             });
+        });
+        self.currentThemeRows = ko.pureComputed(function () {
+            var theme = self.state().theme || {};
+            return self.themeKeys.filter(function (entry) {
+                return theme[entry.key] !== undefined;
+            }).map(function (entry) {
+                return {label: entry.label, color: toHexColor(theme[entry.key])};
+            });
+        });
+        self.currentLightsText = ko.pureComputed(function () {
+            var light = self.state().light || {};
+            var values = [];
+            if (light.screen_print !== undefined) values.push("screen " + light.screen_print + "%");
+            if (light.chamber_print !== undefined) values.push("chamber " + light.chamber_print + "%");
+            if (light.status_print !== undefined) values.push("status " + light.status_print + "%");
+            if (light.screen_persistent !== undefined) values.push("saved screen " + light.screen_persistent + "%");
+            return values.length ? values.join(" · ") : "Not reported yet";
         });
         self.mmuDetected = ko.pureComputed(function () {
             var machine = self.state().machine || {};
@@ -291,11 +314,14 @@ $(function () {
             if (!fw.status || fw.status === "idle") return "No firmware staged.";
             if (fw.status === "staged") return "Verified on printer USB. Ready for explicit flash.";
             if (fw.status === "flashing") return "Bootloader handoff requested; the printer should reboot.";
-            if (fw.status === "uploading") return "Sending " + formatBytes(fw.offset || 0) + " of " + formatBytes(fw.size || 0) + ".";
+            if (fw.status === "uploading") return "Sending " + formatBytes(fw.offset || 0) + " of " + formatBytes(fw.size || 0) +
+                (fw.flash_after_stage ? "; flashing automatically after verification." : ".");
+            if (fw.status === "verifying" && fw.flash_after_stage) return "Verifying on printer; flash will start automatically after success.";
             return fw.status.charAt(0).toUpperCase() + fw.status.slice(1) + ".";
         });
         self.canStage = ko.pureComputed(function () {
-            return !!self.selectedFirmware() && self.state().supported && !self.firmwareBusy();
+            return !!self.selectedFirmware() && self.state().supported &&
+                !self.firmwareBusy() && self.firmware().status !== "flashing";
         });
         self.canFlash = ko.pureComputed(function () { return self.firmware().status === "staged"; });
 
@@ -346,6 +372,14 @@ $(function () {
                 ko.utils.arrayForEach(self.themeKeys, function (entry) {
                     if (value.theme[entry.key] !== undefined) entry.value(toHexColor(value.theme[entry.key]));
                 });
+            }
+            if (value.lock && value.lock.enabled !== undefined) {
+                self.lockEnabled(!!Number(value.lock.enabled));
+            }
+            if (value.light) {
+                if (Number(value.light.screen_print) >= 0) self.lightScreen(Number(value.light.screen_print));
+                if (Number(value.light.chamber_print) >= 0) self.lightChamber(Number(value.light.chamber_print));
+                if (Number(value.light.status_print) >= 0) self.lightStatus(Number(value.light.status_print));
             }
             var pending = value.spoolmanager && value.spoolmanager.pending_new;
             var pendingKey = pending ? [pending.tool, pending.material, pending.color].join(":") : "";
@@ -422,6 +456,11 @@ $(function () {
             });
         };
         self.stageFirmware = function () { self.command("stage_firmware", {filename: self.selectedFirmware()}); };
+        self.stageAndFlashFirmware = function () {
+            if (window.confirm("Stage, verify, and flash this firmware in one operation? The printer will reboot only after the transfer is verified.")) {
+                self.command("stage_and_flash_firmware", {filename: self.selectedFirmware()});
+            }
+        };
         self.cancelFirmware = function () { self.command("cancel_firmware"); };
         self.flashFirmware = function () {
             if (window.confirm("Flash the verified firmware now? The printer will reboot and the bootloader will validate its signature and machine compatibility.")) {
@@ -429,12 +468,26 @@ $(function () {
             }
         };
         self.applyMachineProfile = function () { self.command("apply_machine_profile"); };
+        self.queryControls = function () { self.command("query_controls"); };
         self.uiControl = function (action, value) { self.command("ui_control", {action: action, value: value}); };
         self.lockNow = function () { self.command("lock_now"); };
         self.unlock = function () { self.command("lock_unlock", {pin: self.unlockPin()}); };
         self.applyLights = function () {
             self.command("set_temp_lights", {
                 screen: Number(self.lightScreen()), chamber: Number(self.lightChamber()), status: Number(self.lightStatus())
+            });
+        };
+        self.applyPersistentLights = function () {
+            var values = {};
+            ko.utils.arrayForEach(self.persistentLightProfiles, function (profile) {
+                values[profile.key] = packBrightness(profile);
+            });
+            self.command("set_persistent_lights", values);
+        };
+        self.applyLockSettings = function () {
+            self.command("set_lock", {
+                pin: self.lockPinConfig(), timeout: Number(self.lockTimeout()),
+                serial: self.lockSerial(), enabled: self.lockEnabled()
             });
         };
         self.applyTheme = function () {
@@ -449,7 +502,11 @@ $(function () {
                 bed: Number(self.filamentBed()), visible: self.filamentVisible()
             });
         };
-        self.syncSpoolmanager = function () { self.command("sync_spoolmanager"); };
+        self.syncSpoolmanager = function () { self.command("sync_filaments_to_printer"); };
+        self.syncFilamentsFromPrinter = function () { self.command("sync_filaments_from_printer"); };
+        self.syncFilamentsToPrinter = function () { self.command("sync_filaments_to_printer"); };
+        self.confirmProviderSync = function () { self.command("confirm_provider_sync"); };
+        self.cancelProviderSync = function () { self.command("cancel_provider_sync"); };
         self.changeSpoolSelection = function (row) {
             var databaseId = row.selected();
             if (databaseId === null || databaseId === undefined || databaseId === "") {
@@ -480,6 +537,9 @@ $(function () {
                 self.tick(Date.now());
                 renderCoreWorkflow();
             }, 1000);
+        };
+        self.onSettingsShown = function () {
+            if (self.state().supported) self.queryControls();
         };
         self.onDataUpdaterPluginMessage = function (plugin, data) {
             if (plugin === "rme_compatibility") self.acceptState(data);
@@ -560,6 +620,37 @@ $(function () {
         var minutes = Math.floor(seconds / 60);
         var remainder = seconds % 60;
         return minutes ? minutes + "m " + remainder + "s" : remainder + "s";
+    }
+    function formatDurationLong(value) {
+        var seconds = Math.max(0, Math.floor(Number(value) || 0));
+        var days = Math.floor(seconds / 86400);
+        var hours = Math.floor((seconds % 86400) / 3600);
+        var minutes = Math.floor((seconds % 3600) / 60);
+        var remainder = seconds % 60;
+        if (days) return days + "d " + hours + "h";
+        if (hours) return hours + "h " + minutes + "m";
+        if (minutes) return minutes + "m " + remainder + "s";
+        return remainder + "s";
+    }
+    function formatDistance(value) {
+        var meters = Math.max(0, Number(value) || 0);
+        if (meters >= 1000) return (meters / 1000).toLocaleString(undefined, {maximumFractionDigits: 2}) + " km";
+        if (meters >= 1) return meters.toLocaleString(undefined, {maximumFractionDigits: 1}) + " m";
+        return (meters * 100).toLocaleString(undefined, {maximumFractionDigits: 1}) + " cm";
+    }
+    function makeLightProfile(key, label, deepIdle, idle, active, printing) {
+        return {
+            key: key, label: label,
+            deepIdle: ko.observable(deepIdle), idle: ko.observable(idle),
+            active: ko.observable(active), printing: ko.observable(printing)
+        };
+    }
+    function packBrightness(profile) {
+        function byte(value) { return Math.max(0, Math.min(100, Number(value) || 0)); }
+        return (
+            byte(profile.deepIdle()) * 0x1000000 + byte(profile.idle()) * 0x10000 +
+            byte(profile.active()) * 0x100 + byte(profile.printing())
+        );
     }
     function formatBytes(bytes) {
         var value = Number(bytes || 0);

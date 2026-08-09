@@ -1,8 +1,6 @@
 <div class="rme-panel">
     <div class="rme-status-line">
         <span class="label" data-bind="css: connectionClass, text: connectionText"></span>
-        <button class="btn btn-mini" data-bind="click: discover, enable: loginState.isUser">Detect RME firmware</button>
-        <button class="btn btn-mini" data-bind="click: openSession, enable: state().supported">Reconnect protocol</button>
         <span class="rme-active-tool" data-bind="visible: activeToolVisible, attr: {title: activeToolText}">
             <span class="rme-color-dot" data-bind="style: {backgroundColor: activeToolColor}"></span>
             <strong data-bind="text: activeToolText"></strong>
@@ -43,16 +41,17 @@
         <button class="btn" data-bind="click: cancelNewSpool">Dismiss</button>
     </div>
 
+    <div class="rme-card rme-prompt" data-bind="visible: pendingProviderSync">
+        <h4>Filament provider changed</h4>
+        <p data-bind="text: pendingProviderSync() && pendingProviderSync().message"></p>
+        <button class="btn btn-primary" data-bind="click: confirmProviderSync">Apply provider selections to printer</button>
+        <button class="btn" data-bind="click: cancelProviderSync">Keep printer selections</button>
+        <p class="help-block">This prompt persists across refreshes. Keeping the printer selections reads them back into the active provider.</p>
+    </div>
+
     <div class="rme-card">
-        <h4>Filament inventory synchronization</h4>
-        <p><span class="label" data-bind="css: {'label-success': spoolmanager().available, 'label-warning': !spoolmanager().available}, text: spoolmanagerStatus"></span>
-            <button class="btn btn-mini" data-bind="click: syncSpoolmanager">Sync now</button>
-        </p>
-        <p>Up to seven available spools are published in the printer's normal filament-load picker. Choose <code>NEW</code> there to open the persistent setup form above.</p>
-        <div class="form-inline">
-            <label>Create/assign for tool <input class="input-mini" type="number" min="0" data-bind="value: newSpoolTool"></label>
-            <button class="btn btn-mini" data-bind="click: beginNewSpool">Add spool…</button>
-        </div>
+        <h4>Filament and tool state</h4>
+        <p><span class="label" data-bind="css: {'label-success': spoolmanager().available, 'label-warning': !spoolmanager().available}, text: spoolmanagerStatus"></span></p>
         <ul data-bind="foreach: publishedSpools">
             <li><span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span> <span data-bind="text: $parent.spoolLabel($data)"></span></li>
         </ul>
@@ -62,15 +61,7 @@
         <p data-bind="visible: loadedFilaments().length"><strong>Printer-reported loadout:</strong>
             <span data-bind="foreach: loadedFilaments"><span class="rme-assignment"><span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span> <span data-bind="text: 'T' + tool + ': ' + material + (color_name && color_name !== 'None' ? ' · ' + color_name : '')"></span></span></span>
         </p>
-        <table class="table table-condensed" data-bind="visible: spoolSelectionRows().length">
-            <thead><tr><th>Printer tool</th><th>Selected spool</th></tr></thead>
-            <tbody data-bind="foreach: spoolSelectionRows">
-                <tr><td data-bind="text: 'T' + tool"></td><td>
-                    <select data-bind="options: $parent.inventorySpools, optionsText: $parent.spoolLabel, optionsValue: 'database_id', optionsCaption: 'Unassigned', value: selected, event: {change: function() { $parent.changeSpoolSelection($data); }}"></select>
-                </td></tr>
-            </tbody>
-        </table>
-        <p><small>OrcaSlicer auto-detects <code>/plugin/rme_compatibility/selected-spools</code>; the equivalent <code>filament-report</code> alias is available to other authenticated clients.</small></p>
+        <p><small>Inventory management and synchronization controls are in RME Compatibility Settings.</small></p>
     </div>
 
     <div class="rme-card rme-prompt" data-bind="visible: hasToolmapPrompt, event: {focusin: touchToolmap, mousedown: touchToolmap, keydown: touchToolmap}">
@@ -94,27 +85,16 @@
         <p class="help-block">No print-file G-code is sent until this mapping is confirmed. Validation runs afterward against the remapped physical tools.</p>
     </div>
 
-    <div class="rme-card">
-        <h4>Firmware update</h4>
-        <p>Upload a signed BBF to this Pi, stage and verify it over the RME binary protocol, then explicitly trigger the Prusa bootloader.</p>
-        <input type="file" accept=".bbf" data-bind="event: {change: chooseUpload}">
-        <button class="btn" data-bind="click: uploadToPi, enable: pendingUpload">Upload to Pi</button>
-        <hr>
-        <select data-bind="options: firmwareFiles, optionsText: firmwareLabel, optionsValue: 'name', value: selectedFirmware, optionsCaption: 'Choose firmware on Pi'"></select>
-        <button class="btn btn-primary" data-bind="click: stageFirmware, enable: canStage">Stage on printer</button>
-        <button class="btn btn-danger" data-bind="click: flashFirmware, enable: canFlash">Flash and reboot…</button>
-        <button class="btn" data-bind="click: cancelFirmware, visible: firmwareBusy">Cancel transfer</button>
-        <div class="progress" data-bind="visible: firmwareActive">
-            <div class="bar" data-bind="style: {width: firmwareProgress}"></div>
-        </div>
-        <p data-bind="text: firmwareStatus"></p>
-        <div class="alert alert-error" data-bind="visible: firmwareError, text: firmwareError"></div>
-    </div>
-
     <div class="rme-card" data-bind="visible: hasMachine">
         <h4>Discovered machine</h4>
         <p data-bind="text: machineSummary"></p>
-        <button class="btn" data-bind="click: applyMachineProfile">Apply to current OctoPrint printer profile</button>
+        <p><strong>Current theme:</strong>
+            <span data-bind="visible: !currentThemeRows().length">Not reported yet</span>
+            <span data-bind="foreach: currentThemeRows">
+                <span class="rme-theme-current"><span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span> <span data-bind="text: label + ' ' + color"></span></span>
+            </span>
+        </p>
+        <p data-bind="text: currentLightsText"></p>
     </div>
 
     <div class="rme-card" data-bind="visible: statsRows().length">
@@ -125,44 +105,4 @@
         </dl>
     </div>
 
-    <div class="rme-card">
-        <h4>RME printer controls</h4>
-        <p>
-            <button class="btn btn-mini" data-bind="click: function() { uiControl('ENCODER', -1); }">Encoder −</button>
-            <button class="btn btn-mini" data-bind="click: function() { uiControl('CLICK', 0); }">Click</button>
-            <button class="btn btn-mini" data-bind="click: function() { uiControl('ENCODER', 1); }">Encoder +</button>
-            <button class="btn btn-mini" data-bind="click: function() { uiControl('BACK', 0); }">Back</button>
-            <button class="btn btn-mini" data-bind="click: function() { uiControl('HOME', 0); }">Home</button>
-        </p>
-        <div class="form-inline">
-            <strong>Printer lock:</strong>
-            <span data-bind="text: lockSummary"></span>
-            <input class="input-small" type="password" inputmode="numeric" maxlength="9" placeholder="PIN" data-bind="value: unlockPin">
-            <button class="btn btn-mini" data-bind="click: unlock">Unlock</button>
-            <button class="btn btn-mini" data-bind="click: lockNow">Lock now</button>
-        </div>
-        <hr>
-        <h5>Temporary print lighting</h5>
-        <label>Screen <input class="input-mini" type="number" min="0" max="100" data-bind="value: lightScreen">%</label>
-        <label>Chamber <input class="input-mini" type="number" min="0" max="100" data-bind="value: lightChamber">%</label>
-        <label>Status <input class="input-mini" type="number" min="0" max="100" data-bind="value: lightStatus">%</label>
-        <button class="btn btn-mini" data-bind="click: applyLights">Apply temporary values</button>
-        <hr>
-        <h5>Theme</h5>
-        <span data-bind="foreach: themeKeys">
-            <label class="rme-color-field"><span data-bind="text: label"></span> <input type="color" data-bind="value: value"></label>
-        </span>
-        <button class="btn btn-mini" data-bind="click: applyTheme">Save theme to printer</button>
-        <hr>
-        <h5>User filament preset</h5>
-        <div class="form-inline">
-            <label>Slot <input class="input-mini" type="number" min="0" max="7" data-bind="value: filamentSlot"></label>
-            <label>Name <input class="input-small" maxlength="7" data-bind="value: filamentName"></label>
-            <label>Nozzle <input class="input-mini" type="number" data-bind="value: filamentNozzle"></label>
-            <label>Preheat <input class="input-mini" type="number" data-bind="value: filamentPreheat"></label>
-            <label>Bed <input class="input-mini" type="number" data-bind="value: filamentBed"></label>
-            <label class="checkbox"><input type="checkbox" data-bind="checked: filamentVisible"> Visible</label>
-            <button class="btn btn-mini" data-bind="click: applyFilament">Sync preset</button>
-        </div>
-    </div>
 </div>

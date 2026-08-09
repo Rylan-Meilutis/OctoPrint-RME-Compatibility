@@ -17,12 +17,14 @@
         <div class="controls">
             <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.auto_open_session"> Open automatically after connection</label>
             <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.legacy_notifications"> Keep legacy action notifications alongside structured events</label>
+            <button type="button" class="btn btn-mini" data-bind="click: openSession, enable: state().supported">Reconnect protocol now</button>
         </div>
     </div>
     <div class="control-group">
         <label class="control-label">Machine profile</label>
         <div class="controls">
             <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.auto_machine_profile"> Update volume, tools and motion speeds from the printer</label>
+            <button type="button" class="btn btn-mini" data-bind="click: applyMachineProfile, enable: hasMachine">Apply reported profile now</button>
         </div>
     </div>
     <div class="control-group">
@@ -48,7 +50,50 @@
             </label>
             <label>Reconcile every <input class="input-mini" type="number" min="10" data-bind="value: settings.settings.plugins.rme_compatibility.spoolmanager_sync_interval"> seconds</label>
             <label>Default new-spool weight <input class="input-small" type="number" min="1" data-bind="value: settings.settings.plugins.rme_compatibility.spoolmanager_default_weight"> g</label>
+            <p>
+                <button type="button" class="btn" data-bind="click: syncFilamentsFromPrinter, enable: state().supported">Printer → provider</button>
+                <button type="button" class="btn" data-bind="click: syncFilamentsToPrinter, enable: state().supported">Provider → printer</button>
+            </p>
+            <div class="alert alert-warning" data-bind="visible: pendingProviderSync">
+                <strong>Filament provider changed.</strong>
+                <span data-bind="text: pendingProviderSync() && pendingProviderSync().message"></span>
+                <p>
+                    <button type="button" class="btn btn-primary" data-bind="click: confirmProviderSync">Apply to printer</button>
+                    <button type="button" class="btn" data-bind="click: cancelProviderSync">Keep printer selections</button>
+                </p>
+            </div>
+            <div class="form-inline">
+                <label>Create/assign for tool <input class="input-mini" type="number" min="0" data-bind="value: newSpoolTool"></label>
+                <button type="button" class="btn btn-mini" data-bind="click: beginNewSpool">Add spool…</button>
+            </div>
+            <ul data-bind="foreach: publishedSpools">
+                <li><span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span> <span data-bind="text: $parent.spoolLabel($data)"></span></li>
+            </ul>
+            <table class="table table-condensed" data-bind="visible: spoolSelectionRows().length">
+                <thead><tr><th>Printer tool</th><th>Selected spool</th></tr></thead>
+                <tbody data-bind="foreach: spoolSelectionRows"><tr>
+                    <td data-bind="text: 'T' + tool"></td>
+                    <td><select data-bind="options: $parent.inventorySpools, optionsText: $parent.spoolLabel, optionsValue: 'database_id', optionsCaption: 'Unassigned', value: selected, event: {change: function() { $parent.changeSpoolSelection($data); }}"></select></td>
+                </tr></tbody>
+            </table>
+            <div class="alert alert-info" data-bind="visible: pendingNewSpool">
+                <strong>Configure new printer filament</strong>
+                <p>Tool <span data-bind="text: pendingNewSpool() && pendingNewSpool().tool"></span>; this draft persists across refreshes.</p>
+                <div class="form-inline rme-spool-form">
+                    <label>Name <input class="input-medium" data-bind="value: newSpoolName"></label>
+                    <label>Vendor <input class="input-small" data-bind="value: newSpoolVendor"></label>
+                    <label>Material <input class="input-small" data-bind="value: newSpoolMaterial"></label>
+                    <label>Color <input type="color" data-bind="value: newSpoolColor"></label>
+                    <label>Color name <input class="input-small" data-bind="value: newSpoolColorName"></label>
+                    <label>Initial weight <input class="input-small" type="number" min="1" data-bind="value: newSpoolWeight"> g</label>
+                    <label>Nozzle <input class="input-mini" type="number" min="0" max="500" data-bind="value: newSpoolNozzle"> °C</label>
+                    <label>Bed <input class="input-mini" type="number" min="0" max="500" data-bind="value: newSpoolBed"> °C</label>
+                </div>
+                <button type="button" class="btn btn-primary" data-bind="click: createSpool">Create, select, and sync</button>
+                <button type="button" class="btn" data-bind="click: cancelNewSpool">Dismiss</button>
+            </div>
             <p class="help-block">Seven firmware user slots mirror available spools; the eighth is reserved for NEW. External providers are exclusive: the built-in inventory is disabled while SpoolManager or Spoolman is active. Automatic uses built-in only when neither is available.</p>
+            <p class="help-block">OrcaSlicer can poll <code>/plugin/rme_compatibility/selected-spools</code> or <code>/plugin/rme_compatibility/filament-report</code> with an OctoPrint API key.</p>
         </div>
     </div>
     <div class="control-group">
@@ -56,6 +101,89 @@
         <div class="controls">
             <label>Poll supported firmware every <input class="input-mini" type="number" min="10" data-bind="value: settings.settings.plugins.rme_compatibility.stats_poll_interval"> seconds</label>
             <p class="help-block">The plugin probes once per connection and only continues polling after the firmware returns an RME_STATS, RME_STATS_OPERATIONS, or RME_STATS_FAILURES record.</p>
+        </div>
+    </div>
+    <hr>
+    <h4>Printer settings</h4>
+    <p>These controls edit settings exposed by the connected RME firmware. Changes are queried back from the printer after saving.</p>
+    <p>
+        <button type="button" class="btn" data-bind="click: queryControls, enable: state().supported">Refresh from printer</button>
+        <button type="button" class="btn btn-mini" data-bind="click: function() { uiControl('ENCODER', -1); }">Encoder −</button>
+        <button type="button" class="btn btn-mini" data-bind="click: function() { uiControl('CLICK', 0); }">Click</button>
+        <button type="button" class="btn btn-mini" data-bind="click: function() { uiControl('ENCODER', 1); }">Encoder +</button>
+        <button type="button" class="btn btn-mini" data-bind="click: function() { uiControl('BACK', 0); }">Back</button>
+        <button type="button" class="btn btn-mini" data-bind="click: function() { uiControl('HOME', 0); }">Home</button>
+    </p>
+    <div class="control-group">
+        <label class="control-label">Current theme</label>
+        <div class="controls">
+            <span data-bind="visible: !currentThemeRows().length">Not reported yet</span>
+            <span data-bind="foreach: currentThemeRows">
+                <span class="rme-theme-current"><span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span> <span data-bind="text: label + ' ' + color"></span></span>
+            </span>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">Edit theme</label>
+        <div class="controls">
+            <span data-bind="foreach: themeKeys">
+                <label class="rme-color-field"><span data-bind="text: label"></span> <input type="color" data-bind="value: value"> <code data-bind="text: value"></code></label>
+            </span>
+            <button type="button" class="btn btn-primary" data-bind="click: applyTheme, enable: state().supported">Save theme to printer</button>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">Printer lock</label>
+        <div class="controls">
+            <p><strong data-bind="text: lockSummary"></strong></p>
+            <label>New/current PIN <input class="input-small" type="password" inputmode="numeric" minlength="4" maxlength="9" data-bind="value: lockPinConfig"></label>
+            <label>Auto-lock timeout <input class="input-small" type="number" min="0" max="65535" data-bind="value: lockTimeout"> seconds</label>
+            <label class="checkbox"><input type="checkbox" data-bind="checked: lockSerial"> Permit serial unlock</label>
+            <label class="checkbox"><input type="checkbox" data-bind="checked: lockEnabled"> Enable persistent lock</label>
+            <button type="button" class="btn btn-primary" data-bind="click: applyLockSettings, enable: state().supported">Save lock settings</button>
+            <button type="button" class="btn" data-bind="click: lockNow, enable: state().supported">Lock now</button>
+            <input class="input-small" type="password" inputmode="numeric" maxlength="9" placeholder="Unlock PIN" data-bind="value: unlockPin">
+            <button type="button" class="btn" data-bind="click: unlock, enable: state().supported">Unlock now</button>
+            <p class="help-block">The firmware never reports the PIN. Enter it when saving lock settings.</p>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">Print lighting</label>
+        <div class="controls">
+            <p data-bind="text: currentLightsText"></p>
+            <label>Screen <input class="input-mini" type="number" min="0" max="100" data-bind="value: lightScreen">%</label>
+            <label>Chamber <input class="input-mini" type="number" min="0" max="100" data-bind="value: lightChamber">%</label>
+            <label>Status <input class="input-mini" type="number" min="0" max="100" data-bind="value: lightStatus">%</label>
+            <button type="button" class="btn" data-bind="click: applyLights, enable: state().supported">Apply temporary print values</button>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">Saved lighting</label>
+        <div class="controls">
+            <table class="table table-condensed rme-light-table">
+                <thead><tr><th>Light</th><th>Deep idle</th><th>Idle</th><th>Active</th><th>Printing</th></tr></thead>
+                <tbody data-bind="foreach: persistentLightProfiles"><tr>
+                    <th data-bind="text: label"></th>
+                    <td><input class="input-mini" type="number" min="0" max="100" data-bind="value: deepIdle">%</td>
+                    <td><input class="input-mini" type="number" min="0" max="100" data-bind="value: idle">%</td>
+                    <td><input class="input-mini" type="number" min="0" max="100" data-bind="value: active">%</td>
+                    <td><input class="input-mini" type="number" min="0" max="100" data-bind="value: printing">%</td>
+                </tr></tbody>
+            </table>
+            <button type="button" class="btn btn-primary" data-bind="click: applyPersistentLights, enable: state().supported">Save lighting profiles</button>
+            <p class="help-block">The current firmware reports live print brightness but not the complete saved four-state matrix. Review all draft values before saving.</p>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">User filament preset</label>
+        <div class="controls">
+            <label>Slot <input class="input-mini" type="number" min="0" max="7" data-bind="value: filamentSlot"></label>
+            <label>Name <input class="input-small" maxlength="7" data-bind="value: filamentName"></label>
+            <label>Nozzle <input class="input-mini" type="number" min="0" max="500" data-bind="value: filamentNozzle"> °C</label>
+            <label>Preheat <input class="input-mini" type="number" min="0" max="500" data-bind="value: filamentPreheat"> °C</label>
+            <label>Bed <input class="input-mini" type="number" min="0" max="500" data-bind="value: filamentBed"> °C</label>
+            <label class="checkbox"><input type="checkbox" data-bind="checked: filamentVisible"> Visible</label>
+            <button type="button" class="btn btn-primary" data-bind="click: applyFilament, enable: state().supported">Save preset to printer</button>
         </div>
     </div>
     <hr>
@@ -73,6 +201,7 @@
         <div class="controls">
             <select data-bind="options: firmwareFiles, optionsText: firmwareLabel, optionsValue: 'name', value: selectedFirmware, optionsCaption: 'Choose firmware on Pi'"></select>
             <button type="button" class="btn btn-primary" data-bind="click: stageFirmware, enable: canStage">Stage on printer</button>
+            <button type="button" class="btn btn-danger" data-bind="click: stageAndFlashFirmware, enable: canStage">Stage and flash…</button>
             <button type="button" class="btn btn-danger" data-bind="click: flashFirmware, enable: canFlash">Flash and reboot…</button>
             <button type="button" class="btn" data-bind="click: cancelFirmware, visible: firmwareBusy">Cancel transfer</button>
             <div class="progress" data-bind="visible: firmwareActive">
