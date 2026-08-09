@@ -104,6 +104,45 @@
         </div>
     </div>
     <hr>
+    <h4>Printer USB storage</h4>
+    <p>Browse and manage the firmware-exported <code>/usb</code> volume. RME confines every operation to this user-visible storage root.</p>
+    <div class="control-group">
+        <label class="control-label">Current directory</label>
+        <div class="controls">
+            <code data-bind="text: storage().path || '/'"></code>
+            <span class="label" data-bind="css: {'label-success': storage().supported, 'label-warning': !storage().supported}, text: storageStatus"></span>
+            <button type="button" class="btn btn-mini" data-bind="click: refreshStorage, enable: state().supported">Refresh</button>
+            <button type="button" class="btn btn-mini" data-bind="click: storageParent, visible: storageParentVisible">Up</button>
+            <button type="button" class="btn btn-mini" data-bind="click: storageMkdir, enable: storage().supported">New folder…</button>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">Upload</label>
+        <div class="controls">
+            <input type="file" data-bind="event: {change: chooseStorageUpload}">
+            <button type="button" class="btn" data-bind="click: uploadStorage, enable: pendingStorageUpload">Upload to current directory</button>
+            <p class="help-block">Uploads use contiguous 48-byte chunks, SHA-256 verification, and an atomic <code>.rme-part</code> rename.</p>
+        </div>
+    </div>
+    <table class="table table-condensed rme-storage-table" data-bind="visible: storage().supported">
+        <thead><tr><th>Name</th><th>Type/size</th><th>Actions</th></tr></thead>
+        <tbody data-bind="foreach: storageEntries"><tr>
+            <td>
+                <a href="#" data-bind="visible: type === 'dir', text: name, click: $parent.storageOpen"></a>
+                <span data-bind="visible: type !== 'dir', text: name"></span>
+            </td>
+            <td data-bind="text: $parent.storageFileSize($data)"></td>
+            <td>
+                <button type="button" class="btn btn-mini" data-bind="visible: type === 'file', click: $parent.storageDownload">Download</button>
+                <button type="button" class="btn btn-mini" data-bind="visible: $parent.storageCanPrint($data), click: $parent.storagePrint">Print…</button>
+                <button type="button" class="btn btn-mini btn-danger" data-bind="visible: $parent.storageCanFlash($data), click: $parent.storageFlash">Flash…</button>
+                <button type="button" class="btn btn-mini" data-bind="click: $parent.storageRename">Rename…</button>
+                <button type="button" class="btn btn-mini btn-danger" data-bind="click: $parent.storageDelete">Delete…</button>
+            </td>
+        </tr></tbody>
+    </table>
+    <p class="help-block" data-bind="visible: storage().supported && !storageEntries().length">This directory is empty.</p>
+    <hr>
     <h4>Printer settings</h4>
     <p>These controls edit settings exposed by the connected RME firmware. Changes are queried back from the printer after saving.</p>
     <p>

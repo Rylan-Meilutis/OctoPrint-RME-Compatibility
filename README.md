@@ -72,6 +72,12 @@ and `doc/gcode/M998.md`.
   and `/plugin/rme_compatibility/filament-report` aliases so OrcaSlicer and other
   clients can poll active tool, mapping, material/color loadout, available
   inventory, selected spools, and firmware statistics with an OctoPrint API key.
+- Integrates the current RME firmware's sandboxed `/usb` filesystem in Settings:
+  browse directories, download files through authenticated OctoPrint, upload
+  with 48-byte acknowledged chunks and SHA-256 atomic finalization, create and
+  rename directories/files, delete entries, start USB prints, and flash BBFs.
+  Paths are percent-encoded and cannot escape the printer's user-visible USB
+  volume.
 - Accepts signed `.bbf` files up to 32 MiB on the Pi, streams them with the
   acknowledged M998 Base64 protocol, verifies size and SHA-256 on the printer,
   and exposes a separate confirmed `M997 /usb/FWUPD.BBF` bootloader handoff.

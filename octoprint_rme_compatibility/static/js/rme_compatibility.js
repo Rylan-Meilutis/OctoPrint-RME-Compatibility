@@ -12,6 +12,7 @@ $(function () {
             active_tool: {},
             loaded_filaments: [],
             stats: {},
+            storage: {},
             firmware: {},
             spoolmanager: {},
             firmware_files: []
@@ -19,6 +20,7 @@ $(function () {
         self.tick = ko.observable(Date.now());
         self.coreTiming = null;
         self.pendingUpload = ko.observable(null);
+        self.pendingStorageUpload = ko.observable(null);
         self.selectedFirmware = ko.observable();
         self.mappingRows = ko.observableArray([]);
         self.mappingEnabled = ko.observable(true);
@@ -169,6 +171,15 @@ $(function () {
             return self.spoolmanager().pending_provider_sync || null;
         });
         self.stats = ko.pureComputed(function () { return self.state().stats || {}; });
+        self.storage = ko.pureComputed(function () { return self.state().storage || {}; });
+        self.storageEntries = ko.pureComputed(function () { return self.storage().entries || []; });
+        self.storageStatus = ko.pureComputed(function () {
+            var storage = self.storage();
+            var text = storage.error || storage.status || "not checked";
+            if (storage.progress !== null && storage.progress !== undefined) text += " · " + storage.progress + "%";
+            return text;
+        });
+        self.storageParentVisible = ko.pureComputed(function () { return self.storage().path !== "/"; });
         self.formatStat = function (key, value) {
             var number = Number(value);
             if (!Number.isFinite(number)) return String(value);
@@ -527,6 +538,70 @@ $(function () {
             });
         };
         self.cancelNewSpool = function () { self.command("cancel_new_spool"); };
+        self.refreshStorage = function () {
+            self.command("storage_list", {path: self.storage().path || "/"});
+        };
+        self.storageParent = function () {
+            var parts = String(self.storage().path || "/").split("/").filter(Boolean);
+            parts.pop();
+            self.command("storage_list", {path: "/" + parts.join("/")});
+        };
+        self.storageOpen = function (entry) {
+            if (entry.type === "dir") self.command("storage_list", {path: entry.path});
+        };
+        self.storageDownload = function (entry) {
+            window.location.href = OctoPrint.getBlueprintUrl("rme_compatibility") +
+                "storage/download?path=" + encodeURIComponent(entry.path);
+        };
+        self.storageDelete = function (entry) {
+            if (window.confirm("Delete " + entry.path + " from printer USB? This cannot be undone.")) {
+                self.command("storage_delete", {path: entry.path});
+            }
+        };
+        self.storageRename = function (entry) {
+            var name = window.prompt("New name", entry.name);
+            if (!name || name === entry.name) return;
+            var parent = String(entry.path).split("/").slice(0, -1).join("/") || "/";
+            self.command("storage_rename", {
+                path: entry.path, destination: parent.replace(/\/$/, "") + "/" + name
+            });
+        };
+        self.storageMkdir = function () {
+            var name = window.prompt("New folder name");
+            if (!name) return;
+            self.command("storage_mkdir", {
+                path: String(self.storage().path || "/").replace(/\/$/, "") + "/" + name
+            });
+        };
+        self.storagePrint = function (entry) {
+            if (window.confirm("Start printing " + entry.name + " from printer USB?")) {
+                self.command("storage_print", {path: entry.path});
+            }
+        };
+        self.storageFlash = function (entry) {
+            if (window.confirm("Queue " + entry.name + " for bootloader flashing? The printer will reboot.")) {
+                self.command("storage_flash", {path: entry.path});
+            }
+        };
+        self.chooseStorageUpload = function (_, event) {
+            self.pendingStorageUpload(event.target.files[0] || null);
+        };
+        self.uploadStorage = function () {
+            var file = self.pendingStorageUpload();
+            if (!file) return;
+            OctoPrint.postForm("plugin/rme_compatibility/storage/upload", {
+                file: file, path: self.storage().path || "/"
+            }).done(function (response) {
+                self.pendingStorageUpload(null);
+                self.acceptState(response);
+                new PNotify({title: "Uploaded to printer USB", text: file.name, type: "success"});
+            }).fail(function (xhr) {
+                new PNotify({title: "Printer USB upload failed", text: responseError(xhr), type: "error", hide: false});
+            });
+        };
+        self.storageFileSize = function (entry) { return entry.type === "dir" ? "Folder" : formatBytes(entry.size); };
+        self.storageCanPrint = function (entry) { return entry.type === "file" && /\.(?:gcode|gco|bgcode)$/i.test(entry.name); };
+        self.storageCanFlash = function (entry) { return entry.type === "file" && /\.bbf$/i.test(entry.name); };
         self.showRmeTab = function () {
             $("a[href='#tab_plugin_rme_compatibility']").tab("show");
         };
@@ -539,7 +614,11 @@ $(function () {
             }, 1000);
         };
         self.onSettingsShown = function () {
-            if (self.state().supported) self.queryControls();
+            if (self.state().supported) {
+                self.queryControls();
+                if (self.storage().supported) self.refreshStorage();
+                else self.command("storage_caps");
+            }
         };
         self.onDataUpdaterPluginMessage = function (plugin, data) {
             if (plugin === "rme_compatibility") self.acceptState(data);

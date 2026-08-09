@@ -80,6 +80,24 @@ class ProtocolTests(unittest.TestCase):
             "color_name": "Orange", "color": "#ff8000",
         })
 
+    def test_parses_binary_safe_file_service_records_with_spaces(self):
+        entry = parse_line("RME_FILE_ENTRY name=My print.bgcode type=file size=1234")
+        self.assertEqual(entry, {
+            "record": "file_entry", "name": "My print.bgcode",
+            "type": "file", "size": 1234,
+        })
+        data = parse_line(
+            "RME_FILE_DATA path=My print.bgcode offset=0 length=3 eof=1 data=YWJj"
+        )
+        self.assertEqual(data["path"], "My print.bgcode")
+        self.assertTrue(data["eof"])
+        self.assertEqual(data["data"], "YWJj")
+        self.assertEqual(parse_line("RME_FILE_LIST_END")["record"], "file_list_end")
+        self.assertEqual(
+            parse_line("echo:RME_ERROR workflow=file code=invalid_path")["record"],
+            "file_error",
+        )
+
     def test_terminal_workflow_state_dismisses_remote_prompt(self):
         self.assertTrue(workflow_is_terminal({"state": "closed"}))
         self.assertTrue(workflow_is_terminal({"state": "completed"}))

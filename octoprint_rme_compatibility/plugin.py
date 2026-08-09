@@ -22,6 +22,7 @@ from octoprint.access.permissions import Permissions
 from octoprint.events import Events
 from werkzeug.utils import secure_filename
 
+from .file_service import FileServiceError, RmeFileService
 from .protocol import (
     MAX_FIRMWARE_SIZE,
     classify_workflow,
@@ -70,6 +71,7 @@ class RmeCompatibilityPlugin(
         self._state = self._empty_state()
         self._store = None
         self._uploader = None
+        self._file_service = None
         self._stop = threading.Event()
         self._keepalive_thread = None
         self._firmware_directory = None
@@ -89,6 +91,7 @@ class RmeCompatibilityPlugin(
         self._priority_controls_sent = set()
         self._firmware_completed_controls = set()
         self._firmware_action_lock = threading.Lock()
+        self._last_storage_publish = 0
 
     @staticmethod
     def _empty_state():
@@ -142,6 +145,11 @@ class RmeCompatibilityPlugin(
                 "staged_path": None,
                 "flash_after_stage": False,
             },
+            "storage": {
+                "supported": False, "caps": {}, "path": "/", "entries": [],
+                "status": "not checked", "progress": None, "error": None,
+                "updated": None,
+            },
             "errors": [],
         }
 
@@ -179,6 +187,7 @@ class RmeCompatibilityPlugin(
         self._uploader = FirmwareUploader(
             self._send_command, self._firmware_state_changed, self._logger
         )
+        self._file_service = RmeFileService(self._send_command, self._logger)
         self._spoolmanager_bridge = SpoolManagerBridge(self._plugin_manager, self._logger)
         self._spoolman_bridge = SpoolmanBridge(self._plugin_manager, self._logger)
         self._internal_spool_bridge = InternalSpoolBridge(
@@ -200,6 +209,8 @@ class RmeCompatibilityPlugin(
         self._stop.set()
         if self._uploader and self._uploader.busy:
             self._uploader.cancel()
+        if self._file_service:
+            self._file_service.reset("OctoPrint is shutting down")
         if self._keepalive_thread:
             self._keepalive_thread.join(timeout=2)
         if self._store:
@@ -325,6 +336,13 @@ class RmeCompatibilityPlugin(
             "create_spool": ["display_name", "material", "color", "total_weight"],
             "cancel_new_spool": [],
             "touch_toolmap": [],
+            "storage_caps": [],
+            "storage_list": ["path"],
+            "storage_mkdir": ["path"],
+            "storage_rename": ["path", "destination"],
+            "storage_delete": ["path"],
+            "storage_print": ["path"],
+            "storage_flash": ["path"],
         }
 
     def on_api_get(self, request):
@@ -478,6 +496,28 @@ class RmeCompatibilityPlugin(
             self._persist_and_publish()
         elif command == "touch_toolmap":
             self._pause_toolmap_timeout()
+        elif command == "storage_caps":
+            self._initialize_storage()
+        elif command == "storage_list":
+            self._refresh_storage(data["path"])
+        elif command == "storage_mkdir":
+            if not getattr(Permissions, "FILES_UPLOAD", Permissions.CONTROL).can():
+                flask.abort(403)
+            self._storage_mutation("MKDIR", data["path"])
+        elif command == "storage_rename":
+            if not getattr(Permissions, "FILES_DELETE", Permissions.CONTROL).can():
+                flask.abort(403)
+            self._storage_mutation("RENAME", data["path"], data["destination"])
+        elif command == "storage_delete":
+            if not getattr(Permissions, "FILES_DELETE", Permissions.CONTROL).can():
+                flask.abort(403)
+            self._storage_mutation("DELETE", data["path"])
+        elif command == "storage_print":
+            if not getattr(Permissions, "PRINT", Permissions.CONTROL).can():
+                flask.abort(403)
+            self._storage_mutation("PRINT", data["path"])
+        elif command == "storage_flash":
+            self._storage_mutation("FLASH", data["path"])
         return flask.jsonify(self._public_state())
 
     @octoprint.plugin.BlueprintPlugin.route("/selected-spools", methods=["GET"])
@@ -491,6 +531,74 @@ class RmeCompatibilityPlugin(
         if not Permissions.STATUS.can():
             flask.abort(403)
         return flask.jsonify(self._filament_report())
+
+    @octoprint.plugin.BlueprintPlugin.route("/storage/download", methods=["GET"])
+    @api_errors
+    def download_storage_file(self):
+        """Stream one printer USB file through authenticated OctoPrint."""
+        permission = getattr(Permissions, "FILES_DOWNLOAD", Permissions.STATUS)
+        if not permission.can():
+            flask.abort(403)
+        path = flask.request.args.get("path", "")
+        self._require_storage()
+        metadata = self._file_service.stat(path)
+        if metadata.get("type") != "file":
+            raise FileServiceError("Only files can be downloaded")
+        filename = secure_filename(os.path.basename(str(path).rstrip("/"))) or "download.bin"
+        response = flask.Response(
+            flask.stream_with_context(self._file_service.iter_file(path)),
+            mimetype="application/octet-stream",
+        )
+        response.headers["Content-Length"] = str(int(metadata.get("size", 0)))
+        response.headers["Content-Disposition"] = 'attachment; filename="%s"' % filename
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @octoprint.plugin.BlueprintPlugin.route("/storage/upload", methods=["POST"])
+    @api_errors
+    def upload_storage_file(self):
+        """Upload a browser file to USB using verified, atomic RME writes."""
+        if not Permissions.CONTROL.can() or not getattr(
+            Permissions, "FILES_UPLOAD", Permissions.CONTROL
+        ).can():
+            flask.abort(403)
+        self._require_storage()
+        uploaded = flask.request.files.get("file")
+        path_suffix = self._settings.global_get(["server", "uploads", "pathSuffix"]) or "path"
+        name_suffix = self._settings.global_get(["server", "uploads", "nameSuffix"]) or "name"
+        spooled_path = flask.request.values.get("file." + path_suffix)
+        original_name = uploaded.filename if uploaded is not None else flask.request.values.get("file." + name_suffix)
+        directory = flask.request.values.get("path", "/")
+        if not original_name or (uploaded is None and not spooled_path):
+            return flask.jsonify({"error": "A file is required"}), 400
+        filename = os.path.basename(str(original_name).replace("\\", "/"))
+        if filename in ("", ".", ".."):
+            return flask.jsonify({"error": "The upload filename is invalid"}), 400
+        remote_path = self._join_storage_path(directory, filename)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".rme-storage-", suffix=".tmp", dir=self.get_plugin_data_folder()
+        )
+        os.close(descriptor)
+        try:
+            if uploaded is not None:
+                uploaded.save(temporary)
+            else:
+                shutil.copyfile(spooled_path, temporary)
+            maximum = int(self._state["storage"].get("caps", {}).get("max_size", 1024 ** 3))
+            size = os.path.getsize(temporary)
+            if size > maximum:
+                return flask.jsonify({"error": "File exceeds the printer USB limit"}), 413
+            self._set_storage_status("uploading", progress=0, error=None)
+            try:
+                self._file_service.write_file(temporary, remote_path, self._storage_progress)
+                self._refresh_storage(directory)
+            except Exception as exc:
+                self._set_storage_status("error", progress=None, error=str(exc))
+                raise
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        return flask.jsonify(self._public_state())
 
     # A separate multipart route is needed for browser-to-Pi BBF upload.
     @octoprint.plugin.BlueprintPlugin.route("/firmware", methods=["POST"])
@@ -548,8 +656,11 @@ class RmeCompatibilityPlugin(
     def bodysize_hook(self, current_max_body_sizes, *args, **kwargs):
         # OctoPrint prefixes plugin hook routes with /plugin/<identifier>/.
         # Return only the blueprint-relative path or the prefix is duplicated
-        # and Tornado rejects larger BBFs against its default body limit.
-        return [("POST", r"/firmware", 33 * 1024 * 1024)]
+        # and Tornado rejects larger uploads against its default body limit.
+        return [
+            ("POST", r"/firmware", 33 * 1024 * 1024),
+            ("POST", r"/storage/upload", 1025 * 1024 * 1024),
+        ]
 
     # -- Events and serial receive path -------------------------------------
 
@@ -585,10 +696,15 @@ class RmeCompatibilityPlugin(
                     self._send_command("@RME SESSION CLOSE")
                 except Exception:
                     pass
+            if self._file_service:
+                self._file_service.reset("Printer disconnected")
             with self._state_lock:
                 self._state["connected"] = False
                 self._state["supported"] = False
                 self._state["session"]["active"] = False
+                self._state["storage"].update(
+                    supported=False, status="printer disconnected", progress=None
+                )
             self._publish()
         elif event == Events.PRINT_STARTED:
             with self._state_lock:
@@ -622,6 +738,8 @@ class RmeCompatibilityPlugin(
         record = parse_line(line)
         if self._uploader:
             self._uploader.handle_response(line, record)
+        if self._file_service:
+            self._file_service.handle_response(record)
         if record:
             self._handle_record(record)
             # M998 reports transaction failures with Marlin's Error prefix, but
@@ -756,7 +874,7 @@ class RmeCompatibilityPlugin(
     def _handle_record(self, record):
         """Fold one parsed firmware record into the authoritative UI state."""
         kind = record["record"]
-        if kind.startswith("upload_"):
+        if kind.startswith("upload_") or kind.startswith("file_"):
             return
         follow_up = []
         apply_profile = False
@@ -767,6 +885,7 @@ class RmeCompatibilityPlugin(
                 # Build the provider alias table before M865 Q so printer-side
                 # selections can be resolved without first overwriting them.
                 follow_up.append("initialize_spool_sync")
+                follow_up.append("initialize_storage")
                 follow_up.append("@RME STATS QUERY")
                 if (
                     int(record.get("logical_tools", 0)) == 1
@@ -814,7 +933,7 @@ class RmeCompatibilityPlugin(
                 if record.get("type") == "error" or record.get("state") == "waiting":
                     follow_up.append("@RME DIALOG QUERY")
                 if workflow_is_terminal(record):
-                    if self._state.get("prompt", {}).get("kind") == "firmware":
+                    if (self._state.get("prompt") or {}).get("kind") == "firmware":
                         self._state["prompt"] = None
                     # Loading dialogs can change M865 without originating on the
                     # serial host. Query after their terminal event so an LCD-side
@@ -830,7 +949,7 @@ class RmeCompatibilityPlugin(
                         "message": workflow.get("message", "Printer action required"),
                         "updated": int(time.time()),
                     }
-                elif self._state.get("prompt", {}).get("kind") == "firmware":
+                elif (self._state.get("prompt") or {}).get("kind") == "firmware":
                     self._state["prompt"] = None
             elif kind == "toolmap":
                 self._state["toolmap"] = {
@@ -896,6 +1015,8 @@ class RmeCompatibilityPlugin(
                 self._defer(self._sync_spoolmanager, True, False)
             elif item == "initialize_spool_sync":
                 self._defer(self._initialize_spool_sync)
+            elif item == "initialize_storage":
+                self._defer(self._initialize_storage)
             else:
                 self._defer(self._send_command, item)
         if apply_profile:
@@ -1104,16 +1225,22 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 active = self._state["session"].get("active")
                 connected = self._state["connected"]
-            # M998 has its own acknowledged transaction; do not interleave generic ok lines.
-            if active and connected and not (self._uploader and self._uploader.busy):
+            # Acknowledged M998 and FILE transactions must not be interleaved
+            # with periodic session, statistics, or filament requests.
+            transfer_busy = bool(
+                (self._uploader and self._uploader.busy)
+                or (self._file_service and self._file_service.busy)
+            )
+            if active and connected and not transfer_busy:
                 try:
                     self._send_command("@RME SESSION KEEPALIVE")
                 except Exception:
                     self._logger.debug("RME keepalive could not be queued", exc_info=True)
             interval = max(10, int(self._settings.get_int(["spoolmanager_sync_interval"]) or 30))
-            if time.monotonic() - self._last_spool_sync >= interval:
+            if not transfer_busy and time.monotonic() - self._last_spool_sync >= interval:
                 self._defer(self._periodic_filament_sync)
-            self._poll_stats_if_due(connected)
+            if not transfer_busy:
+                self._poll_stats_if_due(connected)
 
     def _poll_stats_if_due(self, connected, now=None):
         """Queue telemetry only after firmware positively answered the probe."""
@@ -1511,6 +1638,15 @@ class RmeCompatibilityPlugin(
         if event.endswith("_spool_selected"):
             tool = self._tool_index(payload.get("toolId", payload.get("tool", 0)))
             database_id = int(payload.get("databaseId", payload.get("database_id")))
+            with self._state_lock:
+                previous = next((
+                    item for item in self._state["spoolmanager"].get("selected", [])
+                    if int(item.get("tool", -1)) == tool
+                ), None)
+            # SpoolManager emits spool_selected while merely reading its saved
+            # selections. An identical event is not a user configuration edit.
+            if previous and int(previous.get("database_id", -1)) == database_id:
+                return
             if self._consume_expected_provider_event(tool, database_id):
                 self._sync_spoolmanager(True, False)
                 return
@@ -1518,6 +1654,13 @@ class RmeCompatibilityPlugin(
             self._queue_provider_sync_prompt(tool, database_id)
         elif event.endswith("_spool_deselected"):
             tool = self._tool_index(payload.get("toolId", payload.get("tool", 0)))
+            with self._state_lock:
+                previously_selected = any(
+                    int(item.get("tool", -1)) == tool
+                    for item in self._state["spoolmanager"].get("selected", [])
+                )
+            if not previously_selected:
+                return
             if self._consume_expected_provider_event(tool, None):
                 self._sync_spoolmanager(True, False)
                 return
@@ -1784,7 +1927,100 @@ class RmeCompatibilityPlugin(
         manager.save(profile, allow_overwrite=True)
         self._logger.info("Updated OctoPrint printer profile from RME machine discovery")
 
-    # -- Firmware files and transport --------------------------------------
+    # -- RME USB storage ---------------------------------------------------
+
+    def _require_storage(self):
+        with self._state_lock:
+            connected = self._state["connected"] and self._state["supported"]
+        if not connected or not self._file_service:
+            raise FileServiceError("An RME printer is not connected")
+        if self._uploader and self._uploader.busy:
+            raise FileServiceError("Firmware staging is already using the serial transfer channel")
+
+    @staticmethod
+    def _join_storage_path(directory, name):
+        base = str(directory or "/").rstrip("/")
+        return (base + "/" + str(name).lstrip("/")) if base else "/" + str(name).lstrip("/")
+
+    @staticmethod
+    def _parent_storage_path(path):
+        parts = [part for part in str(path or "/").split("/") if part]
+        return "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
+
+    def _set_storage_status(self, status, **changes):
+        with self._state_lock:
+            self._state["storage"].update(status=status, **changes)
+        self._persist_and_publish()
+
+    def _storage_progress(self, offset, size):
+        now = time.monotonic()
+        with self._state_lock:
+            self._state["storage"].update(
+                status="uploading", progress=round(offset * 100.0 / max(1, size), 2),
+                error=None,
+            )
+        if now - self._last_storage_publish >= 0.25:
+            self._last_storage_publish = now
+            self._publish()
+
+    def _initialize_storage(self):
+        """Probe the exact FILE capability record exposed by current RME."""
+        self._require_storage()
+        self._set_storage_status("detecting", progress=None, error=None)
+        try:
+            caps = self._file_service.capabilities()
+            caps = {key: value for key, value in caps.items() if key != "record"}
+            with self._state_lock:
+                self._state["storage"].update(supported=True, caps=caps)
+            self._refresh_storage("/")
+        except Exception as exc:
+            with self._state_lock:
+                self._state["storage"].update(
+                    supported=False, status="unsupported", progress=None, error=str(exc)
+                )
+            self._persist_and_publish()
+
+    def _refresh_storage(self, path=None):
+        """List one USB directory and publish browser-ready full paths."""
+        self._require_storage()
+        with self._state_lock:
+            path = str(path if path is not None else self._state["storage"].get("path", "/"))
+            self._state["storage"].update(status="listing", progress=None, error=None)
+        self._publish()
+        try:
+            entries = self._file_service.list_directory(path)
+            public = []
+            for entry in entries:
+                item = {key: value for key, value in entry.items() if key != "record"}
+                item["path"] = self._join_storage_path(path, item["name"])
+                public.append(item)
+            public.sort(key=lambda item: (item.get("type") != "dir", str(item.get("name", "")).lower()))
+            with self._state_lock:
+                self._state["storage"].update(
+                    supported=True, path=path or "/", entries=public, status="ready",
+                    progress=None, error=None, updated=int(time.time()),
+                )
+            self._persist_and_publish()
+        except Exception as exc:
+            self._set_storage_status("error", progress=None, error=str(exc))
+            raise
+
+    def _storage_mutation(self, action, path, destination=None):
+        """Apply a guarded USB action and refresh the affected directory."""
+        self._require_storage()
+        self._set_storage_status(action.lower(), progress=None, error=None)
+        try:
+            self._file_service.mutate(action, path, destination)
+            if action in ("PRINT", "FLASH"):
+                self._set_storage_status(action.lower() + " queued", progress=None, error=None)
+            else:
+                refresh = self._parent_storage_path(path)
+                self._refresh_storage(refresh)
+        except Exception as exc:
+            self._set_storage_status("error", progress=None, error=str(exc))
+            raise
+
+    # -- Firmware files stored on the Pi ----------------------------------
 
     def _firmware_path(self, filename):
         safe = secure_filename(str(filename))
@@ -1818,6 +2054,8 @@ class RmeCompatibilityPlugin(
             raise UploadError("Firmware transfer is only allowed while the printer is idle")
         if not self._state.get("supported"):
             raise UploadError("The connected printer did not complete the RME handshake")
+        if self._file_service and self._file_service.busy:
+            raise UploadError("A printer USB operation is already active")
         path = self._firmware_path(filename)
         if not os.path.isfile(path):
             raise UploadError("Firmware file was not found on the Pi")

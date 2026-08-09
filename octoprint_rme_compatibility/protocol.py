@@ -72,6 +72,59 @@ def parse_fields(text):
 def parse_line(raw_line):
     """Return a structured RME/FW upload record or ``None``."""
     line = raw_line.strip()
+    # File names may contain spaces, so the generic whitespace field parser is
+    # intentionally not used for records whose path/name field is unquoted.
+    file_entry = re.match(r"^RME_FILE_ENTRY name=(.*?) type=(dir|file) size=(\d+)$", line)
+    if file_entry:
+        return {
+            "record": "file_entry", "name": file_entry.group(1),
+            "type": file_entry.group(2), "size": int(file_entry.group(3)),
+        }
+    file_stat = re.match(
+        r"^RME_FILE_STAT path=(.*?) type=(dir|file) size=(\d+) mtime=(\d+)$", line
+    )
+    if file_stat:
+        return {
+            "record": "file_stat", "path": file_stat.group(1),
+            "type": file_stat.group(2), "size": int(file_stat.group(3)),
+            "mtime": int(file_stat.group(4)),
+        }
+    file_data = re.match(
+        r"^RME_FILE_DATA path=(.*?) offset=(\d+) length=(\d+) eof=([01]) data=(.*)$",
+        line,
+    )
+    if file_data:
+        return {
+            "record": "file_data", "path": file_data.group(1),
+            "offset": int(file_data.group(2)), "length": int(file_data.group(3)),
+            "eof": bool(int(file_data.group(4))), "data": file_data.group(5),
+        }
+    if line == "RME_FILE_LIST_END":
+        return {"record": "file_list_end"}
+    for prefix, record in (
+        ("RME_FILE_CAPS ", "file_caps"),
+        ("RME_FILE_WRITE_READY ", "file_write_ready"),
+        ("RME_FILE_WRITE_OFFSET ", "file_write_offset"),
+    ):
+        if line.startswith(prefix):
+            result = parse_fields(line[len(prefix) :])
+            result["record"] = record
+            return result
+    if line.startswith("RME_FILE_WRITE_COMPLETE path="):
+        return {"record": "file_write_complete", "path": line.split("=", 1)[1]}
+    for text, record in (
+        ("RME_FILE_ABORTED", "file_aborted"),
+        ("RME_FILE_DELETED", "file_deleted"),
+        ("RME_FILE_RENAMED", "file_renamed"),
+        ("RME_FILE_DIRECTORY_CREATED", "file_directory_created"),
+        ("RME_FILE_PRINT_QUEUED", "file_print_queued"),
+        ("RME_FILE_FLASH_QUEUED", "file_flash_queued"),
+    ):
+        if line == text:
+            return {"record": record}
+    file_error = re.match(r"^echo:RME_ERROR workflow=file code=([^ ]+)$", line)
+    if file_error:
+        return {"record": "file_error", "code": file_error.group(1), "message": line}
     if line.startswith("RME_EVENT "):
         result = parse_fields(line[len("RME_EVENT ") :])
         result["record"] = "event"

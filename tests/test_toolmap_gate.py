@@ -260,6 +260,22 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn('@RME FILAMENT SET slot=0 name=PLA-00C nozzle=215 preheat=175 bed=60 visible=1', commands)
         self.assertIn('M865 U0 L0 O"#ff7700"', commands)
 
+    def test_identical_spoolmanager_read_event_is_a_noop(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._active_spool_provider = lambda: (None, "spoolmanager")
+        plugin._state["spoolmanager"]["selected"] = [
+            {"tool": 4, "database_id": 17, "display_name": "White PLA"}
+        ]
+        calls = []
+        plugin._sync_spoolmanager = lambda *args: calls.append(("sync", args))
+        plugin._queue_provider_sync_prompt = lambda *args: calls.append(("prompt", args))
+
+        plugin._handle_spoolmanager_event(
+            "plugin_spoolmanager_spool_selected", {"toolId": 4, "databaseId": 17}
+        )
+
+        self.assertEqual([], calls)
+
     def test_connection_imports_printer_before_publishing_provider_assignments(self):
         class EmptyProvider(object):
             def available(self):
@@ -287,6 +303,22 @@ class ToolmapGateTests(unittest.TestCase):
 
         self.assertEqual(["M865 Q"], plugin._printer.command_batches)
 
+    def test_terminal_firmware_records_tolerate_absent_prompt(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._printer = _Printer()
+        plugin._logger = logging.getLogger("rme-none-prompt-test")
+        plugin._defer = lambda callback, *args: callback(*args)
+        plugin._state["prompt"] = None
+
+        plugin._handle_record({
+            "record": "event", "seq": 1, "workflow": "firmware_update",
+            "state": "completed", "type": "progress", "message": "Done",
+        })
+        plugin._handle_record({"record": "prompt", "actions": []})
+
+        self.assertIsNone(plugin._state["prompt"])
+
     def test_one_click_firmware_flash_waits_for_verified_staged_state(self):
         plugin = RmeCompatibilityPlugin()
         plugin._printer = _Printer()
@@ -308,7 +340,7 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0b9"
+        plugin._plugin_version = "0.1.0b10"
         templates = plugin.get_template_configs()
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])
@@ -322,6 +354,8 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("Current theme", settings_template)
         self.assertIn("Saved lighting", settings_template)
         self.assertIn("Printer lock", settings_template)
+        self.assertIn("Printer USB storage", settings_template)
+        self.assertIn("Download", settings_template)
         with open(
             "octoprint_rme_compatibility/static/js/rme_compatibility.js"
         ) as javascript_file:
@@ -331,6 +365,8 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("formatDistance", javascript)
         self.assertIn("applyPersistentLights", javascript)
         self.assertIn("stageAndFlashFirmware", javascript)
+        self.assertIn("storage/download?path=", javascript)
+        self.assertIn('"plugin/rme_compatibility/storage/upload"', javascript)
         with open(
             "octoprint_rme_compatibility/templates/rme_compatibility_tab.jinja2"
         ) as template_file:
@@ -349,10 +385,10 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertFalse(config["force_base"])
         self.assertEqual("octoprint", config["restart"])
         self.assertIn("{target_version}", config["pip"])
-        self.assertEqual(
-            [("POST", r"/firmware", 33 * 1024 * 1024)],
-            plugin.bodysize_hook([]),
-        )
+        self.assertEqual([
+            ("POST", r"/firmware", 33 * 1024 * 1024),
+            ("POST", r"/storage/upload", 1025 * 1024 * 1024),
+        ], plugin.bodysize_hook([]))
 
     def test_firmware_route_accepts_octoprint_spooled_upload(self):
         """Large uploads are rewritten to file.path/file.name by OctoPrint."""

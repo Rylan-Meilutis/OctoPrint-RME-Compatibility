@@ -122,3 +122,6 @@
     0%, 100% { opacity: .35; }
     50% { opacity: 1; }
 }
+
+.rme-storage-table td:last-child { white-space: nowrap; }
+.rme-storage-table .btn { margin: 1px 2px 1px 0; }

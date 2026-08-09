@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0b10 — 2026-08-09
+
+- Added an RME `/usb` storage browser with directory navigation, authenticated
+  binary downloads, SHA-256-verified atomic uploads, mkdir, rename, delete,
+  print, and BBF flash controls.
+- Parsed the current firmware's `RME_FILE_*` records without corrupting file
+  names and paths containing spaces, and serialized all 48-byte transactions.
+- Fixed firmware workflow completion and empty-prompt records crashing the
+  receive hook when no remote prompt was active.
+- Ignored SpoolManager selection events that merely repeat the already-selected
+  spool, preventing read-side event emission from causing prompts or writes.
+
 ## 0.1.0b9 — 2026-08-09
 
 - Formatted firmware distance statistics as centimeters, meters, or kilometers
