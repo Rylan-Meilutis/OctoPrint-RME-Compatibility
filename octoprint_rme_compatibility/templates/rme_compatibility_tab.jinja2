@@ -3,6 +3,10 @@
         <span class="label" data-bind="css: connectionClass, text: connectionText"></span>
         <button class="btn btn-mini" data-bind="click: discover, enable: loginState.isUser">Detect RME firmware</button>
         <button class="btn btn-mini" data-bind="click: openSession, enable: state().supported">Reconnect protocol</button>
+        <span class="rme-active-tool" data-bind="visible: activeToolVisible, attr: {title: activeToolText}">
+            <span class="rme-color-dot" data-bind="style: {backgroundColor: activeToolColor}"></span>
+            <strong data-bind="text: activeToolText"></strong>
+        </span>
     </div>
 
     <div class="rme-card" data-bind="visible: workflowVisible">
@@ -40,17 +44,33 @@
     </div>
 
     <div class="rme-card">
-        <h4>SpoolManager synchronization</h4>
+        <h4>Filament inventory synchronization</h4>
         <p><span class="label" data-bind="css: {'label-success': spoolmanager().available, 'label-warning': !spoolmanager().available}, text: spoolmanagerStatus"></span>
             <button class="btn btn-mini" data-bind="click: syncSpoolmanager">Sync now</button>
         </p>
         <p>Up to seven available spools are published in the printer's normal filament-load picker. Choose <code>NEW</code> there to open the persistent setup form above.</p>
+        <div class="form-inline">
+            <label>Create/assign for tool <input class="input-mini" type="number" min="0" data-bind="value: newSpoolTool"></label>
+            <button class="btn btn-mini" data-bind="click: beginNewSpool">Add spool…</button>
+        </div>
         <ul data-bind="foreach: publishedSpools">
             <li><span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span> <span data-bind="text: $parent.spoolLabel($data)"></span></li>
         </ul>
         <p data-bind="visible: selectedSpools().length"><strong>Loaded assignments:</strong>
             <span data-bind="foreach: selectedSpools"><span class="rme-assignment" data-bind="text: 'T' + tool + ': ' + display_name"></span></span>
         </p>
+        <p data-bind="visible: loadedFilaments().length"><strong>Printer-reported loadout:</strong>
+            <span data-bind="foreach: loadedFilaments"><span class="rme-assignment"><span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span> <span data-bind="text: 'T' + tool + ': ' + material + (color_name && color_name !== 'None' ? ' · ' + color_name : '')"></span></span></span>
+        </p>
+        <table class="table table-condensed" data-bind="visible: spoolSelectionRows().length">
+            <thead><tr><th>Printer tool</th><th>Selected spool</th></tr></thead>
+            <tbody data-bind="foreach: spoolSelectionRows">
+                <tr><td data-bind="text: 'T' + tool"></td><td>
+                    <select data-bind="options: $parent.inventorySpools, optionsText: $parent.spoolLabel, optionsValue: 'database_id', optionsCaption: 'Unassigned', value: selected, event: {change: function() { $parent.changeSpoolSelection($data); }}"></select>
+                </td></tr>
+            </tbody>
+        </table>
+        <p><small>OrcaSlicer auto-detects <code>/plugin/rme_compatibility/selected-spools</code>; the equivalent <code>filament-report</code> alias is available to other authenticated clients.</small></p>
     </div>
 
     <div class="rme-card rme-prompt" data-bind="visible: hasToolmapPrompt, event: {focusin: touchToolmap, mousedown: touchToolmap, keydown: touchToolmap}">
@@ -95,6 +115,14 @@
         <h4>Discovered machine</h4>
         <p data-bind="text: machineSummary"></p>
         <button class="btn" data-bind="click: applyMachineProfile">Apply to current OctoPrint printer profile</button>
+    </div>
+
+    <div class="rme-card" data-bind="visible: statsRows().length">
+        <h4>RME printer statistics</h4>
+        <p>Lifetime and print counters reported directly by the firmware.</p>
+        <dl class="dl-horizontal" data-bind="foreach: statsRows">
+            <dt data-bind="text: label"></dt><dd data-bind="text: value"></dd>
+        </dl>
     </div>
 
     <div class="rme-card">

@@ -22,12 +22,27 @@
         </div>
     </div>
     <div class="control-group">
-        <label class="control-label">SpoolManager</label>
+        <label class="control-label">Filament inventory</label>
         <div class="controls">
-            <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.spoolmanager_enabled"> Synchronize firmware load choices and SpoolManager selections</label>
+            <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.spoolmanager_enabled"> Synchronize firmware load choices and inventory selections</label>
+            <label>Provider
+                <select data-bind="value: settings.settings.plugins.rme_compatibility.spool_provider">
+                    <option value="auto">Automatic (SpoolManager, Spoolman, then built-in)</option>
+                    <option value="spoolmanager">SpoolManager</option>
+                    <option value="spoolman">Spoolman</option>
+                    <option value="internal">Built-in persistent inventory</option>
+                </select>
+            </label>
             <label>Reconcile every <input class="input-mini" type="number" min="10" data-bind="value: settings.settings.plugins.rme_compatibility.spoolmanager_sync_interval"> seconds</label>
             <label>Default new-spool weight <input class="input-small" type="number" min="1" data-bind="value: settings.settings.plugins.rme_compatibility.spoolmanager_default_weight"> g</label>
-            <p class="help-block">Seven firmware user slots mirror available spools; the eighth is reserved for the printer-side NEW choice.</p>
+            <p class="help-block">Seven firmware user slots mirror available spools; the eighth is reserved for NEW. If a selected external provider is unavailable, the built-in inventory is used.</p>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">RME statistics</label>
+        <div class="controls">
+            <label>Poll supported firmware every <input class="input-mini" type="number" min="10" data-bind="value: settings.settings.plugins.rme_compatibility.stats_poll_interval"> seconds</label>
+            <p class="help-block">The plugin probes once per connection and only continues polling after the firmware returns an RME_STATS, RME_STATS_OPERATIONS, or RME_STATS_FAILURES record.</p>
         </div>
     </div>
 </form>

@@ -14,6 +14,24 @@ and `doc/gcode/M998.md`.
   pressure-advance, firmware-update, waste-bin, and generic workflow detail to
   OctoPrint's progress area. Phase elapsed time continues updating while a
   blocking G-code leaves normal file progress stationary.
+- Keeps OctoPrint's elapsed print time ticking and remaining estimate counting
+  down locally while a reported blocking workflow prevents normal progress
+  updates from arriving.
+- Routes pause (`M601`), resume (`M602`), and cancel (`M604`) through
+  OctoPrint's forced command path. RME firmware consumes these from its service
+  queue even while a heater, probe, MMU operation, or calibration is blocking.
+- Shows the active extruder in the RME tab and beside OctoPrint's main progress
+  area, including logical-to-physical remapping, loaded material, and the
+  firmware/SpoolManager filament color.
+- Presents the firmware's dedicated MMU, filament load/unload, tool-change,
+  runout, stuck-filament, pressure-advance, probing, heating, firmware-update,
+  waste-bin, chamber-vent, and filtration workflows. Detailed MMU states cover
+  its load, unload, selector, cutter, purge/ramming, homing, and hardware-test
+  phases. Unknown future workflow IDs remain visible with a generated title.
+- Probes for the firmware's split statistics response and, when available,
+  periodically refreshes distance travelled, filament extruded, MMU changes,
+  tool picks, print/filtering time, individual failure counters, and any
+  additional future counters.
 - Persists active printer prompts and workflow details on the Pi so recovery
   controls survive browser refreshes. Responses use stable named actions and
   are checked again against the printer after each response.
@@ -34,12 +52,18 @@ and `doc/gcode/M998.md`.
 - Exposes guarded remote encoder/click/back/home controls, printer lock status
   and PIN unlock, temporary and persistent light services, persistent theme
   colors, and synchronization of the eight RME user filament presets.
-- Integrates bidirectionally with the maintained OctoPrint-SpoolManager plugin.
+- Integrates bidirectionally with either OctoPrint-SpoolManager or
+  OctoPrint-Spoolman. If neither is installed, a persistent built-in inventory
+  tracks available and per-tool selected spools directly in this plugin.
   Seven active spools are published as stable short aliases in the printer's
   existing filament-load picker and the eighth entry is `NEW`. Printer-side
-  choices update SpoolManager; selection, deselection, add/delete, and weight
-  events update the firmware. A periodic reconciliation also catches edits for
-  which SpoolManager does not emit an event.
+  choices update the active provider; selection and deselection update the
+  firmware. Periodic reconciliation also catches inventory, weight, and other
+  edits for which a provider does not emit an event.
+- Exposes authenticated read-only `/plugin/rme_compatibility/selected-spools`
+  and `/plugin/rme_compatibility/filament-report` aliases so OrcaSlicer and other
+  clients can poll active tool, mapping, material/color loadout, available
+  inventory, selected spools, and firmware statistics with an OctoPrint API key.
 - Accepts signed `.bbf` files up to 32 MiB on the Pi, streams them with the
   acknowledged M998 Base64 protocol, verifies size and SHA-256 on the printer,
   and exposes a separate confirmed `M997 /usb/FWUPD.BBF` bootloader handoff.
@@ -63,20 +87,57 @@ mapping is supplied to Nozzle Filament Validator before OctoPrint releases the
 job hold. The validator therefore compares each slicer's logical tool against
 the chosen physical tool's nozzle, SpoolManager material, and spool identity.
 
-## SpoolManager integration
+## Filament inventory integration
 
-Install and enable SpoolManager, then leave **Settings → RME Compatibility →
-SpoolManager** enabled. Full names, colors, remaining weights, and tool
+Choose Automatic, SpoolManager, Spoolman, or Built-in under **Settings → RME
+Compatibility → Filament inventory**. Full names, colors, remaining weights, and tool
 assignments appear in the OctoPrint RME tab; the printer receives seven-character
 aliases because that is the RME firmware's preset-name limit. Choosing `NEW` or
 an unlinked built-in material on the printer opens a persistent form in
-OctoPrint. Saving it creates the SpoolManager record, selects it for the tool,
+OctoPrint. Saving it creates a record in the active provider, selects it for the tool,
 and writes the selected material/color back to firmware with `M865`.
 
 SpoolManager currently exposes events and implementation methods rather than
 registered public helpers. All such access is feature-detected and isolated in
 `spoolmanager.py`; if the optional plugin is absent or incompatible, core RME
-operation continues and the tab reports the integration as unavailable.
+operation continues through the built-in provider.
+The Spoolman adapter reuses the companion plugin's configured server URL, TLS
+policy, and API credentials. The built-in provider requires no other service
+and persists its inventory and printer-reported selections on the Pi.
+
+## Firmware statistics contract
+
+After RME machine discovery, the plugin sends one `@RME STATS QUERY` capability
+probe. Current firmware replies with three independently parseable records:
+
+```text
+RME_STATS distance_x_m=1234.5 distance_y_m=456 distance_z_m=12 distance_total_m=1702.5 extruded_m=82 print_time_s=900 current_print_time_s=120 jobs_started=7
+RME_STATS_OPERATIONS tool_picks=12 mmu_changes=8 filtering_time_s=300 wastebin_pellets=19
+RME_STATS_FAILURES crash_x=1 crash_y=0 power_panics=2 mmu_load_since_reset=0 mmu_load_total=3 mmu_general_since_reset=0 mmu_general_total=1
+```
+
+Optional hardware fields are omitted by firmware when unavailable. Keys are
+deliberately forward-compatible: the plugin merges the unordered snapshots,
+retains unknown counters, preserves `_m`, `_s`, `_total`, and `_since_reset`
+semantics, and renders meter/second values with useful units. Once any response
+has been seen, it polls at the configured interval. Firmware that returns an
+`RME_ERROR` mentioning `STATS`, or does not respond, is probed only once per
+connection and otherwise sees no statistics traffic.
+
+## Priority print controls
+
+On an RME printer, any OctoPrint pause, resume, or cancel transition—and any
+explicit `M601`, `M602`, or `M604` submitted by an API client or another
+plugin—is submitted with OctoPrint's `force=True` path and then written with
+its guarded out-of-band communication primitives, without waiting for the
+previous command's `ok`. The original explicit command is removed from the
+normal queue to prevent a delayed duplicate. The firmware must advertise and
+preserve its priority/service command receiver so these commands are consumed
+from serial RX while foreground G-code is blocked.
+Firmware `paused`/`resumed` completion actions only synchronize OctoPrint state
+and are not echoed back as duplicate service commands.
+On a printer that did not pass RME discovery, the hooks do nothing and
+OctoPrint retains its standard behavior.
 
 ## Install
 
@@ -98,7 +159,7 @@ OctoPrint's Software Update settings expose two release channels:
 - **Beta** follows the `beta` branch and receives beta/development GitHub
   prereleases in addition to stable releases.
 
-Development tags use PEP 440-compatible versions such as `v0.1.0-dev.1` and
+Development tags use OctoPrint-safe PEP 440 versions such as `v0.1.0.dev2` and
 are published from `beta`. Stable releases are tagged from `main`.
 
 ## Firmware update safety

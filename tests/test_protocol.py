@@ -3,6 +3,7 @@ import unittest
 
 from octoprint_rme_compatibility.protocol import (
     chunk_command,
+    classify_workflow,
     dialog_response_command,
     parse_line,
     toolmap_commands,
@@ -28,6 +29,33 @@ class ProtocolTests(unittest.TestCase):
         "state": "active",
         "progress": 50,
         "message": "Probing point 4",
+        })
+        self.assertEqual(parse_line(
+            "RME_STATS distance_x_m=12.5 distance_y_m=8 distance_z_m=0.4 "
+            "distance_total_m=20.9 extruded_m=456 print_time_s=900 "
+            "current_print_time_s=120 jobs_started=7"
+        ), {
+            "record": "stats", "distance_x_m": 12.5, "distance_y_m": 8,
+            "distance_z_m": 0.4, "distance_total_m": 20.9,
+            "extruded_m": 456, "print_time_s": 900,
+            "current_print_time_s": 120, "jobs_started": 7,
+        })
+        self.assertEqual(parse_line(
+            "RME_STATS_OPERATIONS tool_picks=12 mmu_changes=8 "
+            "filtering_time_s=300 wastebin_pellets=19"
+        ), {
+            "record": "stats", "tool_picks": 12, "mmu_changes": 8,
+            "filtering_time_s": 300, "wastebin_pellets": 19,
+        })
+        self.assertEqual(parse_line(
+            "RME_STATS_FAILURES crash_x=1 crash_y=2 power_panics=3 "
+            "mmu_load_since_reset=4 mmu_load_total=5 "
+            "mmu_general_since_reset=6 mmu_general_total=7"
+        ), {
+            "record": "stats", "crash_x": 1, "crash_y": 2,
+            "power_panics": 3, "mmu_load_since_reset": 4,
+            "mmu_load_total": 5, "mmu_general_since_reset": 6,
+            "mmu_general_total": 7,
         })
 
 
@@ -55,7 +83,29 @@ class ProtocolTests(unittest.TestCase):
     def test_terminal_workflow_state_dismisses_remote_prompt(self):
         self.assertTrue(workflow_is_terminal({"state": "closed"}))
         self.assertTrue(workflow_is_terminal({"state": "completed"}))
+        self.assertTrue(workflow_is_terminal({"state": "canceled"}))
+        self.assertTrue(workflow_is_terminal({"state": "skipped"}))
+        self.assertTrue(workflow_is_terminal({
+            "workflow": "chamber_vent", "state": "open", "progress": 100,
+        }))
+        self.assertFalse(workflow_is_terminal({
+            "workflow": "chamber_vent", "state": "open", "progress": 50,
+        }))
         self.assertFalse(workflow_is_terminal({"state": "waiting"}))
+
+    def test_refines_generic_firmware_workflows_without_overriding_named_ones(self):
+        self.assertEqual("chamber_vent", classify_workflow({
+            "workflow": "printer", "message": "Opening chamber vents",
+        }))
+        self.assertEqual("filtration", classify_workflow({
+            "workflow": "printer", "message": "Post-print filtration active",
+        }))
+        self.assertEqual("filament_load", classify_workflow({
+            "workflow": "printer", "message": "Loading filament",
+        }))
+        self.assertEqual("mmu", classify_workflow({
+            "workflow": "mmu", "message": "MMU loading filament",
+        }))
 
 
     def test_builds_binary_safe_chunk(self):

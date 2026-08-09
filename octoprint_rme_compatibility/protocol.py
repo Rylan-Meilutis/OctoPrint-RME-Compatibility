@@ -9,6 +9,8 @@ MAX_FIRMWARE_SIZE = 32 * 1024 * 1024
 DEFAULT_CHUNK_SIZE = 48
 WORKFLOWS = {
     "mmu",
+    "filament_load",
+    "filament_unload",
     "tool_change",
     "filament_runout",
     "stuck_filament",
@@ -17,9 +19,20 @@ WORKFLOWS = {
     "heating",
     "firmware_update",
     "waste_bin",
+    "chamber_vent",
+    "filtration",
     "printer",
 }
-TERMINAL_WORKFLOW_STATES = {"closed", "complete", "completed", "idle"}
+TERMINAL_WORKFLOW_STATES = {
+    "canceled",
+    "cancelled",
+    "closed",
+    "complete",
+    "completed",
+    "idle",
+    "skipped",
+    "stopped",
+}
 
 # M865 is an existing Buddy diagnostic command.  The quoted fields deliberately
 # use a narrow parser: accepting a partial match here could select the wrong
@@ -72,6 +85,9 @@ def parse_line(raw_line):
         ("RME_THEME ", "theme"),
         ("RME_LIGHT ", "light"),
         ("RME_FILAMENT ", "filament"),
+        ("RME_STATS ", "stats"),
+        ("RME_STATS_OPERATIONS ", "stats"),
+        ("RME_STATS_FAILURES ", "stats"),
     ):
         if line.startswith(prefix):
             result = parse_fields(line[len(prefix) :])
@@ -128,7 +144,53 @@ def workflow_is_terminal(record):
     an action completed on the printer LCD closes the matching OctoPrint prompt
     without requiring the browser that originally displayed it to remain open.
     """
-    return str(record.get("state", "")).lower() in TERMINAL_WORKFLOW_STATES
+    state = str(record.get("state", "")).lower()
+    if state in TERMINAL_WORKFLOW_STATES:
+        return True
+    # A chamber vent reports its final physical position rather than a generic
+    # ``closed`` workflow state.  A completed open operation must therefore
+    # dismiss just like a completed close operation.
+    try:
+        progress = float(record.get("progress", 0))
+    except (TypeError, ValueError):
+        progress = 0
+    return record.get("workflow") == "chamber_vent" and state == "open" and progress >= 100
+
+
+def classify_workflow(record):
+    """Refine generic firmware events into stable OctoPrint workflow groups.
+
+    Newer firmware can send these names directly. Older RME builds classify
+    less common status messages as ``printer``; matching only that generic
+    fallback preserves authoritative MMU/error routing while improving remote
+    presentation while keeping the firmware's documented routing keys intact.
+    """
+    workflow = str(record.get("workflow", "printer"))
+    if workflow != "printer":
+        return workflow
+    message = str(record.get("message", "")).lower()
+    # Mirror SerialPrinting::classify_workflow in the current Buddy RME tree.
+    # This fallback only handles old/generic records; dedicated workflow names
+    # from firmware pass through unchanged above.
+    rules = (
+        ("mmu", ("mmu",)),
+        ("filament_load", ("loading filament",)),
+        ("filament_unload", ("unloading filament",)),
+        ("chamber_vent", ("vent",)),
+        ("filtration", ("filter", "filtration")),
+        ("tool_change", ("tool change",)),
+        ("filament_runout", ("filament runout",)),
+        ("stuck_filament", ("stuck",)),
+        ("pressure_advance", ("pressure", "pa calibration")),
+        ("probing", ("probing", "probe")),
+        ("heating", ("heating", "heat soaking")),
+        ("firmware_update", ("firmware",)),
+        ("waste_bin", ("bucket", "waste")),
+    )
+    for candidate, phrases in rules:
+        if any(phrase in message for phrase in phrases):
+            return candidate
+    return workflow
 
 
 def chunk_command(offset, payload):

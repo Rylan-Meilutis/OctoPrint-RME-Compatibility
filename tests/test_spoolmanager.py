@@ -1,7 +1,10 @@
 import unittest
+import threading
 
 from octoprint_rme_compatibility.spoolmanager import (
+    InternalSpoolBridge,
     SpoolManagerBridge,
+    SpoolmanBridge,
     normalize_color,
     spool_alias,
 )
@@ -84,6 +87,51 @@ class SpoolManagerTests(unittest.TestCase):
         self.assertEqual([record["database_id"] for record in bridge.inventory()], [1])
         self.assertEqual(bridge.selected()[0]["color"], "#193a8a")
         self.assertEqual(bridge.select(0, 1)["display_name"], "Galaxy Blue")
+
+    def test_spoolman_bridge_normalizes_inventory_and_selected_tools(self):
+        raw = [{
+            "id": 7,
+            "remaining_weight": 640,
+            "archived": False,
+            "filament": {
+                "id": 3, "name": "Galaxy Blue", "material": "PETG",
+                "color_hex": "193A8A", "settings_extruder_temp": 245,
+                "settings_bed_temp": 85, "vendor": {"name": "Example"},
+            },
+        }]
+
+        class Settings(object):
+            def get(self, path):
+                return {"0": {"spoolId": "7"}}
+
+        class Connector(object):
+            def handleGetSpoolsAvailable(self):
+                return {"data": {"spools": raw}}
+
+        implementation = type("SpoolmanImplementation", (), {
+            "_settings": Settings(),
+            "getSpoolmanConnector": lambda self: Connector(),
+        })()
+        manager = type("Manager", (), {
+            "plugins": {"Spoolman": _PluginInfo(implementation)},
+        })()
+        bridge = SpoolmanBridge(manager)
+
+        self.assertEqual("PETG", bridge.inventory()[0]["material"])
+        self.assertEqual("#193a8a", bridge.selected()[0]["color"])
+
+    def test_internal_provider_persists_inventory_and_selection(self):
+        state = {"internal_spools": {"next_id": 1, "inventory": [], "selected": {}}}
+        bridge = InternalSpoolBridge(state, threading.RLock())
+        created = bridge.create({
+            "display_name": "Fallback PLA", "vendor": "", "material": "PLA",
+            "color_name": "Orange", "color": "#ff8000", "total_weight": 1000,
+            "nozzle_temperature": 215, "bed_temperature": 60,
+        })
+        bridge.select(2, created["database_id"])
+
+        self.assertEqual("Fallback PLA", bridge.inventory()[0]["display_name"])
+        self.assertEqual("#ff8000", bridge.selected()[2]["color"])
 
 
 if __name__ == "__main__":

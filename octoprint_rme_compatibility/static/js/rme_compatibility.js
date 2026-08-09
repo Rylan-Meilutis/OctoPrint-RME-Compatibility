@@ -9,16 +9,22 @@ $(function () {
             supported: false,
             session: {},
             machine: {},
+            active_tool: {},
+            loaded_filaments: [],
+            stats: {},
             firmware: {},
             spoolmanager: {},
             firmware_files: []
         });
         self.tick = ko.observable(Date.now());
+        self.coreTiming = null;
         self.pendingUpload = ko.observable(null);
         self.selectedFirmware = ko.observable();
         self.mappingRows = ko.observableArray([]);
         self.mappingEnabled = ko.observable(true);
         self.physicalTools = ko.observableArray([]);
+        self.spoolSelectionRows = ko.observableArray([]);
+        self.newSpoolTool = ko.observable(0);
         self.unlockPin = ko.observable("");
         self.lightScreen = ko.observable(100);
         self.lightChamber = ko.observable(100);
@@ -58,6 +64,25 @@ $(function () {
             var value = self.state();
             return value.supported ? "label-success" : (value.connected ? "label-warning" : "label-default");
         });
+        self.activeTool = ko.pureComputed(function () { return self.state().active_tool || {}; });
+        self.activeToolVisible = ko.pureComputed(function () {
+            return !!self.state().supported && self.activeTool().logical !== null && self.activeTool().logical !== undefined;
+        });
+        self.activeToolColor = ko.pureComputed(function () {
+            var color = self.activeTool().color;
+            return typeof color === "string" && /^#[0-9a-f]{6}$/i.test(color) ? color : "#808080";
+        });
+        self.activeToolText = ko.pureComputed(function () {
+            var tool = self.activeTool();
+            if (tool.logical === null || tool.logical === undefined) return "Active extruder not reported yet";
+            var logical = Number(tool.logical);
+            var physical = tool.physical === null || tool.physical === undefined ? logical : Number(tool.physical);
+            var label = "Extruder T" + logical;
+            if (physical !== logical) label += " → physical T" + physical;
+            if (tool.material && tool.material !== "---") label += " · " + tool.material;
+            if (tool.color_name && tool.color_name !== "None") label += " · " + tool.color_name;
+            return label;
+        });
 
         var workflowNames = {
             mmu: "MMU filament handling",
@@ -69,12 +94,19 @@ $(function () {
             heating: "Heating",
             firmware_update: "Firmware update",
             waste_bin: "Purge bucket / waste bin",
+            filament_load: "Loading filament",
+            filament_unload: "Unloading filament",
+            chamber_vent: "Chamber vent movement",
+            filtration: "Chamber filtration",
             printer: "Printer workflow"
         };
         self.workflow = ko.pureComputed(function () { return self.state().workflow || {}; });
         self.workflowVisible = ko.pureComputed(function () {
             var workflow = self.workflow();
-            return !!workflow.workflow && ["closed", "complete", "completed", "idle"].indexOf(workflow.state) < 0;
+            var state = String(workflow.state || "").toLowerCase();
+            var terminal = ["canceled", "cancelled", "closed", "complete", "completed", "idle", "skipped", "stopped"];
+            if (!workflow.workflow || terminal.indexOf(state) >= 0) return false;
+            return !(workflow.workflow === "chamber_vent" && state === "open" && Number(workflow.progress) >= 100);
         });
         self.workflowTitle = ko.pureComputed(function () {
             var key = self.workflow().workflow;
@@ -116,14 +148,39 @@ $(function () {
         self.spoolmanager = ko.pureComputed(function () { return self.state().spoolmanager || {}; });
         self.spoolmanagerStatus = ko.pureComputed(function () {
             var spool = self.spoolmanager();
-            return spool.error || spool.status || "not checked";
+            var provider = spool.provider ? spool.provider + ": " : "";
+            return provider + (spool.error || spool.status || "not checked");
         });
         self.publishedSpools = ko.pureComputed(function () { return self.spoolmanager().published || []; });
+        self.inventorySpools = ko.pureComputed(function () { return self.spoolmanager().inventory || []; });
         self.selectedSpools = ko.pureComputed(function () { return self.spoolmanager().selected || []; });
+        self.loadedFilaments = ko.pureComputed(function () { return self.state().loaded_filaments || []; });
         self.pendingNewSpool = ko.pureComputed(function () { return self.spoolmanager().pending_new || null; });
+        self.stats = ko.pureComputed(function () { return self.state().stats || {}; });
+        self.formatStat = function (key, value) {
+            var number = Number(value);
+            if (!Number.isFinite(number)) return String(value);
+            if (/_m$/.test(key)) return number.toLocaleString() + " m";
+            if (/_s$/.test(key)) {
+                var seconds = Math.max(0, Math.floor(number));
+                var hours = Math.floor(seconds / 3600);
+                var minutes = Math.floor((seconds % 3600) / 60);
+                var remainder = seconds % 60;
+                return (hours ? hours + "h " : "") + (minutes ? minutes + "m " : "") + remainder + "s";
+            }
+            return number.toLocaleString();
+        };
+        self.statsRows = ko.pureComputed(function () {
+            var values = self.stats().values || {};
+            return Object.keys(values).sort().map(function (key) {
+                var label = key.replace(/_(m|s)$/, "").replace(/_/g, " ");
+                label = label.charAt(0).toUpperCase() + label.slice(1);
+                return {key: key, label: label, value: self.formatStat(key, values[key])};
+            });
+        });
         self.spoolLabel = function (spool) {
             var remaining = spool.remaining_weight;
-            return spool.alias + " — " + spool.display_name + " · " + spool.material +
+            return (spool.alias ? spool.alias + " — " : "") + spool.display_name + " · " + spool.material +
                 (remaining === null || remaining === undefined ? "" : " · " + Number(remaining).toFixed(0) + " g left");
         };
 
@@ -212,6 +269,19 @@ $(function () {
             } else if (!pending) {
                 self.pendingSpoolKey = "";
             }
+            var machineTools = Number((value.machine || {}).logical_tools || 0);
+            var selectedByTool = {};
+            ko.utils.arrayForEach((value.spoolmanager || {}).selected || [], function (item) {
+                selectedByTool[Number(item.tool)] = Number(item.database_id);
+            });
+            var selectionRows = [];
+            for (var tool = 0; tool < machineTools; tool++) {
+                selectionRows.push({
+                    tool: tool,
+                    selected: ko.observable(selectedByTool[tool] === undefined ? null : selectedByTool[tool])
+                });
+            }
+            self.spoolSelectionRows(selectionRows);
             renderCoreWorkflow();
         };
         self.discover = function () { self.command("discover"); };
@@ -288,6 +358,17 @@ $(function () {
             });
         };
         self.syncSpoolmanager = function () { self.command("sync_spoolmanager"); };
+        self.changeSpoolSelection = function (row) {
+            var databaseId = row.selected();
+            if (databaseId === null || databaseId === undefined || databaseId === "") {
+                self.command("deselect_spool", {tool: row.tool});
+            } else {
+                self.command("select_spool", {tool: row.tool, database_id: Number(databaseId)});
+            }
+        };
+        self.beginNewSpool = function () {
+            self.command("begin_new_spool", {tool: Number(self.newSpoolTool())});
+        };
         self.createSpool = function () {
             self.command("create_spool", {
                 display_name: self.newSpoolName(), vendor: self.newSpoolVendor(),
@@ -315,10 +396,22 @@ $(function () {
             var active = self.workflowVisible();
             var target = $("#state .progress").first();
             var strip = $("#rme-workflow-strip");
+            var toolIndicator = $("#rme-active-tool-indicator");
+            updateCorePrintTiming(active);
             if (!target.length) return;
             if (!strip.length) {
                 strip = $('<div id="rme-workflow-strip"><div class="rme-strip-bar"></div><div class="rme-strip-label"></div></div>');
                 target.after(strip);
+            }
+            if (!toolIndicator.length) {
+                toolIndicator = $('<div id="rme-active-tool-indicator"><span class="rme-color-dot"></span><span class="rme-active-tool-label"></span></div>');
+                strip.after(toolIndicator);
+            }
+            toolIndicator.toggle(self.activeToolVisible());
+            if (self.activeToolVisible()) {
+                toolIndicator.find(".rme-color-dot").css("background-color", self.activeToolColor());
+                toolIndicator.find(".rme-active-tool-label").text(self.activeToolText());
+                toolIndicator.attr("title", self.activeToolText());
             }
             strip.toggle(active);
             if (!active) return;
@@ -332,6 +425,39 @@ $(function () {
             if (determinate) label += " · " + progress + "%";
             if (elapsed) label += " · " + elapsed;
             strip.find(".rme-strip-label").text(label).attr("title", label);
+        }
+
+        function updateCorePrintTiming(activeWorkflow) {
+            var printing = ko.unwrap(self.printerState.isPrinting) || ko.unwrap(self.printerState.isPausing);
+            var reportedTime = Number(ko.unwrap(self.printerState.printTime));
+            if (!activeWorkflow || !printing || !isFinite(reportedTime)) {
+                self.coreTiming = null;
+                return;
+            }
+            var now = Date.now();
+            if (!self.coreTiming) {
+                self.coreTiming = {
+                    at: now,
+                    printTime: reportedTime,
+                    printTimeLeft: Number(ko.unwrap(self.printerState.printTimeLeft))
+                };
+            }
+            var expected = self.coreTiming.printTime + (now - self.coreTiming.at) / 1000;
+            // A newer server value supersedes our local interpolation. A stale
+            // value caused by the blocked command never moves the display back.
+            if (reportedTime > expected + 0.5) {
+                self.coreTiming.at = now;
+                self.coreTiming.printTime = reportedTime;
+                self.coreTiming.printTimeLeft = Number(ko.unwrap(self.printerState.printTimeLeft));
+                expected = reportedTime;
+            }
+            self.printerState.printTime(expected);
+            if (isFinite(self.coreTiming.printTimeLeft)) {
+                self.printerState.printTimeLeft(Math.max(
+                    0,
+                    self.coreTiming.printTimeLeft - (now - self.coreTiming.at) / 1000
+                ));
+            }
         }
     }
 

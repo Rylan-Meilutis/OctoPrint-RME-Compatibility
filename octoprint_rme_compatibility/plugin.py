@@ -10,6 +10,7 @@ from __future__ import absolute_import
 import copy
 import functools
 import os
+import re
 import tempfile
 import threading
 import time
@@ -22,12 +23,19 @@ from werkzeug.utils import secure_filename
 
 from .protocol import (
     MAX_FIRMWARE_SIZE,
+    classify_workflow,
     dialog_response_command,
     parse_line,
     toolmap_commands,
     workflow_is_terminal,
 )
-from .spoolmanager import SpoolManagerBridge, SpoolManagerUnavailable, spool_alias
+from .spoolmanager import (
+    InternalSpoolBridge,
+    SpoolManagerBridge,
+    SpoolManagerUnavailable,
+    SpoolmanBridge,
+    spool_alias,
+)
 from .storage import StateStore
 from .uploader import FirmwareUploader, UploadError, firmware_metadata
 
@@ -73,6 +81,10 @@ class RmeCompatibilityPlugin(
         self._preflight_gate_started = False
         self._print_job_gcode_sent = False
         self._skip_cancel_script = False
+        self._stats_supported = None
+        self._last_stats_poll = 0
+        self._priority_controls_sent = set()
+        self._firmware_completed_controls = set()
 
     @staticmethod
     def _empty_state():
@@ -87,8 +99,23 @@ class RmeCompatibilityPlugin(
             "theme": {},
             "light": {},
             "filaments": [],
+            # M865 loadout metadata is keyed by the firmware's physical tool
+            # index. ``active_tool`` combines it with the current logical tool
+            # and RME remapping for a browser-ready status indicator.
+            "loaded_filaments": [],
+            "active_tool": {
+                "logical": None,
+                "physical": None,
+                "material": None,
+                "color_name": None,
+                "color": None,
+                "updated": None,
+            },
+            "internal_spools": {"next_id": 1, "inventory": [], "selected": {}},
+            "stats": {"supported": None, "updated": None, "values": {}},
             "spoolmanager": {
                 "available": False,
+                "provider": None,
                 "status": "not checked",
                 "inventory": [],
                 "published": [],
@@ -124,7 +151,11 @@ class RmeCompatibilityPlugin(
         )
         persisted = self._store.load()
         with self._state_lock:
-            for key in ("machine", "toolmap", "workflow", "prompt", "firmware", "spoolmanager"):
+            for key in (
+                "machine", "toolmap", "workflow", "prompt", "firmware",
+                "spoolmanager", "loaded_filaments", "active_tool", "internal_spools",
+                "stats",
+            ):
                 if key in persisted:
                     self._state[key] = persisted[key]
             if self._state["firmware"].get("status") in (
@@ -139,7 +170,12 @@ class RmeCompatibilityPlugin(
         self._uploader = FirmwareUploader(
             self._send_command, self._firmware_state_changed, self._logger
         )
-        self._spoolmanager = SpoolManagerBridge(self._plugin_manager, self._logger)
+        self._spoolmanager_bridge = SpoolManagerBridge(self._plugin_manager, self._logger)
+        self._spoolman_bridge = SpoolmanBridge(self._plugin_manager, self._logger)
+        self._internal_spool_bridge = InternalSpoolBridge(
+            self._state, self._state_lock, self._logger
+        )
+        self._spoolmanager, _ = self._resolve_spool_provider()
         self._stop.clear()
         self._keepalive_thread = threading.Thread(
             target=self._keepalive_loop, name="rme-keepalive", daemon=True
@@ -170,10 +206,12 @@ class RmeCompatibilityPlugin(
             "default_toolmap_enabled": True,
             "toolmap_timeout_seconds": 120,
             "spoolmanager_enabled": True,
+            "spool_provider": "auto",
             "spoolmanager_sync_interval": 30,
             "spoolmanager_default_weight": 1000,
             "spoolmanager_default_diameter": 1.75,
             "spoolmanager_default_density": 1.24,
+            "stats_poll_interval": 30,
         }
 
     def get_assets(self):
@@ -253,6 +291,8 @@ class RmeCompatibilityPlugin(
             "delete_firmware": ["filename"],
             "sync_spoolmanager": [],
             "select_spool": ["tool", "database_id"],
+            "deselect_spool": ["tool"],
+            "begin_new_spool": ["tool"],
             "create_spool": ["display_name", "material", "color", "total_weight"],
             "cancel_new_spool": [],
             "touch_toolmap": [],
@@ -389,6 +429,10 @@ class RmeCompatibilityPlugin(
             self._sync_spoolmanager(True)
         elif command == "select_spool":
             self._select_spool_from_octoprint(data["tool"], data["database_id"])
+        elif command == "deselect_spool":
+            self._deselect_spool_from_octoprint(data["tool"])
+        elif command == "begin_new_spool":
+            self._begin_new_spool(data["tool"])
         elif command == "create_spool":
             self._create_spool(data)
         elif command == "cancel_new_spool":
@@ -398,6 +442,18 @@ class RmeCompatibilityPlugin(
         elif command == "touch_toolmap":
             self._pause_toolmap_timeout()
         return flask.jsonify(self._public_state())
+
+    @octoprint.plugin.BlueprintPlugin.route("/selected-spools", methods=["GET"])
+    @octoprint.plugin.BlueprintPlugin.route("/filament-report", methods=["GET"])
+    def filament_report(self):
+        """Expose a stable, read-only loadout document for slicer polling.
+
+        OrcaSlicer or another authenticated OctoPrint client can poll this URL
+        with its normal API key. It intentionally contains no mutation surface.
+        """
+        if not Permissions.STATUS.can():
+            flask.abort(403)
+        return flask.jsonify(self._filament_report())
 
     # A separate multipart route is needed for browser-to-Pi BBF upload.
     @octoprint.plugin.BlueprintPlugin.route("/firmware", methods=["POST"])
@@ -438,11 +494,23 @@ class RmeCompatibilityPlugin(
         if normalized_event.startswith("plugin_spoolmanager_"):
             self._defer(self._handle_spoolmanager_event, normalized_event, payload or {})
             return
+        if normalized_event.startswith("plugin_spoolman_"):
+            self._defer(self._sync_spoolmanager, True)
+            return
         if event == Events.CONNECTED:
             with self._state_lock:
                 self._state["connected"] = True
                 self._state["supported"] = False
                 self._state["session"] = {"active": False, "legacy": True, "last_seq": 0}
+                self._stats_supported = None
+                self._last_stats_poll = 0
+                self._priority_controls_sent.clear()
+                self._firmware_completed_controls.clear()
+                self._state["stats"] = {"supported": None, "updated": None, "values": {}}
+                # Never display a previous printer's tool/loadout as current
+                # while capability discovery for this connection is pending.
+                self._state["loaded_filaments"] = []
+                self._state["active_tool"] = self._empty_state()["active_tool"]
             self._publish()
             self._send_command("@RME MACHINE QUERY")
             self._defer(self._sync_spoolmanager, True)
@@ -458,6 +526,9 @@ class RmeCompatibilityPlugin(
                 self._state["session"]["active"] = False
             self._publish()
         elif event == Events.PRINT_STARTED:
+            with self._state_lock:
+                self._priority_controls_sent.clear()
+                self._firmware_completed_controls.clear()
             self._handle_print_started(payload)
         elif event == Events.PRINT_CANCELLING:
             # Cancellation preparation is queued as part of the job, so the
@@ -466,8 +537,20 @@ class RmeCompatibilityPlugin(
                 if self._preflight_gate_started and not self._print_job_gcode_sent:
                     self._skip_cancel_script = True
             self._release_toolmap_hold()
+            self._request_priority_control("cancel")
+        elif event == Events.PRINT_PAUSED:
+            # Fallback for pause configurations that do not enqueue a tagged
+            # preparation command before transitioning into PAUSED.
+            if not self._consume_firmware_completed_control("pause"):
+                self._request_priority_control("pause")
+        elif event == Events.PRINT_RESUMED:
+            if not self._consume_firmware_completed_control("resume"):
+                self._request_priority_control("resume")
         elif event in (Events.PRINT_DONE, Events.PRINT_FAILED, Events.PRINT_CANCELLED):
             self._release_toolmap_hold()
+            with self._state_lock:
+                self._priority_controls_sent.clear()
+                self._firmware_completed_controls.clear()
 
     def gcode_received_hook(self, comm_instance, line, *args, **kwargs):
         """Observe RME records without blocking or bypassing OctoPrint's queue."""
@@ -483,6 +566,27 @@ class RmeCompatibilityPlugin(
             if record.get("record") == "upload_error" and line.strip().startswith("Error:"):
                 return "echo:" + line.strip()[len("Error:") :].lstrip()
         return line
+
+    def action_command_hook(self, comm_instance, line, action, *args, **kwargs):
+        """Remember firmware-completed pause states to avoid echoing them back.
+
+        Buddy reports both requests (``pause``/``resume``) and completed state
+        (``paused``/``resumed``). Only requests need a service command from the
+        host; completion events merely synchronize OctoPrint's state.
+        """
+        name = str(kwargs.get("name") or action or "").strip().lower()
+        completed = {"paused": "pause", "resumed": "resume"}.get(name)
+        if completed:
+            with self._state_lock:
+                if self._state.get("supported"):
+                    self._firmware_completed_controls.add(completed)
+
+    def _consume_firmware_completed_control(self, action):
+        with self._state_lock:
+            if action not in self._firmware_completed_controls:
+                return False
+            self._firmware_completed_controls.discard(action)
+            return True
 
     def gcode_script_hook(self, comm_instance, script_type, script_name, *args, **kwargs):
         """Acquire the mapping hold at OctoPrint's synchronous start boundary.
@@ -505,21 +609,57 @@ class RmeCompatibilityPlugin(
 
     def gcode_queuing_hook(self, comm_instance, phase, cmd, cmd_type, gcode,
                            subcode=None, tags=None, *args, **kwargs):
-        """Suppress only the user cancel macro for a zero-file-command cancel."""
+        """Handle the preflight cancel macro and RME out-of-band controls.
+
+        OctoPrint tags its pause/resume/cancel preparation commands. Detecting
+        those tags at the queue boundary lets the matching RME command jump
+        the host queue before a blocking heater, probe, or MMU command returns.
+        Explicit M601/M602/M604 commands are rerouted the same way.
+        """
         tags = tags or kwargs.get("tags") or set()
         with self._state_lock:
             skip = self._skip_cancel_script and "script:afterPrintCancelled" in tags
-        return (None,) if skip else None
+            supported = self._state.get("supported", False)
+        if skip:
+            return (None,)
+        if not supported:
+            return None
+        if "rme:priority_control" in tags:
+            return self._force_send_rme_control(comm_instance, cmd, gcode)
+
+        tagged_action = next((
+            action for action in ("cancel", "pause", "resume")
+            if "trigger:" + action in tags
+        ), None)
+        command_actions = {"M601": "pause", "M602": "resume", "M604": "cancel"}
+        command_action = command_actions.get(str(gcode or "").upper())
+        action = command_action or tagged_action
+        if action:
+            self._request_priority_control(action)
+        # An explicit service command is resent with force=True below; leaving
+        # its original copy queued would execute the action twice later.
+        return (None,) if command_action else None
 
     def gcode_sent_hook(self, comm_instance, phase, cmd, cmd_type, gcode,
                         subcode=None, tags=None, *args, **kwargs):
-        """Record when the first non-cancellation job command reaches serial."""
+        """Record job transmission and the latest tool selected by G-code.
+
+        Buddy's M865 query reports filament metadata but not the currently
+        selected tool. Tracking an actually transmitted ``Tn`` command is the
+        same source OctoPrint uses for streamed MMU/toolchanger jobs and avoids
+        claiming that a merely queued command is already active.
+        """
         tags = tags or kwargs.get("tags") or set()
         is_job_command = "source:job" in tags or "source:file" in tags
         is_cancel_command = "trigger:cancel" in tags or "trigger:comm.cancel" in tags
         if is_job_command and not is_cancel_command:
             with self._state_lock:
                 self._print_job_gcode_sent = True
+        tool_match = re.match(r"^\s*T(\d+)(?:\s|$)", str(cmd or ""), re.IGNORECASE)
+        with self._state_lock:
+            supported = self._state.get("supported", False)
+        if supported and tool_match:
+            self._set_active_tool(int(tool_match.group(1)))
 
     def _handle_record(self, record):
         """Fold one parsed firmware record into the authoritative UI state."""
@@ -533,6 +673,14 @@ class RmeCompatibilityPlugin(
                 self._state["supported"] = True
                 self._state["machine"].update(record)
                 follow_up.append("sync_spoolmanager")
+                follow_up.append("M865 Q")
+                follow_up.append("@RME STATS QUERY")
+                if (
+                    int(record.get("logical_tools", 0)) == 1
+                    and self._state["active_tool"].get("logical") is None
+                ):
+                    self._state["active_tool"]["logical"] = 0
+                    self._refresh_active_tool_locked()
                 if self._settings.get_boolean(["auto_open_session"]):
                     follow_up.append("open_session")
             elif kind in ("envelope", "limits"):
@@ -557,6 +705,7 @@ class RmeCompatibilityPlugin(
                     )
             elif kind == "event":
                 now = int(time.time())
+                record["workflow"] = classify_workflow(record)
                 previous_workflow = self._state.get("workflow") or {}
                 record["received_at"] = now
                 if previous_workflow.get("workflow") == record.get("workflow"):
@@ -595,9 +744,22 @@ class RmeCompatibilityPlugin(
                     "enabled": record["enabled"],
                     "mapping": record["mapping"],
                 }
+                self._refresh_active_tool_locked()
             elif kind in ("lock", "theme", "light"):
                 self._state[kind] = {
                     key: value for key, value in record.items() if key != "record"
+                }
+            elif kind == "stats":
+                self._stats_supported = True
+                self._last_stats_poll = time.monotonic()
+                values = dict(self._state.get("stats", {}).get("values") or {})
+                values.update({
+                    key: value for key, value in record.items() if key != "record"
+                })
+                self._state["stats"] = {
+                    "supported": True,
+                    "updated": int(time.time()),
+                    "values": values,
                 }
             elif kind == "filament":
                 filament = {key: value for key, value in record.items() if key != "record"}
@@ -610,8 +772,22 @@ class RmeCompatibilityPlugin(
                 existing.append(filament)
                 existing.sort(key=lambda item: (int(item.get("user", 0)), int(item.get("slot", 0))))
             elif kind == "loaded_filament":
+                loadout = {
+                    key: value for key, value in record.items() if key != "record"
+                }
+                existing = self._state["loaded_filaments"]
+                existing[:] = [
+                    item for item in existing
+                    if int(item.get("tool", -1)) != int(loadout["tool"])
+                ]
+                existing.append(loadout)
+                existing.sort(key=lambda item: int(item["tool"]))
+                self._refresh_active_tool_locked()
                 self._defer(self._accept_firmware_spool, dict(record))
             elif kind == "rme_error":
+                if "stats" in record["message"].lower():
+                    self._stats_supported = False
+                    self._state["stats"]["supported"] = False
                 errors = self._state["errors"]
                 errors.append({"message": record["message"], "time": int(time.time())})
                 del errors[:-10]
@@ -639,6 +815,177 @@ class RmeCompatibilityPlugin(
         if not self._printer.is_operational():
             raise RuntimeError("Printer is not connected")
         self._printer.commands(commands, tags={"plugin:rme_compatibility"})
+
+    def _request_priority_control(self, action):
+        """Queue one idempotent pause/resume/cancel on OctoPrint's fast path."""
+        commands = {"pause": "M601", "resume": "M602", "cancel": "M604"}
+        if action not in commands:
+            raise ValueError("Unknown priority control action: %s" % action)
+        with self._state_lock:
+            if not (self._state.get("connected") and self._state.get("supported")):
+                return False
+            # Each resume permits a later pause and vice versa. Cancel remains
+            # latched until the job ends so duplicate API/events are harmless.
+            if action == "pause":
+                self._priority_controls_sent.discard("resume")
+            elif action == "resume":
+                self._priority_controls_sent.discard("pause")
+            if action in self._priority_controls_sent:
+                return False
+            self._priority_controls_sent.add(action)
+        self._defer(self._send_priority_control, action, commands[action])
+        return True
+
+    def _send_priority_control(self, action, command):
+        """Submit a service command to the forced, out-of-band send hook."""
+        try:
+            self._printer.commands(
+                command,
+                tags={
+                    "plugin:rme_compatibility",
+                    "rme:priority_control",
+                    "trigger:rme.fast_%s" % action,
+                },
+                force=True,
+            )
+        except Exception:
+            with self._state_lock:
+                self._priority_controls_sent.discard(action)
+            raise
+
+    def _force_send_rme_control(self, comm_instance, command, gcode):
+        """Write an RME service command without waiting for the prior ``ok``.
+
+        OctoPrint's public ``force=True`` API skips its command queue but still
+        enters the send queue, whose worker normally waits for an acknowledgement.
+        Its bundled Action Command Prompt plugin uses these same protected comm
+        primitives for an emergency M876 response. RME discovery is our separate
+        capability gate for the firmware's reserved priority-command receiver.
+        """
+        use_up_clear = getattr(comm_instance, "_use_up_clear", None)
+        do_send = getattr(comm_instance, "_do_send", None)
+        continue_sending = getattr(comm_instance, "_continue_sending", None)
+        if not callable(use_up_clear) or not callable(do_send):
+            self._logger.warning(
+                "OctoPrint does not expose its out-of-band send primitives; "
+                "%s will use the normal forced send queue", command
+            )
+            return None
+        used_up_clear = use_up_clear(gcode)
+        do_send(command, gcode=gcode)
+        if not used_up_clear and callable(continue_sending):
+            continue_sending()
+        return (None,)
+
+    def _refresh_active_tool_locked(self):
+        """Resolve active logical tool, physical mapping, and filament details.
+
+        Callers hold ``_state_lock``. Firmware M865 metadata is authoritative;
+        SpoolManager is a fallback while a fresh query is still in flight.
+        """
+        active = self._state["active_tool"]
+        logical = active.get("logical")
+        if logical is None:
+            return
+        logical = int(logical)
+        toolmap = self._state.get("toolmap") or {}
+        mapping = toolmap.get("mapping") or {}
+        physical = (
+            mapping.get(logical, mapping.get(str(logical), logical))
+            if toolmap.get("enabled") else logical
+        )
+        physical = int(physical)
+        loadout = next(
+            (
+                item for item in self._state.get("loaded_filaments", [])
+                if int(item.get("tool", -1)) == physical
+            ),
+            None,
+        )
+        if loadout is None:
+            loadout = next(
+                (
+                    item for item in self._state.get("spoolmanager", {}).get("selected", [])
+                    if int(item.get("tool", -1)) == physical
+                ),
+                {},
+            )
+        color = loadout.get("color")
+        active.update(
+            logical=logical,
+            physical=physical,
+            material=loadout.get("material"),
+            color_name=loadout.get("color_name") or loadout.get("display_name"),
+            color=color if self._valid_color(color) else None,
+        )
+
+    def _filament_report(self):
+        """Build OrcaSlicer's provider-neutral ``data.tools`` response shape."""
+        with self._state_lock:
+            provider = self._state["spoolmanager"].get("provider") or "internal"
+            selected = copy.deepcopy(self._state["spoolmanager"].get("selected", []))
+            loaded = copy.deepcopy(self._state.get("loaded_filaments", []))
+            inventory = copy.deepcopy(self._state["spoolmanager"].get("inventory", []))
+            machine_count = int(self._state.get("machine", {}).get("logical_tools", 0))
+            active_tool = copy.deepcopy(self._state["active_tool"])
+            tool_mapping = copy.deepcopy(self._state["toolmap"])
+            stats = copy.deepcopy(self._state["stats"])
+            updated = self._state["spoolmanager"].get("last_sync")
+        selected_by_tool = {int(item["tool"]): item for item in selected}
+        loaded_by_tool = {int(item["tool"]): item for item in loaded}
+        highest = max(list(selected_by_tool) + list(loaded_by_tool) + [-1]) + 1
+        count = max(machine_count, highest)
+        tools = []
+        for tool in range(count):
+            item = selected_by_tool.get(tool)
+            if item is not None:
+                tools.append({
+                    "name": item.get("display_name", ""),
+                    "material": item.get("material", ""),
+                    "color": item.get("color", ""),
+                    "color_name": item.get("color_name", ""),
+                    "vendor": item.get("vendor", ""),
+                    "spool_id": str(item.get("database_id", "")),
+                    "provider": provider,
+                })
+                continue
+            firmware = loaded_by_tool.get(tool) or {}
+            tools.append({
+                "name": firmware.get("material", ""),
+                "material": firmware.get("material", ""),
+                "color": firmware.get("color", ""),
+                "color_name": firmware.get("color_name", ""),
+                "vendor": "",
+                "spool_id": "",
+                "provider": "RME firmware",
+            })
+        spools = []
+        for item in inventory:
+            cleaned = {key: value for key, value in item.items() if not key.startswith("_")}
+            cleaned.update(
+                spool_id=str(item.get("database_id", "")),
+                name=item.get("display_name", ""),
+                provider=provider,
+            )
+            spools.append(cleaned)
+        return {
+            "schema": "rme-filament-report-v1",
+            "provider": provider,
+            "data": {"tools": tools, "spools": spools},
+            "active_tool": active_tool,
+            "stats": stats,
+            "tool_mapping": tool_mapping,
+            "loaded_filaments": loaded,
+            "updated": updated,
+        }
+
+    def _set_active_tool(self, logical):
+        """Publish the tool selected by a transmitted ``Tn`` command."""
+        with self._state_lock:
+            self._state["active_tool"]["logical"] = int(logical)
+            self._state["active_tool"]["updated"] = int(time.time())
+            self._refresh_active_tool_locked()
+        self._defer(self._persist_and_publish)
 
     def _open_session(self):
         legacy = 1 if self._settings.get_boolean(["legacy_notifications"]) else 0
@@ -669,6 +1016,19 @@ class RmeCompatibilityPlugin(
             interval = max(10, int(self._settings.get_int(["spoolmanager_sync_interval"]) or 30))
             if time.monotonic() - self._last_spool_sync >= interval:
                 self._defer(self._sync_spoolmanager, False)
+            self._poll_stats_if_due(connected)
+
+    def _poll_stats_if_due(self, connected, now=None):
+        """Queue telemetry only after firmware positively answered the probe."""
+        now = time.monotonic() if now is None else float(now)
+        stats_interval = max(10, int(self._settings.get_int(["stats_poll_interval"]) or 30))
+        if (
+            self._stats_supported is True
+            and connected
+            and now - self._last_stats_poll >= stats_interval
+        ):
+            self._last_stats_poll = now
+            self._defer(self._send_command, "@RME STATS QUERY")
 
     def _apply_toolmap(self, mapping, enabled, release_hold=False):
         machine = self._state.get("machine", {})
@@ -845,19 +1205,29 @@ class RmeCompatibilityPlugin(
         # printer exactly as it was, then allow NFV and the print to proceed.
         self._release_toolmap_hold()
 
-    # -- SpoolManager synchronization -------------------------------------
+    # -- Filament inventory synchronization -------------------------------
 
     @staticmethod
     def _tool_index(value):
-        """Accept SpoolManager tool IDs in either integer or ``toolN`` form."""
+        """Accept provider tool IDs in either integer or ``toolN`` form."""
         text = str(value)
         digits = "".join(character for character in text if character.isdigit())
         if not digits:
-            raise ValueError("SpoolManager event did not contain a valid tool ID")
+            raise ValueError("Filament provider did not contain a valid tool ID")
         return int(digits)
 
+    @staticmethod
+    def _public_spool_record(record):
+        """Remove adapter-only fields before persisting or publishing a spool."""
+        return {key: value for key, value in record.items() if not key.startswith("_")}
+
+    def _active_spool_provider(self):
+        """Resolve the current setting immediately for interactive UI actions."""
+        self._spoolmanager, provider_name = self._resolve_spool_provider()
+        return self._spoolmanager, provider_name
+
     def _sync_spoolmanager(self, force=False):
-        """Reconcile SpoolManager inventory with the firmware's eight presets.
+        """Reconcile the active inventory provider with eight firmware presets.
 
         The firmware limits user material names to seven characters and exposes
         eight slots. Seven slots receive stable database-ID aliases; slot seven
@@ -873,13 +1243,17 @@ class RmeCompatibilityPlugin(
         if not self._spool_sync_lock.acquire(False):
             return
         try:
+            self._spoolmanager, provider_name = self._active_spool_provider()
             if not self._spoolmanager or not self._spoolmanager.available():
-                raise SpoolManagerUnavailable("SpoolManager is not installed and enabled")
+                raise SpoolManagerUnavailable("No filament inventory provider is available")
 
-            inventory = self._spoolmanager.inventory()
+            inventory = [
+                self._public_spool_record(record)
+                for record in self._spoolmanager.inventory()
+            ]
             selected_models = self._spoolmanager.selected()
             selected = [
-                dict(record, tool=tool)
+                dict(self._public_spool_record(record), tool=tool)
                 for tool, record in enumerate(selected_models) if record is not None
             ]
             records = {record["database_id"]: record for record in inventory}
@@ -890,6 +1264,8 @@ class RmeCompatibilityPlugin(
 
             with self._state_lock:
                 old_published = copy.deepcopy(self._state["spoolmanager"].get("published", []))
+                if self._state["spoolmanager"].get("provider") != provider_name:
+                    old_published = []
                 can_send = self._state["connected"] and self._state["supported"]
 
             # Selected spools have priority, then prior slots, then the remaining
@@ -927,6 +1303,7 @@ class RmeCompatibilityPlugin(
                 pending = self._state["spoolmanager"].get("pending_new")
                 self._state["spoolmanager"] = {
                     "available": True,
+                    "provider": provider_name,
                     "status": "synchronizing" if can_send else "ready; printer disconnected",
                     "inventory": inventory,
                     "published": published,
@@ -935,6 +1312,7 @@ class RmeCompatibilityPlugin(
                     "last_sync": int(time.time()),
                     "error": None,
                 }
+                self._refresh_active_tool_locked()
             if can_send and (force or old_signature != new_signature):
                 by_slot = {item["slot"]: item for item in published}
                 commands = []
@@ -992,6 +1370,27 @@ class RmeCompatibilityPlugin(
             self._last_spool_sync = time.monotonic()
             self._spool_sync_lock.release()
 
+    def _resolve_spool_provider(self):
+        """Choose an installed provider or the persistent built-in fallback."""
+        preference = str(self._settings.get(["spool_provider"], merged=True) or "auto").lower()
+        providers = {
+            "spoolmanager": getattr(self, "_spoolmanager_bridge", None),
+            "spoolman": getattr(self, "_spoolman_bridge", None),
+            "internal": getattr(self, "_internal_spool_bridge", None),
+        }
+        if preference in ("spoolmanager", "spoolman"):
+            candidate = providers[preference]
+            if candidate is not None and candidate.available():
+                return candidate, preference
+            return providers["internal"], "internal"
+        if preference == "internal":
+            return providers["internal"], "internal"
+        for name in ("spoolmanager", "spoolman"):
+            candidate = providers[name]
+            if candidate is not None and candidate.available():
+                return candidate, name
+        return providers["internal"], "internal"
+
     def _handle_spoolmanager_event(self, event, payload):
         """Push SpoolManager-side changes to Buddy, including selected color."""
         self._sync_spoolmanager(True)
@@ -1009,7 +1408,7 @@ class RmeCompatibilityPlugin(
                 self._send_commands(['M865 S"---" L%d' % tool, "M865 Q"])
 
     def _assign_published_spool(self, tool, database_id):
-        """Apply a selected SpoolManager record as firmware loadout metadata."""
+        """Apply a selected provider record as firmware loadout metadata."""
         with self._state_lock:
             can_send = self._state["connected"] and self._state["supported"]
             item = next((entry for entry in self._state["spoolmanager"].get("published", [])
@@ -1024,15 +1423,46 @@ class RmeCompatibilityPlugin(
         ])
 
     def _select_spool_from_octoprint(self, tool, database_id):
-        """Select from the RME tab and update both SpoolManager and firmware."""
+        """Select from the RME tab and update both provider and firmware."""
         tool = self._tool_index(tool)
         database_id = int(database_id)
-        self._spoolmanager.select(tool, database_id)
+        provider, _ = self._active_spool_provider()
+        provider.select(tool, database_id)
         self._sync_spoolmanager(True)
         self._assign_published_spool(tool, database_id)
 
+    def _deselect_spool_from_octoprint(self, tool):
+        """Clear one tool in the active provider and on the printer."""
+        tool = self._tool_index(tool)
+        provider, _ = self._active_spool_provider()
+        provider.deselect(tool)
+        with self._state_lock:
+            can_send = self._state["connected"] and self._state["supported"]
+        if can_send:
+            self._send_commands(['M865 S"---" L%d' % tool, "M865 Q"])
+        self._sync_spoolmanager(True)
+
+    def _begin_new_spool(self, tool):
+        """Open the persistent creation form without requiring an LCD request."""
+        tool = self._tool_index(tool)
+        defaults = self.get_settings_defaults()
+        with self._state_lock:
+            self._state["spoolmanager"]["pending_new"] = {
+                "tool": tool,
+                "display_name": "New spool on tool %d" % tool,
+                "vendor": "",
+                "material": "PLA",
+                "color": "#808080",
+                "color_name": "",
+                "total_weight": self._settings.get_int(["spoolmanager_default_weight"])
+                or defaults["spoolmanager_default_weight"],
+                "nozzle_temperature": 215,
+                "bed_temperature": 60,
+            }
+        self._persist_and_publish()
+
     def _accept_firmware_spool(self, record):
-        """Apply an LCD-side material choice to SpoolManager.
+        """Apply an LCD-side material choice to the active provider.
 
         A known short alias selects an existing spool. ``NEW`` or a normal
         firmware material opens a persistent creation form in OctoPrint using
@@ -1040,6 +1470,7 @@ class RmeCompatibilityPlugin(
         """
         material = record.get("material", "")
         tool = int(record["tool"])
+        provider, _ = self._active_spool_provider()
         with self._state_lock:
             published = copy.deepcopy(self._state["spoolmanager"].get("published", []))
             selected = copy.deepcopy(self._state["spoolmanager"].get("selected", []))
@@ -1047,12 +1478,12 @@ class RmeCompatibilityPlugin(
         current = next((item for item in selected if int(item.get("tool", -1)) == tool), None)
         if match:
             if not current or current["database_id"] != match["database_id"]:
-                self._spoolmanager.select(tool, match["database_id"])
+                provider.select(tool, match["database_id"])
                 self._sync_spoolmanager(False)
             return
         if material == "---":
             if current:
-                self._spoolmanager.deselect(tool)
+                provider.deselect(tool)
                 self._sync_spoolmanager(False)
             return
 
@@ -1072,7 +1503,7 @@ class RmeCompatibilityPlugin(
                 "bed_temperature": 60,
             }
         if current:
-            self._spoolmanager.deselect(tool)
+            provider.deselect(tool)
         self._persist_and_publish()
 
     def _create_spool(self, data):
@@ -1095,8 +1526,9 @@ class RmeCompatibilityPlugin(
             nozzle_temperature=int(values.get("nozzle_temperature", 215)),
             bed_temperature=int(values.get("bed_temperature", 60)),
         )
-        created = self._spoolmanager.create(values)
-        self._spoolmanager.select(int(pending["tool"]), created["database_id"])
+        provider, _ = self._active_spool_provider()
+        created = provider.create(values)
+        provider.select(int(pending["tool"]), created["database_id"])
         with self._state_lock:
             self._state["spoolmanager"]["pending_new"] = None
         self._sync_spoolmanager(True)
@@ -1224,7 +1656,9 @@ class RmeCompatibilityPlugin(
         with self._state_lock:
             return copy.deepcopy(
                 {key: self._state[key] for key in (
-                    "machine", "toolmap", "workflow", "prompt", "firmware", "spoolmanager"
+                    "machine", "toolmap", "workflow", "prompt", "firmware",
+                    "spoolmanager", "loaded_filaments", "active_tool", "internal_spools",
+                    "stats",
                 )}
             )
 
@@ -1259,6 +1693,7 @@ __plugin_name__ = "RME Compatibility"
 __plugin_pythoncompat__ = ">=3.8,<4"
 __plugin_implementation__ = RmeCompatibilityPlugin()
 __plugin_hooks__ = {
+    "octoprint.comm.protocol.action": __plugin_implementation__.action_command_hook,
     "octoprint.comm.protocol.gcode.received": __plugin_implementation__.gcode_received_hook,
     "octoprint.comm.protocol.gcode.queuing": (__plugin_implementation__.gcode_queuing_hook, 1),
     "octoprint.comm.protocol.gcode.sent": __plugin_implementation__.gcode_sent_hook,
