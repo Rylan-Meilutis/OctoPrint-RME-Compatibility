@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0b5 — 2026-08-09
+
+- Fixed the native OctoPrint multipart upload path so root installations no
+  longer interpret `//plugin/...` as a request to a host named `plugin`.
+
 ## 0.1.0b4 — 2026-08-09
 
 - Routed browser-to-Pi firmware uploads through OctoPrint's authenticated

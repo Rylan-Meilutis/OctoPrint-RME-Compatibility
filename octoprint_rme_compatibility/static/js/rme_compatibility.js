@@ -406,9 +406,11 @@ $(function () {
             var file = self.pendingUpload();
             if (!file) return;
             // Use OctoPrint's client so browser sessions and API-key sessions
-            // both receive the required CSRF/authentication headers.
+            // both receive the required CSRF/authentication headers. This path
+            // must be relative because the client prepends BASEURL itself;
+            // PLUGIN_BASEURL would create //plugin at root installations.
             OctoPrint.postForm(
-                PLUGIN_BASEURL + "rme_compatibility/firmware",
+                "plugin/rme_compatibility/firmware",
                 {file: file}
             ).done(function (response) {
                 self.pendingUpload(null);
