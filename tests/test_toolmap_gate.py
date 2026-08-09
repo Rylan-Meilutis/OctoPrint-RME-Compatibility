@@ -455,7 +455,7 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0b13"
+        plugin._plugin_version = "0.1.0b14"
         templates = plugin.get_template_configs()
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])
@@ -469,6 +469,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("Current theme", settings_template)
         self.assertIn("rme-theme-swatch", settings_template)
         self.assertIn("Theme presets", settings_template)
+        self.assertIn("Delete from Pi", settings_template)
         self.assertIn("Saved lighting", settings_template)
         self.assertIn("Printer lock", settings_template)
         self.assertIn("Printer USB storage", settings_template)
@@ -484,6 +485,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("stageAndFlashFirmware", javascript)
         self.assertIn("Filament resynchronization required", javascript)
         self.assertIn("MMU · idle", javascript)
+        self.assertIn("deleteFirmware", javascript)
         self.assertIn("storage/download?path=", javascript)
         self.assertIn('"plugin/rme_compatibility/storage/upload"', javascript)
         self.assertIn("octoprint.printer.sdcardupload", __import__(
@@ -695,6 +697,33 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual("4", report["data"]["tools"][0]["spool_id"])
         self.assertEqual("PETG", report["data"]["tools"][1]["material"])
         self.assertEqual("RME firmware", report["data"]["tools"][1]["provider"])
+
+    def test_firmware_alias_recovers_provider_manufacturer(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._defer = lambda callback, *args: None
+        plugin._state["machine"] = {"logical_tools": 1}
+        plugin._state["spoolmanager"].update(
+            provider="spoolmanager",
+            published=[{
+                "alias": "PLA-00D", "database_id": 13,
+                "display_name": "Galaxy Black PLA", "vendor": "Prusament",
+                "material": "PLA", "color": "#808080",
+            }],
+        )
+
+        plugin._handle_record({
+            "record": "loaded_filament", "tool": 0, "material": "PLA-00D",
+            "color_name": "Custom", "color": "#808080",
+        })
+
+        loaded = plugin._state["loaded_filaments"][0]
+        self.assertEqual("PLA-00D", loaded["firmware_alias"])
+        self.assertEqual("PLA", loaded["material"])
+        self.assertEqual("Prusament", loaded["vendor"])
+        self.assertEqual("Galaxy Black PLA", loaded["display_name"])
+        report = plugin._filament_report()["data"]["tools"][0]
+        self.assertEqual("13", report["spool_id"])
+        self.assertEqual("Prusament", report["vendor"])
 
     def test_stats_polling_starts_only_after_firmware_support_response(self):
         plugin = RmeCompatibilityPlugin()

@@ -59,7 +59,7 @@
             <span data-bind="foreach: selectedSpools"><span class="rme-assignment" data-bind="text: 'T' + tool + ': ' + display_name"></span></span>
         </p>
         <p data-bind="visible: loadedFilaments().length"><strong>Printer-reported loadout:</strong>
-            <span data-bind="foreach: loadedFilaments"><span class="rme-assignment"><span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span> <span data-bind="text: 'T' + tool + ': ' + material + (color_name && color_name !== 'None' ? ' · ' + color_name : '')"></span></span></span>
+            <span data-bind="foreach: loadedFilaments"><span class="rme-assignment"><span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span> <span data-bind="text: $parent.loadedFilamentLabel($data)"></span></span></span>
         </p>
         <p><small>Inventory management and synchronization controls are in RME Compatibility Settings.</small></p>
     </div>

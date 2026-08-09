@@ -310,12 +310,13 @@ $(function () {
                     Number(mapping.mapping[logical]) : logical;
                 var material = item.material && item.material !== "---" ? item.material : "Unassigned";
                 var colorName = item.color_name && item.color_name !== "None" ? item.color_name : "";
+                var vendor = item.vendor || "";
                 var color = typeof item.color === "string" && /^#[0-9a-f]{6}$/i.test(item.color) ? item.color : "#808080";
                 rows.push({
                     logical: logical,
                     physical: physical,
                     label: "T" + logical + (physical !== logical ? " → T" + physical : ""),
-                    details: material + (colorName ? " · " + colorName : ""),
+                    details: material + (vendor ? " · " + vendor : "") + (colorName ? " · " + colorName : ""),
                     color: color,
                     active: active !== null && active !== undefined && Number(active) === logical
                 });
@@ -324,8 +325,14 @@ $(function () {
         });
         self.spoolLabel = function (spool) {
             var remaining = spool.remaining_weight;
-            return (spool.alias ? spool.alias + " — " : "") + spool.display_name + " · " + spool.material +
+            return (spool.alias ? spool.alias + " — " : "") + spool.display_name +
+                (spool.vendor ? " · " + spool.vendor : "") + " · " + spool.material +
                 (remaining === null || remaining === undefined ? "" : " · " + Number(remaining).toFixed(0) + " g left");
+        };
+        self.loadedFilamentLabel = function (item) {
+            return "T" + item.tool + ": " + item.material +
+                (item.vendor ? " · " + item.vendor : "") +
+                (item.color_name && item.color_name !== "None" ? " · " + item.color_name : "");
         };
 
         self.firmwareFiles = ko.pureComputed(function () { return self.state().firmware_files || []; });
@@ -512,6 +519,13 @@ $(function () {
             }
         };
         self.cancelFirmware = function () { self.command("cancel_firmware"); };
+        self.deleteFirmware = function () {
+            var filename = self.selectedFirmware();
+            if (!filename || !window.confirm("Delete " + filename + " from this Pi?")) return;
+            self.command("delete_firmware", {filename: filename}).done(function () {
+                self.selectedFirmware(null);
+            });
+        };
         self.flashFirmware = function () {
             if (window.confirm("Flash the verified firmware now? The printer will reboot and the bootloader will validate its signature and machine compatibility.")) {
                 self.command("flash_firmware");

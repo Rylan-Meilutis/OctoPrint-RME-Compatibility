@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0b14 — 2026-08-09
+
+- Recovered manufacturer, display name, provider, and spool identity for
+  printer loadout records by matching firmware aliases against the active
+  SpoolManager, Spoolman, or built-in provider table.
+- Displayed known manufacturers in loadout, top-bar tool, and inventory labels;
+  printer-only materials remain correctly marked as unknown.
+- Added a confirmed **Delete from Pi** action beside the firmware picker and
+  clarified that printer-side BBFs are deleted through the USB storage browser.
+
 ## 0.1.0b13 — 2026-08-09
 
 - Fixed legacy M998 firmware staging on installed RME builds by adding the

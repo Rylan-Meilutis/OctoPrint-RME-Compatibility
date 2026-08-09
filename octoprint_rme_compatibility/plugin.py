@@ -999,6 +999,27 @@ class RmeCompatibilityPlugin(
                 loadout = {
                     key: value for key, value in record.items() if key != "record"
                 }
+                # Buddy's M865 report has no manufacturer field. Recover it
+                # losslessly when the seven-character firmware alias matches a
+                # spool that this plugin published from the active provider.
+                provider_match = next(
+                    (
+                        item for item in self._state["spoolmanager"].get("published", [])
+                        if item.get("alias") == loadout.get("material")
+                    ),
+                    None,
+                )
+                if provider_match:
+                    loadout.update(
+                        firmware_alias=loadout.get("material", ""),
+                        material=provider_match.get("material", loadout.get("material", "")),
+                        vendor=provider_match.get("vendor", ""),
+                        display_name=provider_match.get("display_name", ""),
+                        database_id=provider_match.get("database_id"),
+                        provider=self._state["spoolmanager"].get("provider"),
+                    )
+                else:
+                    loadout.update(vendor="", display_name="", provider="RME firmware")
                 existing = self._state["loaded_filaments"]
                 existing[:] = [
                     item for item in existing
@@ -1181,13 +1202,13 @@ class RmeCompatibilityPlugin(
                 continue
             firmware = loaded_by_tool.get(tool) or {}
             tools.append({
-                "name": firmware.get("material", ""),
+                "name": firmware.get("display_name") or firmware.get("material", ""),
                 "material": firmware.get("material", ""),
                 "color": firmware.get("color", ""),
                 "color_name": firmware.get("color_name", ""),
-                "vendor": "",
-                "spool_id": "",
-                "provider": "RME firmware",
+                "vendor": firmware.get("vendor", ""),
+                "spool_id": str(firmware.get("database_id") or ""),
+                "provider": firmware.get("provider") or "RME firmware",
             })
         spools = []
         for item in inventory:
@@ -2291,6 +2312,7 @@ class RmeCompatibilityPlugin(
         self._persist_and_publish()
 
     def _delete_firmware(self, filename):
+        """Remove one explicitly selected BBF from the plugin's Pi storage."""
         if (self._uploader and self._uploader.busy) or (
             self._firmware_file_thread and self._firmware_file_thread.is_alive()
         ):
@@ -2299,6 +2321,7 @@ class RmeCompatibilityPlugin(
         if not os.path.isfile(path):
             flask.abort(404)
         os.unlink(path)
+        self._logger.info("Deleted staged Pi firmware file %s", filename)
 
     # -- State publication --------------------------------------------------
 

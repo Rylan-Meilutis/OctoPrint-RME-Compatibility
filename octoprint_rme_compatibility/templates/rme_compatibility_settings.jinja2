@@ -268,12 +268,14 @@
             <button type="button" class="btn btn-primary" data-bind="click: stageFirmware, enable: canStage">Stage on printer</button>
             <button type="button" class="btn btn-danger" data-bind="click: stageAndFlashFirmware, enable: canStage">Stage and flash…</button>
             <button type="button" class="btn btn-danger" data-bind="click: flashFirmware, enable: canFlash">Flash and reboot…</button>
+            <button type="button" class="btn" data-bind="click: deleteFirmware, enable: selectedFirmware() && !firmwareBusy()">Delete from Pi…</button>
             <button type="button" class="btn" data-bind="click: cancelFirmware, visible: firmwareBusy">Cancel transfer</button>
             <div class="progress" data-bind="visible: firmwareActive">
                 <div class="bar" data-bind="style: {width: firmwareProgress}"></div>
             </div>
             <p data-bind="text: firmwareStatus"></p>
             <div class="alert alert-error" data-bind="visible: firmwareError, text: firmwareError"></div>
+            <p class="help-block">Delete from Pi removes the selected uploaded BBF. To remove a BBF already on the printer, use Delete in the Printer USB storage browser above.</p>
         </div>
     </div>
 </form>
