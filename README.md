@@ -1,0 +1,125 @@
+# OctoPrint RME Compatibility
+
+An OctoPrint plugin for the custom Prusa RME Buddy firmware in
+`prusa-firmware-buddy`. It implements the firmware contracts documented in
+`doc/rme_serial_handler_integration.md`, `doc/rme_serial_remote_protocol.md`,
+and `doc/gcode/M998.md`.
+
+## Features
+
+- Negotiates `@RME` support on every serial connection, opens an event session,
+  sends 10-second keepalives, detects event sequence gaps, and re-queries the
+  authoritative firmware dialog.
+- Adds live probing, heating, MMU, tool-change, runout, stuck-filament,
+  pressure-advance, firmware-update, waste-bin, and generic workflow detail to
+  OctoPrint's progress area. Phase elapsed time continues updating while a
+  blocking G-code leaves normal file progress stationary.
+- Persists active printer prompts and workflow details on the Pi so recovery
+  controls survive browser refreshes. Responses use stable named actions and
+  are checked again against the printer after each response.
+- Holds multi-tool prints at their start, asks for a one-to-one logical to
+  physical tool mapping, saves the selection, applies it through the immediate
+  RME protocol, and then releases the print. The saved mapping can instead be
+  applied automatically.
+  The hold is acquired synchronously through OctoPrint's `beforePrintStarted`
+  pipeline, so it also covers API and plugin-initiated local prints before any
+  print-file G-code is sent. On timeout, an untouched prompt keeps the current
+  firmware mapping and proceeds without writing a new one; its timer pauses
+  once the operator starts interacting.
+  Cancelling while this gate is still ahead of the first print-file command
+  suppresses the user-configured `afterPrintCancelled` macro while retaining
+  OctoPrint's internal cancellation handling.
+- Reads the printer's envelope, logical tool count, shared-nozzle status, and
+  live maximum feed rates, then updates the active OctoPrint printer profile.
+- Exposes guarded remote encoder/click/back/home controls, printer lock status
+  and PIN unlock, temporary and persistent light services, persistent theme
+  colors, and synchronization of the eight RME user filament presets.
+- Integrates bidirectionally with the maintained OctoPrint-SpoolManager plugin.
+  Seven active spools are published as stable short aliases in the printer's
+  existing filament-load picker and the eighth entry is `NEW`. Printer-side
+  choices update SpoolManager; selection, deselection, add/delete, and weight
+  events update the firmware. A periodic reconciliation also catches edits for
+  which SpoolManager does not emit an event.
+- Accepts signed `.bbf` files up to 32 MiB on the Pi, streams them with the
+  acknowledged M998 Base64 protocol, verifies size and SHA-256 on the printer,
+  and exposes a separate confirmed `M997 /usb/FWUPD.BBF` bootloader handoff.
+
+The plugin always uses OctoPrint's serialized printer command queue. It never
+opens a competing serial descriptor, suppresses normal Marlin responses, or
+places `@RME` frames in sliced files.
+
+## Remote prompts and recovery
+
+Tool remapping and firmware action dialogs are rendered in the **RME** tab.
+This includes MMU loading/errors, filament runout, stuck filament, tool-change
+or pickup failures, purge-bucket/waste-bin warnings, and any future RME dialog
+that supplies named actions. Prompt and workflow state is written to the Pi,
+so it survives a browser refresh or OctoPrint restart. The printer remains the
+authority: resolving an issue on its LCD produces a closed workflow or
+`RME_PROMPT none`, which automatically removes the OctoPrint prompt.
+
+Tool mapping is the first local-print preflight gate. After confirmation, the
+mapping is supplied to Nozzle Filament Validator before OctoPrint releases the
+job hold. The validator therefore compares each slicer's logical tool against
+the chosen physical tool's nozzle, SpoolManager material, and spool identity.
+
+## SpoolManager integration
+
+Install and enable SpoolManager, then leave **Settings → RME Compatibility →
+SpoolManager** enabled. Full names, colors, remaining weights, and tool
+assignments appear in the OctoPrint RME tab; the printer receives seven-character
+aliases because that is the RME firmware's preset-name limit. Choosing `NEW` or
+an unlinked built-in material on the printer opens a persistent form in
+OctoPrint. Saving it creates the SpoolManager record, selects it for the tool,
+and writes the selected material/color back to firmware with `M865`.
+
+SpoolManager currently exposes events and implementation methods rather than
+registered public helpers. All such access is feature-detected and isolated in
+`spoolmanager.py`; if the optional plugin is absent or incompatible, core RME
+operation continues and the tab reports the integration as unavailable.
+
+## Install
+
+Install through OctoPrint's Plugin Manager using this repository URL, or from a
+checkout in the same Python environment as OctoPrint:
+
+```console
+pip install .
+```
+
+Restart OctoPrint, connect the printer, and open the **RME** tab. The plugin
+falls back quietly when `@RME MACHINE QUERY` is not supported.
+
+## Update channels
+
+OctoPrint's Software Update settings expose two release channels:
+
+- **Stable** follows the `main` branch and ignores development prereleases.
+- **Beta** follows the `beta` branch and receives beta/development GitHub
+  prereleases in addition to stable releases.
+
+Development tags use PEP 440-compatible versions such as `v0.1.0-dev.1` and
+are published from `beta`. Stable releases are tagged from `main`.
+
+## Firmware update safety
+
+Firmware storage on the Pi, transfer to printer USB, and flashing are three
+separate user-visible operations. Transfer and flashing are rejected while a
+print is active or paused. The plugin verifies the Pi copy before transfer and
+the printer verifies the declared byte count and SHA-256 before renaming it to
+`/usb/FWUPD.BBF`. The Prusa bootloader remains responsible for signature,
+printer-model, and compatibility checks.
+
+## Development
+
+Protocol and transport tests do not require OctoPrint itself:
+
+```console
+python -m unittest discover -s tests -v
+```
+
+For integration testing, follow the matrix in the firmware's
+`doc/rme_serial_handler_integration.md`: reconnect and sequence-gap recovery,
+blocking heater/probing commands, MMU and filament errors, tool changes,
+pressure-advance calibration, UI lock transitions, emergency stop, and both
+legacy notification modes.

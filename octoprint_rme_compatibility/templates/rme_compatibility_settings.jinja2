@@ -1,0 +1,33 @@
+<form class="form-horizontal">
+    <div class="control-group">
+        <label class="control-label">Protocol session</label>
+        <div class="controls">
+            <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.auto_open_session"> Open automatically after connection</label>
+            <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.legacy_notifications"> Keep legacy action notifications alongside structured events</label>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">Machine profile</label>
+        <div class="controls">
+            <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.auto_machine_profile"> Update volume, tools and motion speeds from the printer</label>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">Print-start mapping</label>
+        <div class="controls">
+            <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.prompt_toolmap_on_print"> Hold each multi-tool print until a tool mapping is confirmed</label>
+            <label>Keep current mapping after <input class="input-mini" type="number" min="0" max="86400" data-bind="value: settings.settings.plugins.rme_compatibility.toolmap_timeout_seconds"> seconds untouched</label>
+            <p class="help-block">The chosen mapping is saved as the default. Disabling the prompt applies that default automatically.</p>
+            <p class="help-block">Use 0 for no timeout. The timer pauses permanently for that print as soon as the operator interacts with the mapping prompt.</p>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">SpoolManager</label>
+        <div class="controls">
+            <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.spoolmanager_enabled"> Synchronize firmware load choices and SpoolManager selections</label>
+            <label>Reconcile every <input class="input-mini" type="number" min="10" data-bind="value: settings.settings.plugins.rme_compatibility.spoolmanager_sync_interval"> seconds</label>
+            <label>Default new-spool weight <input class="input-small" type="number" min="1" data-bind="value: settings.settings.plugins.rme_compatibility.spoolmanager_default_weight"> g</label>
+            <p class="help-block">Seven firmware user slots mirror available spools; the eighth is reserved for the printer-side NEW choice.</p>
+        </div>
+    </div>
+</form>

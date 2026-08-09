@@ -1,0 +1,57 @@
+.rme-panel .rme-card {
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    margin: 12px 0;
+    padding: 12px;
+}
+
+.rme-status-line { display: flex; align-items: center; gap: 8px; }
+.rme-prompt { border-left: 5px solid #f0ad4e !important; }
+.rme-prompt .btn { margin-right: 6px; margin-bottom: 4px; }
+.rme-workflow-message { margin-bottom: 2px; }
+.rme-color-field { display: inline-flex; flex-direction: column; font-size: 11px; margin-right: 8px; text-transform: capitalize; }
+.rme-color-field input { height: 28px; padding: 0; width: 48px; }
+.rme-spool-form label { margin: 0 12px 10px 0; }
+.rme-color-dot { display: inline-block; width: 11px; height: 11px; border: 1px solid #777; border-radius: 50%; }
+.rme-assignment { display: inline-block; margin-left: 8px; }
+
+#rme-workflow-strip {
+    background: rgba(0, 0, 0, 0.07);
+    border-radius: 0 0 4px 4px;
+    box-sizing: border-box;
+    min-height: 24px;
+    overflow: hidden;
+    position: relative;
+}
+
+#rme-workflow-strip .rme-strip-bar {
+    background: #2f96b4;
+    height: 24px;
+    min-width: 3px;
+    transition: width .25s linear;
+}
+
+#rme-workflow-strip.rme-indeterminate .rme-strip-bar {
+    animation: rme-pulse 1.4s ease-in-out infinite;
+    width: 100% !important;
+}
+
+#rme-workflow-strip .rme-strip-label {
+    color: #fff;
+    font-size: 11px;
+    font-weight: bold;
+    left: 7px;
+    line-height: 24px;
+    overflow: hidden;
+    position: absolute;
+    right: 7px;
+    text-overflow: ellipsis;
+    text-shadow: 0 1px 1px #333;
+    top: 0;
+    white-space: nowrap;
+}
+
+@keyframes rme-pulse {
+    0%, 100% { opacity: .35; }
+    50% { opacity: 1; }
+}

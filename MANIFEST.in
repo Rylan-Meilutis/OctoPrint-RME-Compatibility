@@ -1,0 +1,5 @@
+recursive-include octoprint_rme_compatibility/templates *
+recursive-include octoprint_rme_compatibility/static *
+include README.md
+include CHANGELOG.md
+include LICENSE
