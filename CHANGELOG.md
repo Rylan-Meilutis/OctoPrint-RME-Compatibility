@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0.dev3 — 2026-08-09
+## 0.1.0b1 — 2026-08-09
 
 - Made SpoolManager, Spoolman, and built-in inventory mutually exclusive.
   Inactive-provider events are ignored, external selections clear stale

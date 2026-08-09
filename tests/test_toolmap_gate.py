@@ -205,10 +205,12 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0.dev3"
+        plugin._plugin_version = "0.1.0b1"
         config = plugin.get_update_information()["rme_compatibility"]
         self.assertEqual("main", config["stable_branch"]["branch"])
         self.assertEqual("beta", config["prerelease_branches"][0]["branch"])
+        self.assertEqual("python", config["release_compare"])
+        self.assertFalse(config["force_base"])
         self.assertIn("{target_version}", config["pip"])
 
     def test_prestart_hold_pauses_timeout_then_configures_validator_before_release(self):

@@ -241,6 +241,10 @@ class RmeCompatibilityPlugin(
                 "user": "Rylan-Meilutis",
                 "repo": "OctoPrint-RME-Compatibility",
                 "current": self._plugin_version,
+                # Compare the full PEP 440 version so b1, b2, and later beta
+                # builds are not collapsed to the same 0.1.0 base release.
+                "release_compare": "python",
+                "force_base": False,
                 "stable_branch": {
                     "name": "Stable",
                     "branch": "main",

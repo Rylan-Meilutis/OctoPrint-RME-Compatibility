@@ -166,8 +166,9 @@ OctoPrint's Software Update settings expose two release channels:
 - **Beta** follows the `beta` branch and receives beta/development GitHub
   prereleases in addition to stable releases.
 
-Development tags use OctoPrint-safe PEP 440 versions such as `v0.1.0.dev3` and
-are published from `beta`. Stable releases are tagged from `main`.
+Beta tags use OctoPrint-safe PEP 440 versions such as `v0.1.0b1` and
+`v0.1.0b2` and are published from `beta`. Stable releases are tagged from
+`main`.
 
 ## Firmware update safety
 
