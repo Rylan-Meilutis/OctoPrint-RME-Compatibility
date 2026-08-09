@@ -206,7 +206,7 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0b3"
+        plugin._plugin_version = "0.1.0b4"
         templates = plugin.get_template_configs()
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])
@@ -217,6 +217,11 @@ class ToolmapGateTests(unittest.TestCase):
             settings_template = template_file.read()
         self.assertIn("Plugin status", settings_template)
         self.assertIn("Firmware update", settings_template)
+        with open(
+            "octoprint_rme_compatibility/static/js/rme_compatibility.js"
+        ) as javascript_file:
+            javascript = javascript_file.read()
+        self.assertIn("OctoPrint.postForm", javascript)
         config = plugin.get_update_information()["rme_compatibility"]
         self.assertEqual("main", config["stable_branch"]["branch"])
         self.assertEqual("beta", config["prerelease_branches"][0]["branch"])

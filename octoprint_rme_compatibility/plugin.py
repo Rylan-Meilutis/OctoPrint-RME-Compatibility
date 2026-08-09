@@ -473,14 +473,15 @@ class RmeCompatibilityPlugin(
     # A separate multipart route is needed for browser-to-Pi BBF upload.
     @octoprint.plugin.BlueprintPlugin.route("/firmware", methods=["POST"])
     def upload_firmware(self):
+        """Store one browser-uploaded BBF and return machine-readable errors."""
         if not Permissions.CONTROL.can():
             flask.abort(403)
         uploaded = flask.request.files.get("file")
         if uploaded is None or not uploaded.filename:
-            flask.abort(400, description="A .bbf file is required")
+            return flask.jsonify({"error": "A .bbf file is required"}), 400
         filename = secure_filename(uploaded.filename)
         if not filename or not filename.lower().endswith(".bbf"):
-            flask.abort(400, description="Only .bbf firmware files are accepted")
+            return flask.jsonify({"error": "Only .bbf firmware files are accepted"}), 400
         destination = self._firmware_path(filename)
         descriptor, temporary = tempfile.mkstemp(
             prefix=".rme-upload-", suffix=".tmp", dir=self._firmware_directory
@@ -490,7 +491,9 @@ class RmeCompatibilityPlugin(
             uploaded.save(temporary)
             size = os.path.getsize(temporary)
             if size <= 0 or size > MAX_FIRMWARE_SIZE:
-                flask.abort(413, description="Firmware must be between 1 byte and 32 MiB")
+                return flask.jsonify(
+                    {"error": "Firmware must be between 1 byte and 32 MiB"}
+                ), 413
             os.replace(temporary, destination)
         finally:
             if os.path.exists(temporary):

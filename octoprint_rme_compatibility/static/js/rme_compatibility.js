@@ -405,15 +405,12 @@ $(function () {
         self.uploadToPi = function () {
             var file = self.pendingUpload();
             if (!file) return;
-            var body = new FormData();
-            body.append("file", file);
-            $.ajax({
-                url: PLUGIN_BASEURL + "rme_compatibility/firmware",
-                type: "POST",
-                data: body,
-                processData: false,
-                contentType: false
-            }).done(function (response) {
+            // Use OctoPrint's client so browser sessions and API-key sessions
+            // both receive the required CSRF/authentication headers.
+            OctoPrint.postForm(
+                PLUGIN_BASEURL + "rme_compatibility/firmware",
+                {file: file}
+            ).done(function (response) {
                 self.pendingUpload(null);
                 self.selectedFirmware(response.file.name);
                 self.acceptState(response.state);
@@ -570,7 +567,13 @@ $(function () {
     }
     function responseError(xhr) {
         var response = xhr && xhr.responseJSON;
-        return (response && (response.error || response.description || response.message)) || (xhr && xhr.statusText) || "Unknown error";
+        var message = response && (response.error || response.description || response.message);
+        if (!message && xhr && xhr.responseText) {
+            // Older OctoPrint/proxy error handlers may still return HTML.
+            message = $("<div>").html(xhr.responseText).text().replace(/\s+/g, " ").trim();
+        }
+        if (!message) message = (xhr && xhr.statusText) || "Unknown error";
+        return xhr && xhr.status ? "HTTP " + xhr.status + ": " + message : message;
     }
     function toHexColor(value) {
         if (typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value)) return value;

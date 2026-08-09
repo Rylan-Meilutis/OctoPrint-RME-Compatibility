@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0b4 — 2026-08-09
+
+- Routed browser-to-Pi firmware uploads through OctoPrint's authenticated
+  multipart client so API-key and CSRF headers are applied consistently.
+- Made firmware upload validation errors machine-readable and included the HTTP
+  status and server explanation in the persistent browser notification.
+
 ## 0.1.0b3 — 2026-08-09
 
 - Fixed the package-level Python compatibility declaration so OctoPrint 1.11
