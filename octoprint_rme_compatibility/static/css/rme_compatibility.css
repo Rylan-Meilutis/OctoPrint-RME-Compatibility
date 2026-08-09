@@ -16,6 +16,57 @@
 .rme-color-dot { display: inline-block; width: 11px; height: 11px; border: 1px solid #777; border-radius: 50%; }
 .rme-assignment { display: inline-block; margin-left: 8px; }
 
+#navbar_plugin_rme_compatibility > a {
+    align-items: center;
+    display: flex;
+    gap: 5px;
+}
+
+#navbar_plugin_rme_compatibility .rme-navbar-label {
+    display: inline-block;
+    max-width: 155px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: bottom;
+    white-space: nowrap;
+}
+
+#navbar_plugin_rme_compatibility .dropdown-menu {
+    min-width: 290px;
+    padding-bottom: 7px;
+}
+
+#navbar_plugin_rme_compatibility .rme-navbar-summary,
+#navbar_plugin_rme_compatibility .rme-navbar-tool-row {
+    align-items: center;
+    cursor: default;
+    display: flex;
+    gap: 7px;
+}
+
+#navbar_plugin_rme_compatibility .rme-navbar-summary {
+    white-space: normal;
+}
+
+#navbar_plugin_rme_compatibility .rme-navbar-tool-row.active {
+    background: rgba(47, 150, 180, .16);
+    font-weight: bold;
+}
+
+#navbar_plugin_rme_compatibility .rme-navbar-tool-details {
+    color: #777;
+    margin-left: auto;
+}
+
+#navbar_plugin_rme_compatibility .rme-navbar-actions {
+    padding: 6px 12px 9px;
+    white-space: normal;
+}
+
+#navbar_plugin_rme_compatibility .rme-navbar-actions .btn {
+    margin: 4px 4px 0 0;
+}
+
 #rme-active-tool-indicator {
     align-items: center;
     background: rgba(0, 0, 0, 0.06);

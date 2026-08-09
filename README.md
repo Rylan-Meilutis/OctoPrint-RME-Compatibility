@@ -23,6 +23,11 @@ and `doc/gcode/M998.md`.
 - Shows the active extruder in the RME tab and beside OctoPrint's main progress
   area, including logical-to-physical remapping, loaded material, and the
   firmware/SpoolManager filament color.
+- Adds a persistent top-navbar dropdown on detected RME multi-tool and MMU
+  machines. Its compact indicator always shows the selected tool and color;
+  the dropdown lists every logical/physical assignment and live MMU phase,
+  message, progress, and firmware-provided recovery actions without requiring
+  the RME or State tab to be open.
 - Presents the firmware's dedicated MMU, filament load/unload, tool-change,
   runout, stuck-filament, pressure-advance, probing, heating, firmware-update,
   waste-bin, chamber-vent, and filtration workflows. Detailed MMU states cover
@@ -155,8 +160,12 @@ checkout in the same Python environment as OctoPrint:
 pip install .
 ```
 
-Restart OctoPrint, connect the printer, and open the **RME** tab. The plugin
-falls back quietly when `@RME MACHINE QUERY` is not supported.
+Restart OctoPrint after every installation or update, then connect the printer
+and open the **RME** tab. OctoPrint Plugin Manager and Software Update recognize
+this requirement and prompt or restart automatically when a server restart
+command is configured. The plugin's serial hooks, navbar, API, and background
+services are not fully initialized until that restart. It falls back quietly
+when `@RME MACHINE QUERY` is not supported.
 
 ## Update channels
 

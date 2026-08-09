@@ -222,6 +222,14 @@ class RmeCompatibilityPlugin(
 
     def get_template_configs(self):
         return [
+            {
+                "type": "navbar",
+                "template": "rme_compatibility_navbar.jinja2",
+                "custom_bindings": True,
+                "classes": ["dropdown", "rme-navbar"],
+                "styles": ["display: none"],
+                "data_bind": "visible: navbarVisible",
+            },
             {"type": "tab", "name": "RME", "custom_bindings": True},
             {"type": "settings", "name": "RME Compatibility", "custom_bindings": True},
         ]
@@ -245,6 +253,9 @@ class RmeCompatibilityPlugin(
                 # builds are not collapsed to the same 0.1.0 base release.
                 "release_compare": "python",
                 "force_base": False,
+                # The plugin registers assets, blueprints, serial hooks, and
+                # background services that must be initialized by the server.
+                "restart": "octoprint",
                 "stable_branch": {
                     "name": "Stable",
                     "branch": "main",

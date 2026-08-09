@@ -178,6 +178,90 @@ $(function () {
                 return {key: key, label: label, value: self.formatStat(key, values[key])};
             });
         });
+        self.mmuDetected = ko.pureComputed(function () {
+            var machine = self.state().machine || {};
+            var workflow = self.workflow();
+            var values = self.stats().values || {};
+            // mmu_changes is emitted as zero on every firmware target. Only
+            // HAS_MMU-only failure fields are positive hardware evidence.
+            var statsEvidence = Object.keys(values).some(function (key) {
+                return /^(mmu_load_|mmu_general_)/.test(key);
+            });
+            return workflow.workflow === "mmu" || statsEvidence ||
+                (Number(machine.logical_tools || 0) > 1 && Number(machine.hotends || 0) === 1);
+        });
+        self.multiToolDetected = ko.pureComputed(function () {
+            return Number((self.state().machine || {}).logical_tools || 0) > 1;
+        });
+        self.navbarVisible = ko.pureComputed(function () {
+            return !!self.state().supported && (self.multiToolDetected() || self.mmuDetected());
+        });
+        self.navbarMmuActive = ko.pureComputed(function () {
+            return self.workflow().workflow === "mmu" && self.workflowVisible();
+        });
+        self.navbarMmuActionable = ko.pureComputed(function () {
+            return self.navbarMmuActive() && self.hasFirmwarePrompt();
+        });
+        self.navbarModeText = ko.pureComputed(function () {
+            return self.mmuDetected() ? "RME MMU" : "RME multi-tool";
+        });
+        self.navbarMmuText = ko.pureComputed(function () {
+            var workflow = self.workflow();
+            if (!self.navbarMmuActive()) return self.mmuDetected() ? "MMU ready" : "Multi-tool ready";
+            var state = String(workflow.state || "active").replace(/_/g, " ");
+            var label = workflow.message || state.charAt(0).toUpperCase() + state.slice(1);
+            if (isFinite(Number(workflow.progress))) label += " · " + workflow.progress + "%";
+            return label;
+        });
+        self.navbarCompactText = ko.pureComputed(function () {
+            if (self.navbarMmuActive()) {
+                var state = String(self.workflow().state || "active").replace(/_/g, " ");
+                return "MMU · " + state + (isFinite(Number(self.workflow().progress)) ? " " + self.workflow().progress + "%" : "");
+            }
+            var tool = self.activeTool();
+            if (tool.logical === null || tool.logical === undefined) return self.navbarModeText();
+            var label = "T" + Number(tool.logical);
+            if (tool.material && tool.material !== "---") label += " · " + tool.material;
+            return label;
+        });
+        self.navbarTitle = ko.pureComputed(function () {
+            var details = self.activeToolText();
+            return self.navbarMmuActive() ? details + " · " + self.navbarMmuText() : details;
+        });
+        self.navbarToolRows = ko.pureComputed(function () {
+            var state = self.state();
+            var machine = state.machine || {};
+            var mapping = state.toolmap || {};
+            var selected = {};
+            var loaded = {};
+            ko.utils.arrayForEach((state.spoolmanager || {}).selected || [], function (item) {
+                selected[Number(item.tool)] = item;
+            });
+            ko.utils.arrayForEach(state.loaded_filaments || [], function (item) {
+                loaded[Number(item.tool)] = item;
+            });
+            var active = self.activeTool().logical;
+            var rows = [];
+            for (var logical = 0; logical < Number(machine.logical_tools || 0); logical++) {
+                // Printer-reported M865 loadout is authoritative; the active
+                // inventory provider fills gaps while its sync is in flight.
+                var item = loaded[logical] || selected[logical] || {};
+                var physical = mapping.enabled && mapping.mapping && mapping.mapping[logical] !== undefined ?
+                    Number(mapping.mapping[logical]) : logical;
+                var material = item.material && item.material !== "---" ? item.material : "Unassigned";
+                var colorName = item.color_name && item.color_name !== "None" ? item.color_name : "";
+                var color = typeof item.color === "string" && /^#[0-9a-f]{6}$/i.test(item.color) ? item.color : "#808080";
+                rows.push({
+                    logical: logical,
+                    physical: physical,
+                    label: "T" + logical + (physical !== logical ? " → T" + physical : ""),
+                    details: material + (colorName ? " · " + colorName : ""),
+                    color: color,
+                    active: active !== null && active !== undefined && Number(active) === logical
+                });
+            }
+            return rows;
+        });
         self.spoolLabel = function (spool) {
             var remaining = spool.remaining_weight;
             return (spool.alias ? spool.alias + " — " : "") + spool.display_name + " · " + spool.material +
@@ -378,6 +462,9 @@ $(function () {
             });
         };
         self.cancelNewSpool = function () { self.command("cancel_new_spool"); };
+        self.showRmeTab = function () {
+            $("a[href='#tab_plugin_rme_compatibility']").tab("show");
+        };
 
         self.onBeforeBinding = function () {
             OctoPrint.simpleApiGet("rme_compatibility").done(self.acceptState);
@@ -485,6 +572,6 @@ $(function () {
     OCTOPRINT_VIEWMODELS.push({
         construct: RmeCompatibilityViewModel,
         dependencies: ["settingsViewModel", "loginStateViewModel", "printerStateViewModel"],
-        elements: ["#tab_plugin_rme_compatibility", "#settings_plugin_rme_compatibility"]
+        elements: ["#navbar_plugin_rme_compatibility", "#tab_plugin_rme_compatibility", "#settings_plugin_rme_compatibility"]
     });
 });

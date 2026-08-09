@@ -1,0 +1,39 @@
+<a href="javascript:void(0)"
+   class="dropdown-toggle"
+   data-toggle="dropdown"
+   data-bind="attr: {title: navbarTitle, 'aria-label': navbarTitle}">
+    <span class="rme-color-dot" data-bind="style: {backgroundColor: activeToolColor}"></span>
+    <i class="fas" data-bind="css: {'fa-random': mmuDetected(), 'fa-tools': !mmuDetected()}"></i>
+    <span class="rme-navbar-label" data-bind="text: navbarCompactText"></span>
+    <b class="caret"></b>
+</a>
+<ul class="dropdown-menu pull-right">
+    <li class="nav-header" data-bind="text: navbarModeText"></li>
+    <li>
+        <a href="javascript:void(0)" class="rme-navbar-summary">
+            <span class="rme-color-dot" data-bind="style: {backgroundColor: activeToolColor}"></span>
+            <span>
+                <strong data-bind="text: activeToolText"></strong><br>
+                <small data-bind="text: navbarMmuText"></small>
+            </span>
+        </a>
+    </li>
+    <li class="rme-navbar-actions" data-bind="visible: navbarMmuActionable">
+        <strong data-bind="text: promptMessage"></strong>
+        <div data-bind="foreach: promptActions">
+            <button class="btn btn-mini" data-bind="text: $data, click: $parent.respond"></button>
+        </div>
+    </li>
+    <li class="divider"></li>
+    <!-- ko foreach: navbarToolRows -->
+    <li>
+        <a href="javascript:void(0)" class="rme-navbar-tool-row" data-bind="css: {active: active}">
+            <span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span>
+            <span data-bind="text: label"></span>
+            <small class="rme-navbar-tool-details" data-bind="text: details"></small>
+        </a>
+    </li>
+    <!-- /ko -->
+    <li class="divider"></li>
+    <li><a href="javascript:void(0)" data-bind="click: showRmeTab"><i class="fas fa-external-link-alt"></i> Open RME controls</a></li>
+</ul>

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0b2 — 2026-08-09
+
+- Added an always-available OctoPrint navbar dropdown for RME multi-tool and
+  MMU machines. It shows the active tool/material/color, remapped physical tool,
+  all tool assignments, live MMU workflow state/progress, and firmware-provided
+  recovery actions.
+- Declared an explicit OctoPrint server restart after install/update and added
+  a settings notice explaining that serial hooks, APIs, assets, and background
+  services initialize after that restart.
+
 ## 0.1.0b1 — 2026-08-09
 
 - Made SpoolManager, Spoolman, and built-in inventory mutually exclusive.
