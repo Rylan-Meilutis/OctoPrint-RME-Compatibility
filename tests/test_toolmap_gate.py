@@ -340,7 +340,10 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_current_firmware_stages_bbf_through_file_service(self):
         class FileService(object):
-            busy = False
+            # A Settings-page directory refresh may still be winding down when
+            # the user starts firmware staging. The real service serializes the
+            # upload behind it, so this must not fail preflight with HTTP 409.
+            busy = True
 
             def __init__(self):
                 self.upload = None
@@ -402,7 +405,7 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0b11"
+        plugin._plugin_version = "0.1.0b12"
         templates = plugin.get_template_configs()
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])

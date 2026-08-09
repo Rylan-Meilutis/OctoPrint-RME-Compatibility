@@ -2067,8 +2067,6 @@ class RmeCompatibilityPlugin(
             raise UploadError("Firmware transfer is only allowed while the printer is idle")
         if not self._state.get("supported"):
             raise UploadError("The connected printer did not complete the RME handshake")
-        if self._file_service and self._file_service.busy:
-            raise UploadError("A printer USB operation is already active")
         path = self._firmware_path(filename)
         if not os.path.isfile(path):
             raise UploadError("Firmware file was not found on the Pi")
@@ -2101,6 +2099,10 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 self._state["firmware"]["flash_after_stage"] = bool(flash_after_stage)
             if file_supported:
+                # ``write_file`` owns the same serialized operation lock as
+                # directory listing and capability probes. Starting the worker
+                # here lets a short UI refresh finish first instead of exposing
+                # a transient HTTP 409 to the user.
                 self._firmware_file_thread = threading.Thread(
                     target=self._run_file_firmware_upload,
                     args=(path, metadata),

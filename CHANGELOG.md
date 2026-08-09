@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0b12 — 2026-08-09
+
+- Queued firmware staging behind an in-progress USB capability probe or
+  directory refresh instead of rejecting the request with a transient HTTP 409.
+
 ## 0.1.0b11 — 2026-08-09
 
 - Staged and SHA-256-verified firmware through the current RME FILE service,
