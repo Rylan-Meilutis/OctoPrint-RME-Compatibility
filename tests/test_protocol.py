@@ -85,6 +85,19 @@ class ProtocolTests(unittest.TestCase):
             "record": "loaded_filament", "tool": 2, "material": "PLA-00A",
             "color_name": "Orange", "color": "#ff8000",
         })
+        self.assertEqual(parse_line(
+            'loaded_filament T0 S"PLA-00D" O"Custom" H"#808080" M"Prusa / Prusament"'
+        ), {
+            "record": "loaded_filament", "tool": 0, "material": "PLA-00D",
+            "color_name": "Custom", "color": "#808080",
+            "vendor": "Prusa / Prusament",
+        })
+        self.assertEqual(parse_line(
+            "RME_MANUFACTURER builtin=1 slot=0 name=Prusa%20%2F%20Prusament"
+        ), {
+            "record": "manufacturer", "builtin": 1, "slot": 0,
+            "name": "Prusa / Prusament",
+        })
 
     def test_parses_binary_safe_file_service_records_with_spaces(self):
         entry = parse_line("RME_FILE_ENTRY name=My print.bgcode type=file size=1234")

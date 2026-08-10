@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.0b17 — 2026-08-10
+
+- Fixed current Buddy `loaded_filament` parsing so its manufacturer field no
+  longer prevents color, material, or provider selection synchronization.
+- Made SpoolManager and Spoolman authoritative whenever either configured
+  provider is available; the local inventory is now only a no-provider
+  fallback.
+- Added bidirectional RME manufacturer profile and assignment bridging, plus
+  external-provider custom color profile publication.
+- Replaced local spool editing controls with a clear provider ownership message
+  while an external inventory provider is active.
+- Removed the redundant restart-required settings banner and obsolete direct
+  user-filament editor.
+- Avoided unchanged periodic profile rewrites to reduce serial and UI churn.
+
 ## 0.1.0b16 — 2026-08-09
 
 - Negotiated the current RME FILE capabilities and accelerated uploads with

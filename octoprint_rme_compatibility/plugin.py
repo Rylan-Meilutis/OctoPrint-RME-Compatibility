@@ -15,6 +15,7 @@ import shutil
 import tempfile
 import threading
 import time
+from urllib.parse import quote
 
 import flask
 import octoprint.plugin
@@ -99,6 +100,8 @@ class RmeCompatibilityPlugin(
         self._configuration_timer = None
         self._configuration_timer_lock = threading.Lock()
         self._configuration_domains = set()
+        self._manufacturer_sync_timer = None
+        self._manufacturer_sync_timer_lock = threading.Lock()
         self._transaction = int(time.time() * 1000) & 0xFFFFFFFF or 1
 
     @staticmethod
@@ -117,6 +120,7 @@ class RmeCompatibilityPlugin(
             "theme": {},
             "light": {},
             "filaments": [],
+            "manufacturers": {"profiles": [], "loaded": []},
             # M865 loadout metadata is keyed by the firmware's physical tool
             # index. ``active_tool`` combines it with the current logical tool
             # and RME remapping for a browser-ready status indicator.
@@ -225,6 +229,10 @@ class RmeCompatibilityPlugin(
             if self._configuration_timer:
                 self._configuration_timer.cancel()
                 self._configuration_timer = None
+        with self._manufacturer_sync_timer_lock:
+            if self._manufacturer_sync_timer:
+                self._manufacturer_sync_timer.cancel()
+                self._manufacturer_sync_timer = None
         if self._uploader and self._uploader.busy:
             self._uploader.cancel()
         self._firmware_file_cancel.set()
@@ -410,6 +418,7 @@ class RmeCompatibilityPlugin(
                     "@RME THEME QUERY",
                     "@RME LIGHT QUERY",
                     "@RME FILAMENT QUERY",
+                    "@RME MANUFACTURER QUERY",
                 ]
             )
         elif command == "ui_control":
@@ -471,6 +480,13 @@ class RmeCompatibilityPlugin(
                 "@RME LIGHT SET screen=0x%08X chamber=0x%08X status=0x%08X" % tuple(values)
             ))
         elif command == "set_filament":
+            _, provider_name = self._active_spool_provider()
+            if provider_name in ("spoolmanager", "spoolman"):
+                flask.abort(
+                    409,
+                    description="Firmware filament slots are managed by %s"
+                    % ("SpoolManager" if provider_name == "spoolmanager" else "Spoolman"),
+                )
             slot = int(data["slot"])
             name = str(data["name"])
             temperatures = [int(data[key]) for key in ("nozzle", "preheat", "bed")]
@@ -722,6 +738,7 @@ class RmeCompatibilityPlugin(
                 # Never display a previous printer's tool/loadout as current
                 # while capability discovery for this connection is pending.
                 self._state["loaded_filaments"] = []
+                self._state["manufacturers"] = {"profiles": [], "loaded": []}
                 self._state["active_tool"] = self._empty_state()["active_tool"]
             self._publish()
             self._send_command("@RME MACHINE QUERY")
@@ -975,6 +992,11 @@ class RmeCompatibilityPlugin(
                 revision_gap = bool(previous_revision and revision != previous_revision + 1)
                 self._state["session"]["last_seq"] = sequence
                 self._state["session"]["configuration_revision"] = revision
+                if record.get("domain") == "manufacturer" and record.get("key") == "custom":
+                    self._state["manufacturers"]["profiles"][:] = [
+                        item for item in self._state["manufacturers"]["profiles"]
+                        if int(item.get("builtin", 0))
+                    ]
                 if sequence_gap or revision_gap:
                     follow_up.extend(["@RME SESSION QUERY", "@RME DIALOG QUERY"])
                     follow_up.append("refresh_configuration:all")
@@ -1026,13 +1048,44 @@ class RmeCompatibilityPlugin(
                 ]
                 existing.append(filament)
                 existing.sort(key=lambda item: (int(item.get("user", 0)), int(item.get("slot", 0))))
+            elif kind == "manufacturer":
+                profile = {key: value for key, value in record.items() if key != "record"}
+                profiles = self._state["manufacturers"]["profiles"]
+                identity = (int(profile.get("builtin", 0)), int(profile.get("slot", -1)))
+                profiles[:] = [
+                    item for item in profiles
+                    if (int(item.get("builtin", 0)), int(item.get("slot", -1))) != identity
+                ]
+                profiles.append(profile)
+                profiles.sort(key=lambda item: (-int(item.get("builtin", 0)), int(item.get("slot", 0))))
+                # The current firmware emits all 50 built-ins before custom
+                # profiles and loaded assignments. Its query has no explicit
+                # terminator, so the final built-in is the stable completion
+                # signal for a short, coalesced provider reconciliation.
+                if int(profile.get("builtin", 0)) and int(profile.get("slot", -1)) == 49:
+                    follow_up.append("sync_manufacturer_profiles")
+            elif kind == "manufacturer_loaded":
+                loaded_manufacturer = {
+                    "tool": int(record.get("tool", 0)),
+                    "name": "" if str(record.get("name", "")).lower() == "none" else str(record.get("name", "")),
+                }
+                loaded = self._state["manufacturers"]["loaded"]
+                loaded[:] = [
+                    item for item in loaded
+                    if int(item.get("tool", -1)) != loaded_manufacturer["tool"]
+                ]
+                loaded.append(loaded_manufacturer)
+                for item in self._state["loaded_filaments"]:
+                    if int(item.get("tool", -1)) == loaded_manufacturer["tool"]:
+                        item["vendor"] = loaded_manufacturer["name"]
             elif kind == "loaded_filament":
                 loadout = {
                     key: value for key, value in record.items() if key != "record"
                 }
-                # Buddy's M865 report has no manufacturer field. Recover it
-                # losslessly when the seven-character firmware alias matches a
-                # spool that this plugin published from the active provider.
+                if str(loadout.get("vendor", "")).lower() == "none":
+                    loadout["vendor"] = ""
+                # Provider metadata remains authoritative when the firmware's
+                # seven-character alias identifies a published spool.
                 provider_match = next(
                     (
                         item for item in self._state["spoolmanager"].get("published", [])
@@ -1050,7 +1103,10 @@ class RmeCompatibilityPlugin(
                         provider=self._state["spoolmanager"].get("provider"),
                     )
                 else:
-                    loadout.update(vendor="", display_name="", provider="RME firmware")
+                    loadout.update(
+                        vendor=loadout.get("vendor", ""),
+                        display_name="", provider="RME firmware",
+                    )
                 existing = self._state["loaded_filaments"]
                 existing[:] = [
                     item for item in existing
@@ -1081,6 +1137,8 @@ class RmeCompatibilityPlugin(
                 self._defer(self._initialize_spool_sync)
             elif item == "initialize_storage":
                 self._defer(self._initialize_storage)
+            elif item == "sync_manufacturer_profiles":
+                self._schedule_manufacturer_profile_sync()
             elif item.startswith("refresh_configuration:"):
                 self._schedule_configuration_refresh(item.split(":", 1)[1])
             else:
@@ -1118,13 +1176,13 @@ class RmeCompatibilityPlugin(
             "light": ["@RME LIGHT QUERY"],
             "filament": ["@RME FILAMENT QUERY", "M865 Q"],
             "color": ["M865 Q"],
-            "manufacturer": ["M865 Q"],
+            "manufacturer": ["@RME MANUFACTURER QUERY", "M865 Q"],
             "toolmap": ["@RME TOOLMAP QUERY"],
         }
         if domain in queries:
             return list(queries[domain])
         result = []
-        for name in ("lock", "theme", "light", "filament", "toolmap"):
+        for name in ("lock", "theme", "light", "filament", "manufacturer", "toolmap"):
             for command in queries[name]:
                 if command not in result:
                     result.append(command)
@@ -1574,6 +1632,105 @@ class RmeCompatibilityPlugin(
         self._spoolmanager, provider_name = self._resolve_spool_provider()
         return self._spoolmanager, provider_name
 
+    @staticmethod
+    def _gcode_text(value, maximum):
+        """Return bounded text that cannot escape an M865 quoted argument."""
+        return (
+            str(value or "")
+            .replace('"', "'")
+            .replace("\r", " ")
+            .replace("\n", " ")[:maximum]
+        )
+
+    def _provider_profile_commands(self, published, provider_name):
+        """Mirror external color and manufacturer profiles into firmware.
+
+        The external provider remains authoritative. Firmware custom color and
+        manufacturer slots are merely a presentation/cache layer that lets its
+        local load picker show the provider's names and report them back.
+        """
+        if provider_name not in ("spoolmanager", "spoolman"):
+            return [], {}
+
+        commands = []
+        seen_colors = set()
+        color_slot = 0
+        for item in published:
+            color = str(item.get("color") or "#808080").lower()
+            if color in seen_colors or not self._valid_color(color) or color_slot >= 8:
+                continue
+            seen_colors.add(color)
+            name = self._gcode_text(
+                item.get("color_name") or item.get("display_name") or "Color %d" % color_slot,
+                15,
+            )
+            commands.append('M865 V%d O"%s" N"%s"' % (color_slot, color, name))
+            color_slot += 1
+
+        with self._state_lock:
+            profiles = copy.deepcopy(self._state.get("manufacturers", {}).get("profiles", []))
+        builtin = {
+            str(item.get("name", "")).casefold()
+            for item in profiles if int(item.get("builtin", 0))
+        }
+        custom = {
+            int(item.get("slot", -1)): str(item.get("name", ""))
+            for item in profiles if not int(item.get("builtin", 0))
+        }
+        desired_custom = []
+        manufacturer_for_spool = {}
+        for item in published:
+            vendor = self._gcode_text(item.get("vendor"), 23)
+            if not vendor:
+                manufacturer_for_spool[item["database_id"]] = "none"
+                continue
+            if vendor.casefold() in builtin:
+                manufacturer_for_spool[item["database_id"]] = vendor
+                continue
+            existing = next(
+                (name for name in desired_custom if name.casefold() == vendor.casefold()),
+                None,
+            )
+            if existing is None and len(desired_custom) < 8:
+                desired_custom.append(vendor)
+                existing = vendor
+            manufacturer_for_spool[item["database_id"]] = existing or "none"
+
+        # An empty list means the initial MANUFACTURER QUERY has not returned
+        # yet. Avoid guessing that built-ins are custom; assignments to known
+        # built-ins still work and the next explicit/provider sync fills custom
+        # profiles after discovery.
+        if profiles:
+            for slot in range(8):
+                wanted = desired_custom[slot] if slot < len(desired_custom) else None
+                current = custom.get(slot)
+                if current and (wanted is None or current.casefold() != wanted.casefold()):
+                    commands.append(self._with_transaction(
+                        "@RME MANUFACTURER DELETE slot=%d" % slot
+                    ))
+                if wanted and (not current or current.casefold() != wanted.casefold()):
+                    commands.append(self._with_transaction(
+                        "@RME MANUFACTURER CREATE slot=%d name=%s"
+                        % (slot, quote(wanted, safe="-_.~"))
+                    ))
+        return commands, manufacturer_for_spool
+
+    def _schedule_manufacturer_profile_sync(self):
+        """Reconcile once after the firmware's manufacturer query burst."""
+        with self._manufacturer_sync_timer_lock:
+            if self._manufacturer_sync_timer is not None:
+                self._manufacturer_sync_timer.cancel()
+
+            def synchronize():
+                with self._manufacturer_sync_timer_lock:
+                    self._manufacturer_sync_timer = None
+                if not self._stop.is_set():
+                    self._sync_spoolmanager(True, True)
+
+            self._manufacturer_sync_timer = threading.Timer(0.15, synchronize)
+            self._manufacturer_sync_timer.daemon = True
+            self._manufacturer_sync_timer.start()
+
     def _sync_spoolmanager(self, force=False, push_to_firmware=True):
         """Reconcile the active inventory provider with eight firmware presets.
 
@@ -1581,13 +1738,6 @@ class RmeCompatibilityPlugin(
         eight slots. Seven slots receive stable database-ID aliases; slot seven
         is reserved for ``NEW``. Full metadata remains visible in OctoPrint.
         """
-        if not self._settings.get_boolean(["spoolmanager_enabled"]):
-            with self._state_lock:
-                self._state["spoolmanager"].update(
-                    available=False, status="disabled", error=None
-                )
-            self._persist_and_publish()
-            return
         if not self._spool_sync_lock.acquire(False):
             return
         try:
@@ -1667,7 +1817,13 @@ class RmeCompatibilityPlugin(
                 }
                 self._refresh_active_tool_locked()
             should_push = can_send and push_to_firmware and not pending_provider_sync
-            if should_push and (force or old_signature != new_signature):
+            profile_commands, manufacturer_by_spool = self._provider_profile_commands(
+                published, provider_name
+            )
+            metadata_changed = force or old_signature != new_signature
+            if should_push and metadata_changed and profile_commands:
+                self._send_commands(profile_commands)
+            if should_push and metadata_changed:
                 by_slot = {item["slot"]: item for item in published}
                 commands = []
                 for slot in range(7):
@@ -1700,6 +1856,9 @@ class RmeCompatibilityPlugin(
                 for tool in range(tool_count):
                     if tool not in selected_tools:
                         assignments.append('M865 S"---" L%d' % tool)
+                        assignments.append(self._with_transaction(
+                            "@RME MANUFACTURER ASSIGN tool=%d name=none" % tool
+                        ))
                 for selected_item in selected:
                     item = slot_by_id.get(selected_item["database_id"])
                     if item:
@@ -1707,6 +1866,13 @@ class RmeCompatibilityPlugin(
                             'M865 U%d L%d O"%s"'
                             % (item["slot"], selected_item["tool"], item["color"])
                         )
+                        manufacturer = manufacturer_by_spool.get(
+                            item["database_id"], "none"
+                        )
+                        assignments.append(self._with_transaction(
+                            "@RME MANUFACTURER ASSIGN tool=%d name=%s"
+                            % (selected_item["tool"], quote(manufacturer, safe="-_.~"))
+                        ))
                 assignments.append("M865 Q")
                 self._send_commands(assignments)
 
@@ -1746,7 +1912,14 @@ class RmeCompatibilityPlugin(
         }
         if preference in ("spoolmanager", "spoolman"):
             return providers[preference], preference
+        # Older settings may still contain ``internal``. Once an external
+        # provider is installed it owns the inventory unconditionally; the
+        # local backend is only a no-provider fallback.
         if preference == "internal":
+            for name in ("spoolmanager", "spoolman"):
+                candidate = providers[name]
+                if candidate is not None and candidate.available():
+                    return candidate, name
             return providers["internal"], "internal"
         for name in ("spoolmanager", "spoolman"):
             candidate = providers[name]
@@ -1878,21 +2051,6 @@ class RmeCompatibilityPlugin(
             self._state["spoolmanager"]["pending_provider_sync"] = None
         self._sync_spoolmanager(True, True)
 
-    def _assign_published_spool(self, tool, database_id):
-        """Apply a selected provider record as firmware loadout metadata."""
-        with self._state_lock:
-            can_send = self._state["connected"] and self._state["supported"]
-            item = next((entry for entry in self._state["spoolmanager"].get("published", [])
-                         if entry["database_id"] == int(database_id)), None)
-        if not can_send:
-            return
-        if item is None:
-            raise RuntimeError("Selected spool could not fit in the seven firmware slots")
-        self._send_commands([
-            'M865 U%d L%d O"%s"' % (item["slot"], int(tool), item["color"]),
-            "M865 Q",
-        ])
-
     def _select_spool_from_octoprint(self, tool, database_id):
         """Select from the RME tab and update both provider and firmware."""
         tool = self._tool_index(tool)
@@ -1901,7 +2059,6 @@ class RmeCompatibilityPlugin(
         self._mark_expected_provider_event(tool, database_id)
         provider.select(tool, database_id)
         self._sync_spoolmanager(True)
-        self._assign_published_spool(tool, database_id)
 
     def _deselect_spool_from_octoprint(self, tool):
         """Clear one tool in the active provider and on the printer."""
@@ -1909,10 +2066,6 @@ class RmeCompatibilityPlugin(
         provider, _ = self._active_spool_provider()
         self._mark_expected_provider_event(tool, None)
         provider.deselect(tool)
-        with self._state_lock:
-            can_send = self._state["connected"] and self._state["supported"]
-        if can_send:
-            self._send_commands(['M865 S"---" L%d' % tool, "M865 Q"])
         self._sync_spoolmanager(True)
 
     def _begin_new_spool(self, tool):
@@ -1953,7 +2106,31 @@ class RmeCompatibilityPlugin(
             if not current or current["database_id"] != match["database_id"]:
                 self._mark_expected_provider_event(tool, match["database_id"])
                 provider.select(tool, match["database_id"])
-                self._sync_spoolmanager(False, False)
+                self._sync_spoolmanager(True, True)
+            else:
+                expected_vendor = self._gcode_text(match.get("vendor"), 23)
+                expected_color_name = self._gcode_text(
+                    match.get("color_name") or match.get("display_name"), 15
+                )
+                mismatch = (
+                    str(record.get("color", "")).lower()
+                    != str(match.get("color", "")).lower()
+                    or (
+                        record.get("vendor") not in (None, "", "None")
+                        and str(record.get("vendor", "")).casefold()
+                        != expected_vendor.casefold()
+                    )
+                    or (
+                        record.get("color_name") not in (None, "", "None", "Custom")
+                        and str(record.get("color_name", "")).casefold()
+                        != expected_color_name.casefold()
+                    )
+                )
+                if mismatch:
+                    # External metadata owns the slot. A front-panel edit to a
+                    # linked alias is corrected back to the provider's color
+                    # and manufacturer rather than forking a local RME record.
+                    self._sync_spoolmanager(True, True)
             return
         if material == "---":
             if current:
@@ -1969,7 +2146,7 @@ class RmeCompatibilityPlugin(
             self._state["spoolmanager"]["pending_new"] = {
                 "tool": tool,
                 "display_name": "New spool on tool %d" % tool,
-                "vendor": "",
+                "vendor": "" if str(record.get("vendor", "")).lower() == "none" else record.get("vendor", ""),
                 "material": "PLA" if material == "NEW" else material,
                 "color": record.get("color") if self._valid_color(record.get("color")) else "#808080",
                 "color_name": record.get("color_name") if record.get("color_name") != "None" else "",
@@ -2008,7 +2185,6 @@ class RmeCompatibilityPlugin(
         with self._state_lock:
             self._state["spoolmanager"]["pending_new"] = None
         self._sync_spoolmanager(True)
-        self._assign_published_spool(int(pending["tool"]), created["database_id"])
 
     # -- Machine profile ----------------------------------------------------
 

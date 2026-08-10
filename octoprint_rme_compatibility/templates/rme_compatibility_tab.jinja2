@@ -52,7 +52,8 @@
     <div class="rme-card">
         <h4>Filament and tool state</h4>
         <p><span class="label" data-bind="css: {'label-success': spoolmanager().available, 'label-warning': !spoolmanager().available}, text: spoolmanagerStatus"></span></p>
-        <ul data-bind="foreach: publishedSpools">
+        <p class="alert alert-info" data-bind="visible: externalSpoolProvider, text: spoolOwnershipText"></p>
+        <ul data-bind="visible: internalSpoolProvider, foreach: publishedSpools">
             <li><span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span> <span data-bind="text: $parent.spoolLabel($data)"></span></li>
         </ul>
         <p data-bind="visible: selectedSpools().length"><strong>Loaded assignments:</strong>

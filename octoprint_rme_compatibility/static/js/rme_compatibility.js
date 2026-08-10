@@ -61,12 +61,6 @@ $(function () {
             makeLightProfile("chamber", "Chamber", 20, 20, 100, 100),
             makeLightProfile("status", "Status", 20, 20, 100, 100)
         ];
-        self.filamentSlot = ko.observable(0);
-        self.filamentName = ko.observable("PLAplus");
-        self.filamentNozzle = ko.observable(215);
-        self.filamentPreheat = ko.observable(170);
-        self.filamentBed = ko.observable(60);
-        self.filamentVisible = ko.observable(true);
         // Only reset this persistent form when a different firmware request
         // arrives; routine websocket snapshots must not erase in-progress edits.
         self.pendingSpoolKey = "";
@@ -175,6 +169,18 @@ $(function () {
             return "Current mapping will be kept in " + formatDuration(remaining) + " unless you interact.";
         });
         self.spoolmanager = ko.pureComputed(function () { return self.state().spoolmanager || {}; });
+        self.externalSpoolProvider = ko.pureComputed(function () {
+            return ["spoolmanager", "spoolman"].indexOf(String(self.spoolmanager().provider || "").toLowerCase()) >= 0;
+        });
+        self.internalSpoolProvider = ko.pureComputed(function () {
+            return self.spoolmanager().provider === "internal";
+        });
+        self.spoolOwnershipText = ko.pureComputed(function () {
+            var provider = String(self.spoolmanager().provider || "").toLowerCase();
+            if (provider === "spoolmanager") return "Spools managed by SpoolManager";
+            if (provider === "spoolman") return "Spools managed by Spoolman";
+            return "Spools managed by RME Compatibility";
+        });
         self.spoolmanagerStatus = ko.pureComputed(function () {
             var spool = self.spoolmanager();
             var provider = spool.provider ? spool.provider + ": " : "";
@@ -605,13 +611,6 @@ $(function () {
         self.selectThemePreset = function (preset) {
             ko.utils.arrayForEach(self.themeKeys, function (entry) {
                 entry.value(preset.colors[entry.key]);
-            });
-        };
-        self.applyFilament = function () {
-            self.command("set_filament", {
-                slot: Number(self.filamentSlot()), name: self.filamentName(),
-                nozzle: Number(self.filamentNozzle()), preheat: Number(self.filamentPreheat()),
-                bed: Number(self.filamentBed()), visible: self.filamentVisible()
             });
         };
         self.syncSpoolmanager = function () { self.command("sync_filaments_to_printer"); };

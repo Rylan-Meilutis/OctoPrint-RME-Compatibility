@@ -3,6 +3,7 @@
 import base64
 import re
 import shlex
+from urllib.parse import unquote
 
 
 MAX_FIRMWARE_SIZE = 32 * 1024 * 1024
@@ -39,7 +40,8 @@ TERMINAL_WORKFLOW_STATES = {
 # physical spool after a malformed serial line.
 LOADED_FILAMENT_RE = re.compile(
     r'^loaded_filament T(?P<tool>\d+) S"(?P<material>[^"]*)" '
-    r'O"(?P<color_name>[^"]*)" H"(?P<color>[^"]*)"$'
+    r'O"(?P<color_name>[^"]*)" H"(?P<color>[^"]*)"'
+    r'(?: M"(?P<vendor>[^"]*)")?$'
 )
 
 
@@ -142,6 +144,16 @@ def parse_line(raw_line):
         result = parse_fields(line[len("RME_CHANGE ") :])
         result["record"] = "change"
         return result
+    if line.startswith("RME_MANUFACTURER "):
+        result = parse_fields(line[len("RME_MANUFACTURER ") :])
+        result["record"] = "manufacturer"
+        result["name"] = unquote(str(result.get("name", "")))
+        return result
+    if line.startswith("RME_MANUFACTURER_LOADED "):
+        result = parse_fields(line[len("RME_MANUFACTURER_LOADED ") :])
+        result["record"] = "manufacturer_loaded"
+        result["name"] = unquote(str(result.get("name", "")))
+        return result
     for prefix, record in (
         ("RME_MACHINE ", "machine"),
         ("RME_ENVELOPE ", "envelope"),
@@ -180,6 +192,8 @@ def parse_line(raw_line):
     loaded_filament = LOADED_FILAMENT_RE.match(line)
     if loaded_filament:
         result = loaded_filament.groupdict()
+        if result.get("vendor") is None:
+            result.pop("vendor", None)
         result["record"] = "loaded_filament"
         result["tool"] = int(result["tool"])
         return result

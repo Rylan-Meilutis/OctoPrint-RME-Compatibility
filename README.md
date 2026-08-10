@@ -117,7 +117,7 @@ the chosen physical tool's nozzle, SpoolManager material, and spool identity.
 
 ## Filament inventory integration
 
-Choose Automatic, SpoolManager, Spoolman, or Built-in under **Settings → RME
+Choose Automatic, SpoolManager, or Spoolman under **Settings → RME
 Compatibility → Filament inventory**. Full names, colors, remaining weights, and tool
 assignments appear in the OctoPrint RME tab; the printer receives seven-character
 aliases because that is the RME firmware's preset-name limit. Choosing `NEW` or

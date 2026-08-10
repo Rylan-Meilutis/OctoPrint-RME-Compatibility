@@ -1,8 +1,4 @@
 <form class="form-horizontal">
-    <div class="alert alert-info">
-        <strong>Restart required after installation or update.</strong>
-        OctoPrint must restart before the RME serial hooks, navbar, API, and background services are fully initialized. Plugin Manager and Software Update will prompt for this automatically.
-    </div>
     <div class="control-group">
         <label class="control-label">Plugin status</label>
         <div class="controls">
@@ -39,13 +35,11 @@
     <div class="control-group">
         <label class="control-label">Filament inventory</label>
         <div class="controls">
-            <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.spoolmanager_enabled"> Synchronize firmware load choices and inventory selections</label>
             <label>Provider
                 <select data-bind="value: settings.settings.plugins.rme_compatibility.spool_provider">
-                    <option value="auto">Automatic (SpoolManager, Spoolman, then built-in)</option>
+                    <option value="auto">Automatic (external provider when installed)</option>
                     <option value="spoolmanager">SpoolManager</option>
                     <option value="spoolman">Spoolman</option>
-                    <option value="internal">Built-in persistent inventory</option>
                 </select>
             </label>
             <label>Reconcile every <input class="input-mini" type="number" min="10" data-bind="value: settings.settings.plugins.rme_compatibility.spoolmanager_sync_interval"> seconds</label>
@@ -62,20 +56,23 @@
                     <button type="button" class="btn" data-bind="click: cancelProviderSync">Keep printer selections</button>
                 </p>
             </div>
-            <div class="form-inline">
-                <label>Create/assign for tool <input class="input-mini" type="number" min="0" data-bind="value: newSpoolTool"></label>
-                <button type="button" class="btn btn-mini" data-bind="click: beginNewSpool">Add spool…</button>
+            <div class="alert alert-info" data-bind="visible: externalSpoolProvider, text: spoolOwnershipText"></div>
+            <div data-bind="visible: internalSpoolProvider">
+                <div class="form-inline">
+                    <label>Create/assign for tool <input class="input-mini" type="number" min="0" data-bind="value: newSpoolTool"></label>
+                    <button type="button" class="btn btn-mini" data-bind="click: beginNewSpool">Add spool…</button>
+                </div>
+                <ul data-bind="foreach: publishedSpools">
+                    <li><span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span> <span data-bind="text: $parent.spoolLabel($data)"></span></li>
+                </ul>
+                <table class="table table-condensed" data-bind="visible: spoolSelectionRows().length">
+                    <thead><tr><th>Printer tool</th><th>Selected spool</th></tr></thead>
+                    <tbody data-bind="foreach: spoolSelectionRows"><tr>
+                        <td data-bind="text: 'T' + tool"></td>
+                        <td><select data-bind="options: $parent.inventorySpools, optionsText: $parent.spoolLabel, optionsValue: 'database_id', optionsCaption: 'Unassigned', value: selected, event: {change: function() { $parent.changeSpoolSelection($data); }}"></select></td>
+                    </tr></tbody>
+                </table>
             </div>
-            <ul data-bind="foreach: publishedSpools">
-                <li><span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span> <span data-bind="text: $parent.spoolLabel($data)"></span></li>
-            </ul>
-            <table class="table table-condensed" data-bind="visible: spoolSelectionRows().length">
-                <thead><tr><th>Printer tool</th><th>Selected spool</th></tr></thead>
-                <tbody data-bind="foreach: spoolSelectionRows"><tr>
-                    <td data-bind="text: 'T' + tool"></td>
-                    <td><select data-bind="options: $parent.inventorySpools, optionsText: $parent.spoolLabel, optionsValue: 'database_id', optionsCaption: 'Unassigned', value: selected, event: {change: function() { $parent.changeSpoolSelection($data); }}"></select></td>
-                </tr></tbody>
-            </table>
             <div class="alert alert-info" data-bind="visible: pendingNewSpool">
                 <strong>Configure new printer filament</strong>
                 <p>Tool <span data-bind="text: pendingNewSpool() && pendingNewSpool().tool"></span>; this draft persists across refreshes.</p>
@@ -92,7 +89,7 @@
                 <button type="button" class="btn btn-primary" data-bind="click: createSpool">Create, select, and sync</button>
                 <button type="button" class="btn" data-bind="click: cancelNewSpool">Dismiss</button>
             </div>
-            <p class="help-block">Seven firmware user slots mirror available spools; the eighth is reserved for NEW. External providers are exclusive: the built-in inventory is disabled while SpoolManager or Spoolman is active. Automatic uses built-in only when neither is available.</p>
+            <p class="help-block">Seven firmware user slots mirror available spools; the eighth is reserved for NEW. SpoolManager or Spoolman is authoritative whenever available; the built-in backend exists only when neither external provider is installed.</p>
             <p class="help-block">OrcaSlicer can poll <code>/plugin/rme_compatibility/selected-spools</code> or <code>/plugin/rme_compatibility/filament-report</code> with an OctoPrint API key.</p>
         </div>
     </div>
@@ -232,18 +229,6 @@
             </table>
             <button type="button" class="btn btn-primary" data-bind="click: applyPersistentLights, enable: state().supported">Save lighting profiles</button>
             <p class="help-block">The current firmware reports live print brightness but not the complete saved four-state matrix. Review all draft values before saving.</p>
-        </div>
-    </div>
-    <div class="control-group">
-        <label class="control-label">User filament preset</label>
-        <div class="controls">
-            <label>Slot <input class="input-mini" type="number" min="0" max="7" data-bind="value: filamentSlot"></label>
-            <label>Name <input class="input-small" maxlength="7" data-bind="value: filamentName"></label>
-            <label>Nozzle <input class="input-mini" type="number" min="0" max="500" data-bind="value: filamentNozzle"> °C</label>
-            <label>Preheat <input class="input-mini" type="number" min="0" max="500" data-bind="value: filamentPreheat"> °C</label>
-            <label>Bed <input class="input-mini" type="number" min="0" max="500" data-bind="value: filamentBed"> °C</label>
-            <label class="checkbox"><input type="checkbox" data-bind="checked: filamentVisible"> Visible</label>
-            <button type="button" class="btn btn-primary" data-bind="click: applyFilament, enable: state().supported">Save preset to printer</button>
         </div>
     </div>
     <hr>

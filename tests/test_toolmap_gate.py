@@ -59,6 +59,7 @@ def _install_octoprint_stubs():
 _install_octoprint_stubs()
 
 from octoprint_rme_compatibility.plugin import RmeCompatibilityPlugin
+from octoprint_rme_compatibility.protocol import parse_line
 
 
 class _Settings(object):
@@ -171,6 +172,13 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIs(spoolman, provider)
         self.assertEqual("spoolman", name)
 
+        # A legacy saved "internal" preference cannot reactivate the local
+        # backend while a better external provider is available.
+        plugin._settings.values["spool_provider"] = "internal"
+        provider, name = plugin._resolve_spool_provider()
+        self.assertIs(spoolman, provider)
+        self.assertEqual("spoolman", name)
+
         spoolman._available = False
         provider, name = plugin._resolve_spool_provider()
         self.assertIs(internal, provider)
@@ -178,7 +186,7 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_external_provider_clears_unselected_builtin_tool_assignment(self):
         record = {
-            "database_id": 7, "display_name": "External PETG", "vendor": "",
+            "database_id": 7, "display_name": "External PETG", "vendor": "Atomic Filament",
             "material": "PETG", "color_name": "Blue", "color": "#193a8a",
             "nozzle_temperature": 245, "bed_temperature": 85,
             "remaining_weight": 600, "is_active": True, "is_template": False,
@@ -197,6 +205,7 @@ class ToolmapGateTests(unittest.TestCase):
         plugin = RmeCompatibilityPlugin()
         plugin._settings = _Settings()
         plugin._settings.values["spool_provider"] = "spoolmanager"
+        plugin._settings.values["spoolmanager_enabled"] = False
         plugin._spoolmanager_bridge = Provider()
         plugin._spoolman_bridge = None
         plugin._internal_spool_bridge = None
@@ -208,13 +217,25 @@ class ToolmapGateTests(unittest.TestCase):
             machine={"logical_tools": 2},
         )
         plugin._state["spoolmanager"].update(provider="internal")
+        plugin._state["manufacturers"]["profiles"] = [
+            {"builtin": 1, "slot": 6, "name": "Atomic Filament"}
+        ]
 
         plugin._sync_spoolmanager(True)
 
         commands = [command for batch in plugin._printer.command_batches
                     for command in (batch if isinstance(batch, list) else [batch])]
         self.assertIn('M865 U0 L0 O"#193a8a"', commands)
+        self.assertIn('M865 V0 O"#193a8a" N"Blue"', commands)
+        self.assertTrue(any(
+            command.startswith("@RME MANUFACTURER ASSIGN tool=0 name=Atomic%20Filament tx=")
+            for command in commands
+        ))
         self.assertIn('M865 S"---" L1', commands)
+        self.assertTrue(any(
+            command.startswith("@RME MANUFACTURER ASSIGN tool=1 name=none tx=")
+            for command in commands
+        ))
 
     def test_pending_provider_change_waits_for_confirmation(self):
         record = {
@@ -467,7 +488,7 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0b16"
+        plugin._plugin_version = "0.1.0b17"
         templates = plugin.get_template_configs()
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])
@@ -478,6 +499,9 @@ class ToolmapGateTests(unittest.TestCase):
             settings_template = template_file.read()
         self.assertIn("Plugin status", settings_template)
         self.assertIn("Firmware update", settings_template)
+        self.assertNotIn("Restart required after installation or update", settings_template)
+        self.assertIn("spoolOwnershipText", settings_template)
+        self.assertNotIn('option value="internal"', settings_template)
         self.assertIn("Current theme", settings_template)
         self.assertIn("rme-theme-swatch", settings_template)
         self.assertNotIn("Encoder −", settings_template)
@@ -742,6 +766,22 @@ class ToolmapGateTests(unittest.TestCase):
         report = plugin._filament_report()["data"]["tools"][0]
         self.assertEqual("13", report["spool_id"])
         self.assertEqual("Prusament", report["vendor"])
+
+    def test_current_loaded_filament_wire_format_reaches_provider_bridge(self):
+        plugin = RmeCompatibilityPlugin()
+        accepted = []
+        plugin._schedule_publish = lambda: None
+        plugin._defer = lambda callback, *args: accepted.append(args[0]) if callback == plugin._accept_firmware_spool else None
+        plugin._state["spoolmanager"]["published"] = []
+
+        record = parse_line(
+            'loaded_filament T2 S"PET-00L" O"Black" H"#000000" M"Polymaker"'
+        )
+        plugin._handle_record(record)
+
+        self.assertEqual("Polymaker", plugin._state["loaded_filaments"][0]["vendor"])
+        self.assertEqual("#000000", plugin._state["loaded_filaments"][0]["color"])
+        self.assertEqual("PET-00L", accepted[0]["material"])
 
     def test_stats_polling_starts_only_after_firmware_support_response(self):
         plugin = RmeCompatibilityPlugin()
