@@ -15,6 +15,7 @@ import shutil
 import tempfile
 import threading
 import time
+import uuid
 from urllib.parse import quote
 
 import flask
@@ -95,6 +96,7 @@ class RmeCompatibilityPlugin(
         self._firmware_completed_controls = set()
         self._firmware_action_lock = threading.Lock()
         self._last_storage_publish = 0
+        self._native_refresh_lock = threading.Lock()
         self._publish_timer = None
         self._publish_timer_lock = threading.Lock()
         self._configuration_timer = None
@@ -164,7 +166,8 @@ class RmeCompatibilityPlugin(
             "storage": {
                 "supported": False, "caps": {}, "path": "/", "entries": [],
                 "status": "not checked", "progress": None, "error": None,
-                "updated": None,
+                "updated": None, "native_files": [], "download": None,
+                "downloads": [],
             },
             "errors": [],
         }
@@ -176,6 +179,24 @@ class RmeCompatibilityPlugin(
         data_folder = self.get_plugin_data_folder()
         self._firmware_directory = os.path.join(data_folder, "firmware")
         os.makedirs(self._firmware_directory, exist_ok=True)
+        self._download_directory = os.path.join(data_folder, "downloads")
+        os.makedirs(self._download_directory, exist_ok=True)
+        restored_downloads = []
+        for stored_name in sorted(os.listdir(self._download_directory)):
+            match = re.match(r"^([0-9a-f]{32})--(.+)$", stored_name)
+            path = os.path.join(self._download_directory, stored_name)
+            if not match or not os.path.isfile(path) or stored_name.endswith(".part"):
+                continue
+            restored_downloads.append({
+                "id": match.group(1), "path": None, "name": match.group(2),
+                "stored_name": stored_name, "target": "pi", "status": "ready",
+                "size": os.path.getsize(path), "offset": os.path.getsize(path),
+                "progress": 100, "error": None,
+                "updated": int(os.path.getmtime(path)),
+            })
+        restored_downloads.sort(key=lambda item: item["updated"])
+        with self._state_lock:
+            self._state["storage"]["downloads"] = restored_downloads[-20:]
         self._store = StateStore(
             os.path.join(data_folder, "state.json"), self._persistent_snapshot, self._logger
         )
@@ -377,6 +398,7 @@ class RmeCompatibilityPlugin(
             "storage_delete": ["path"],
             "storage_print": ["path"],
             "storage_flash": ["path"],
+            "storage_download": ["path", "target"],
         }
 
     def on_api_get(self, request):
@@ -568,7 +590,17 @@ class RmeCompatibilityPlugin(
             self._storage_mutation("PRINT", data["path"])
         elif command == "storage_flash":
             self._storage_mutation("FLASH", data["path"])
+        elif command == "storage_download":
+            permission = getattr(Permissions, "FILES_DOWNLOAD", Permissions.STATUS)
+            if not permission.can():
+                flask.abort(403)
+            self._start_storage_download(data["path"], data["target"])
         return flask.jsonify(self._public_state())
+
+    @staticmethod
+    def file_extension_hook(*args, **kwargs):
+        """Expose RME firmware and Buddy dumps in OctoPrint's Files UI."""
+        return {"model": {"rme_artifact": ["bbf", "bin"]}}
 
     @octoprint.plugin.BlueprintPlugin.route("/selected-spools", methods=["GET"])
     @octoprint.plugin.BlueprintPlugin.route("/filament-report", methods=["GET"])
@@ -582,27 +614,48 @@ class RmeCompatibilityPlugin(
             flask.abort(403)
         return flask.jsonify(self._filament_report())
 
-    @octoprint.plugin.BlueprintPlugin.route("/storage/download", methods=["GET"])
+    @octoprint.plugin.BlueprintPlugin.route("/storage/download", methods=["POST"])
     @api_errors
     def download_storage_file(self):
-        """Stream one printer USB file through authenticated OctoPrint."""
+        """Start a progress-reporting printer-to-Pi download job."""
         permission = getattr(Permissions, "FILES_DOWNLOAD", Permissions.STATUS)
         if not permission.can():
             flask.abort(403)
-        path = flask.request.args.get("path", "")
-        self._require_storage()
-        metadata = self._file_service.stat(path)
-        if metadata.get("type") != "file":
-            raise FileServiceError("Only files can be downloaded")
-        filename = secure_filename(os.path.basename(str(path).rstrip("/"))) or "download.bin"
-        response = flask.Response(
-            flask.stream_with_context(self._file_service.iter_file(path)),
-            mimetype="application/octet-stream",
+        data = flask.request.get_json(silent=True) or {}
+        job = self._start_storage_download(
+            data.get("path", ""), data.get("target", "pi")
         )
-        response.headers["Content-Length"] = str(int(metadata.get("size", 0)))
-        response.headers["Content-Disposition"] = 'attachment; filename="%s"' % filename
-        response.headers["Cache-Control"] = "no-store"
+        response = flask.jsonify({"job": job, "state": self._public_state()})
+        response.status_code = 202
         return response
+
+    @octoprint.plugin.BlueprintPlugin.route(
+        "/storage/downloads/<job_id>", methods=["GET"]
+    )
+    @api_errors
+    def serve_storage_download(self, job_id):
+        """Serve a completed Pi copy without touching the serial connection."""
+        permission = getattr(Permissions, "FILES_DOWNLOAD", Permissions.STATUS)
+        if not permission.can():
+            flask.abort(403)
+        with self._state_lock:
+            item = next(
+                (
+                    entry
+                    for entry in self._state["storage"].get("downloads", [])
+                    if entry.get("id") == job_id
+                ),
+                None,
+            )
+        if item is None:
+            flask.abort(404)
+        path = os.path.join(self._download_directory, item["stored_name"])
+        if not os.path.isfile(path):
+            flask.abort(404)
+        return flask.send_file(
+            path, mimetype="application/octet-stream", as_attachment=True,
+            download_name=item["name"], conditional=True,
+        )
 
     @octoprint.plugin.BlueprintPlugin.route("/storage/upload", methods=["POST"])
     @api_errors
@@ -641,7 +694,8 @@ class RmeCompatibilityPlugin(
             self._set_storage_status("uploading", progress=0, error=None)
             try:
                 self._file_service.write_file(temporary, remote_path, self._storage_progress)
-                self._refresh_storage(directory)
+                self._set_storage_status("ready", progress=100, error=None)
+                self._defer(self._refresh_storage_after_change, directory)
             except Exception as exc:
                 self._set_storage_status("error", progress=None, error=str(exc))
                 raise
@@ -757,7 +811,8 @@ class RmeCompatibilityPlugin(
                 self._state["supported"] = False
                 self._state["session"]["active"] = False
                 self._state["storage"].update(
-                    supported=False, status="printer disconnected", progress=None
+                    supported=False, status="printer disconnected", progress=None,
+                    entries=[], native_files=[],
                 )
             self._publish()
         elif event == Events.PRINT_STARTED:
@@ -891,6 +946,17 @@ class RmeCompatibilityPlugin(
             return None
         if "rme:priority_control" in tags:
             return self._force_send_rme_control(comm_instance, cmd, gcode)
+
+        # OctoPrint has no public hook for replacing its SD file-list backend.
+        # Suppress only the native refresh command after positive RME FILE
+        # discovery, then repopulate the Files view through the plugin state.
+        if str(gcode or "").upper().startswith("M20"):
+            with self._state_lock:
+                use_rme_files = bool(self._state["storage"].get("supported"))
+            if use_rme_files:
+                if not self._print_job_active():
+                    self._defer(self._refresh_native_storage_files)
+                return (None,)
 
         tagged_action = next((
             action for action in ("cancel", "pause", "resume")
@@ -2285,6 +2351,10 @@ class RmeCompatibilityPlugin(
             raise FileServiceError("An RME printer is not connected")
         if self._uploader and self._uploader.busy:
             raise FileServiceError("Firmware staging is already using the serial transfer channel")
+        if self._print_job_active():
+            raise FileServiceError(
+                "Printer USB transfers are unavailable while a print is active"
+            )
 
     @staticmethod
     def _join_storage_path(directory, name):
@@ -2322,6 +2392,7 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 self._state["storage"].update(supported=True, caps=caps)
             self._refresh_storage("/")
+            self._refresh_native_storage_files()
         except Exception as exc:
             with self._state_lock:
                 self._state["storage"].update(
@@ -2365,9 +2436,163 @@ class RmeCompatibilityPlugin(
             else:
                 refresh = self._parent_storage_path(path)
                 self._refresh_storage(refresh)
+                self._refresh_native_storage_files()
         except Exception as exc:
             self._set_storage_status("error", progress=None, error=str(exc))
             raise
+
+    def _refresh_storage_after_change(self, directory):
+        """Refresh both storage views without changing a completed transfer result."""
+        try:
+            self._refresh_storage(directory)
+            self._refresh_native_storage_files()
+        except Exception:
+            self._logger.warning(
+                "RME file transfer completed, but the follow-up USB listing failed",
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _native_storage_extension(path):
+        """Return the supported native Files-view category for one USB file."""
+        extension = os.path.splitext(str(path))[1].lower()
+        if extension in (".gcode", ".gco", ".bgcode"):
+            return "machinecode"
+        if extension in (".bbf", ".bin"):
+            return "model"
+        return None
+
+    def _refresh_native_storage_files(self):
+        """Coalesce native Files-view refreshes from UI and M20 polling."""
+        if not self._native_refresh_lock.acquire(False):
+            return
+        try:
+            return self._refresh_native_storage_files_locked()
+        finally:
+            self._native_refresh_lock.release()
+
+    def _refresh_native_storage_files_locked(self):
+        """Build the recursive RME USB index consumed by OctoPrint's Files UI."""
+        self._require_storage()
+        files = []
+        visited = set()
+
+        def walk(directory, depth=0):
+            if depth > 24 or directory in visited:
+                return
+            visited.add(directory)
+            for entry in self._file_service.list_directory(directory):
+                full_path = self._join_storage_path(directory, entry.get("name", ""))
+                if entry.get("type") == "dir":
+                    walk(full_path, depth + 1)
+                    continue
+                category = self._native_storage_extension(full_path)
+                if not category:
+                    continue
+                files.append({
+                    "path": full_path.lstrip("/"),
+                    "name": os.path.basename(full_path),
+                    "size": max(0, int(entry.get("size", 0))),
+                    "category": category,
+                })
+
+        self._set_storage_status("indexing", progress=None, error=None)
+        try:
+            walk("/")
+            files.sort(key=lambda item: item["path"].casefold())
+            with self._state_lock:
+                self._state["storage"].update(
+                    native_files=files, status="ready", progress=None,
+                    error=None, updated=int(time.time()),
+                )
+            self._persist_and_publish()
+            updated_files = getattr(Events, "UPDATED_FILES", None)
+            if updated_files and hasattr(self, "_event_bus"):
+                self._event_bus.fire(updated_files, {"type": "printables"})
+        except Exception as exc:
+            self._set_storage_status("error", progress=None, error=str(exc))
+            raise
+
+    def _start_storage_download(self, remote_path, target):
+        """Queue one printer-to-Pi transfer and optionally hand it to a browser."""
+        self._require_storage()
+        target = str(target or "pi").lower()
+        if target not in ("pi", "device"):
+            raise ValueError("Download target must be pi or device")
+        filename = secure_filename(
+            os.path.basename(str(remote_path).replace("\\", "/").rstrip("/"))
+        ) or "download.bin"
+        job_id = uuid.uuid4().hex
+        stored_name = job_id + "--" + filename
+        job = {
+            "id": job_id, "path": str(remote_path), "name": filename,
+            "stored_name": stored_name, "target": target, "status": "queued",
+            "size": 0, "offset": 0, "progress": 0, "error": None,
+            "updated": int(time.time()),
+        }
+        with self._state_lock:
+            self._state["storage"]["download"] = dict(job)
+            self._state["storage"].update(
+                status="download queued", progress=0, error=None
+            )
+        self._persist_and_publish()
+
+        def transfer():
+            destination = os.path.join(self._download_directory, stored_name)
+
+            def progress(offset, size):
+                percentage = round(offset * 100.0 / max(1, size), 2)
+                with self._state_lock:
+                    current = self._state["storage"].get("download") or {}
+                    if current.get("id") == job_id:
+                        current.update(
+                            status="downloading", offset=offset, size=size,
+                            progress=percentage, updated=int(time.time()),
+                        )
+                        self._state["storage"].update(
+                            status="downloading", progress=percentage, error=None
+                        )
+                now = time.monotonic()
+                if now - self._last_storage_publish >= 0.25:
+                    self._last_storage_publish = now
+                    self._publish()
+
+            try:
+                metadata = self._file_service.download_file(
+                    remote_path, destination, progress=progress
+                )
+                complete = dict(
+                    job, status="ready", size=int(metadata.get("size", 0)),
+                    offset=int(metadata.get("size", 0)), progress=100,
+                    updated=int(time.time()),
+                )
+                with self._state_lock:
+                    downloads = self._state["storage"].setdefault("downloads", [])
+                    downloads[:] = [item for item in downloads if item.get("id") != job_id]
+                    downloads.append(complete)
+                    del downloads[:-20]
+                    self._state["storage"]["download"] = complete
+                    self._state["storage"].update(
+                        status="ready", progress=100, error=None
+                    )
+                self._persist_and_publish()
+            except Exception as exc:
+                self._logger.exception("RME printer file download failed")
+                with self._state_lock:
+                    failed = dict(
+                        job, status="error", error=str(exc),
+                        updated=int(time.time()),
+                    )
+                    self._state["storage"]["download"] = failed
+                    self._state["storage"].update(
+                        status="error", progress=None, error=str(exc)
+                    )
+                self._persist_and_publish()
+
+        threading.Thread(
+            target=transfer, name="rme-storage-download", daemon=True
+        ).start()
+        return job
 
     def sd_card_upload_hook(
         self, printer, filename, path, start_callback, success_callback,
@@ -2406,6 +2631,10 @@ class RmeCompatibilityPlugin(
                 )
                 self._set_storage_status("ready", progress=100, error=None)
                 success_callback(filename, remote_name, time.monotonic() - started)
+                self._defer(
+                    self._refresh_storage_after_change,
+                    self._parent_storage_path(remote_name),
+                )
             except Exception as exc:
                 self._logger.exception("RME SD-card upload failed")
                 self._set_storage_status("error", progress=None, error=str(exc))
@@ -2728,6 +2957,7 @@ __plugin_hooks__ = {
     "octoprint.comm.protocol.gcode.queuing": (__plugin_implementation__.gcode_queuing_hook, 1),
     "octoprint.comm.protocol.gcode.sent": __plugin_implementation__.gcode_sent_hook,
     "octoprint.comm.protocol.scripts": (__plugin_implementation__.gcode_script_hook, 1),
+    "octoprint.filemanager.extension_tree": __plugin_implementation__.file_extension_hook,
     "octoprint.server.http.bodysize": __plugin_implementation__.bodysize_hook,
     "octoprint.plugin.softwareupdate.check_config": __plugin_implementation__.get_update_information,
     "octoprint.printer.sdcardupload": __plugin_implementation__.sd_card_upload_hook,

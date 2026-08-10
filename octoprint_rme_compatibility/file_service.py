@@ -182,6 +182,43 @@ class RmeFileService(object):
                 if not block:
                     raise FileServiceError("Printer file download made no progress")
 
+    def download_file(self, remote_path, local_path, progress=None):
+        """Download one remote file atomically into persistent Pi storage.
+
+        The earlier HTTP generator coupled the serial transaction to Flask's
+        request context, which OctoPrint's WSGI executor may consume on another
+        thread. Staging to a sibling ``.part`` file keeps serial I/O independent
+        of HTTP and prevents a failed transfer from exposing partial content.
+        """
+        metadata = self.stat(remote_path)
+        if metadata.get("type") != "file":
+            raise FileServiceError("Only files can be downloaded")
+        size = max(0, int(metadata.get("size", 0)))
+        temporary = local_path + ".part"
+        offset = 0
+        try:
+            with open(temporary, "wb") as destination:
+                for block in self.iter_file(remote_path):
+                    destination.write(block)
+                    offset += len(block)
+                    if offset > size:
+                        raise FileServiceError(
+                            "Printer returned more file data than advertised"
+                        )
+                    if progress:
+                        progress(offset, size)
+            if offset != size:
+                raise FileServiceError(
+                    "Printer download ended at %d of %d bytes" % (offset, size)
+                )
+            os.replace(temporary, local_path)
+            if progress:
+                progress(size, size)
+            return metadata
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
     def write_file(
         self, local_path, remote_path, progress=None, finalizing=None,
         starting=None, cancel_check=None,

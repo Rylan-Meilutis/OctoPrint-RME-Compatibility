@@ -446,6 +446,9 @@ class ToolmapGateTests(unittest.TestCase):
                 self.upload = (path, remote_name)
                 progress(12, 12)
 
+            def list_directory(self, path):
+                return []
+
         completed = threading.Event()
         callbacks = []
         plugin = RmeCompatibilityPlugin()
@@ -488,7 +491,7 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0b18"
+        plugin._plugin_version = "0.1.0b19"
         templates = plugin.get_template_configs()
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])
@@ -528,9 +531,17 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("Filament resynchronization required", javascript)
         self.assertIn("MMU · idle", javascript)
         self.assertIn("deleteFirmware", javascript)
-        self.assertIn("storage/download?path=", javascript)
+        self.assertIn('self.command("storage_download"', javascript)
+        self.assertIn("storage/downloads/", javascript)
+        self.assertIn("installFileManagerBridge", javascript)
+        self.assertIn("Download to Pi", settings_template)
+        self.assertIn("Download to device", settings_template)
+        self.assertIn("storageDownloadWidth", settings_template)
         self.assertIn('"plugin/rme_compatibility/storage/upload"', javascript)
         self.assertIn("octoprint.printer.sdcardupload", __import__(
+            "octoprint_rme_compatibility.plugin", fromlist=["__plugin_hooks__"]
+        ).__plugin_hooks__)
+        self.assertIn("octoprint.filemanager.extension_tree", __import__(
             "octoprint_rme_compatibility.plugin", fromlist=["__plugin_hooks__"]
         ).__plugin_hooks__)
         with open(
@@ -906,6 +917,42 @@ class ToolmapGateTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual([], plugin._printer.forced_commands)
+
+    def test_m20_is_replaced_only_after_rme_storage_discovery(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+        deferred = []
+        plugin._defer = lambda callback, *args: deferred.append(callback)
+        plugin._state.update(connected=True, supported=True)
+
+        result = plugin.gcode_queuing_hook(
+            None, "queuing", "M20", None, "M20", tags={"source:api"}
+        )
+        self.assertIsNone(result)
+
+        plugin._state["storage"]["supported"] = True
+        result = plugin.gcode_queuing_hook(
+            None, "queuing", "M20", None, "M20", tags={"source:api"}
+        )
+        self.assertEqual((None,), result)
+        self.assertEqual([plugin._refresh_native_storage_files], deferred)
+
+        plugin._printer.is_printing = lambda: True
+        result = plugin.gcode_queuing_hook(
+            None, "queuing", "M20", None, "M20", tags={"source:api"}
+        )
+        self.assertEqual((None,), result)
+        self.assertEqual(1, len(deferred))
+
+    def test_rme_artifact_extensions_are_visible_but_not_machinecode(self):
+        self.assertEqual(
+            {"model": {"rme_artifact": ["bbf", "bin"]}},
+            RmeCompatibilityPlugin.file_extension_hook(),
+        )
+        plugin = RmeCompatibilityPlugin()
+        self.assertEqual("machinecode", plugin._native_storage_extension("part.bgcode"))
+        self.assertEqual("model", plugin._native_storage_extension("firmware.bbf"))
+        self.assertEqual("model", plugin._native_storage_extension("buddy-dump.bin"))
 
     def test_priority_tag_uses_out_of_band_serial_send(self):
         plugin = RmeCompatibilityPlugin()

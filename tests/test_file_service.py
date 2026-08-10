@@ -35,6 +35,33 @@ class FileServiceTests(unittest.TestCase):
         self.assertEqual(entries[0]["name"], "My print.bgcode")
         self.assertEqual(b"abc\x00\xff", b"".join(service.iter_file("My print.bgcode")))
 
+    def test_download_stages_atomically_and_reports_progress(self):
+        service = None
+
+        def send(command):
+            if "FILE STAT" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_STAT path=dump.bin type=file size=5 mtime=1"
+                ))
+            elif "offset=0" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_DATA path=dump.bin offset=0 length=5 eof=1 data=YWJjAP8="
+                ))
+
+        service = RmeFileService(send, response_timeout=1)
+        progress = []
+        with tempfile.TemporaryDirectory() as directory:
+            destination = os.path.join(directory, "dump.bin")
+            metadata = service.download_file(
+                "dump.bin", destination,
+                progress=lambda offset, size: progress.append((offset, size)),
+            )
+            with open(destination, "rb") as downloaded:
+                self.assertEqual(b"abc\x00\xff", downloaded.read())
+            self.assertFalse(os.path.exists(destination + ".part"))
+        self.assertEqual(5, metadata["size"])
+        self.assertEqual((5, 5), progress[-1])
+
     def test_verified_upload_advances_only_from_firmware_offsets(self):
         service = None
         commands = []

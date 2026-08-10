@@ -130,14 +130,32 @@
             </td>
             <td data-bind="text: $parent.storageFileSize($data)"></td>
             <td>
-                <button type="button" class="btn btn-mini" data-bind="visible: type === 'file', click: $parent.storageDownload">Download</button>
+                <button type="button" class="btn btn-mini" data-bind="visible: type === 'file', click: $parent.storageDownloadToPi">Download to Pi</button>
+                <button type="button" class="btn btn-mini" data-bind="visible: type === 'file', click: $parent.storageDownloadToDevice">Download to device</button>
                 <button type="button" class="btn btn-mini" data-bind="visible: $parent.storageCanPrint($data), click: $parent.storagePrint">Print…</button>
                 <button type="button" class="btn btn-mini btn-danger" data-bind="visible: $parent.storageCanFlash($data), click: $parent.storageFlash">Flash…</button>
                 <button type="button" class="btn btn-mini" data-bind="click: $parent.storageRename">Rename…</button>
+                <button type="button" class="btn btn-mini" data-bind="click: $parent.storageMove">Move…</button>
                 <button type="button" class="btn btn-mini btn-danger" data-bind="click: $parent.storageDelete">Delete…</button>
             </td>
         </tr></tbody>
     </table>
+    <div data-bind="visible: storageDownloadJob().id">
+        <div class="progress progress-striped" data-bind="css: {active: storageDownloadActive}">
+            <div class="bar" data-bind="style: {width: storageDownloadWidth}"></div>
+        </div>
+        <p class="help-block" data-bind="text: storageDownloadSummary, css: {'text-error': storageDownloadJob().status === 'error'}"></p>
+    </div>
+    <div data-bind="visible: storageDownloads().length">
+        <h5>Files stored on this Pi</h5>
+        <table class="table table-condensed">
+            <tbody data-bind="foreach: storageDownloads"><tr>
+                <td data-bind="text: name"></td>
+                <td data-bind="text: $parent.storageFileSize({type: 'file', size: size})"></td>
+                <td><button type="button" class="btn btn-mini" data-bind="click: $parent.downloadCachedStorageFile">Download to device</button></td>
+            </tr></tbody>
+        </table>
+    </div>
     <p class="help-block" data-bind="visible: storage().supported && !storageEntries().length">This directory is empty.</p>
     <hr>
     <h4>Printer settings</h4>

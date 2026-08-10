@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.0b19 — 2026-08-10
+
+- Replaced request-context-bound printer downloads with atomic background
+  printer-to-Pi jobs, byte-count validation, live progress, durable Pi copies,
+  and a stable follow-up browser download.
+- Added explicit **Download to Pi** and **Download to device** choices; the
+  latter completes the printer transfer on the Pi before sending the file to
+  the browser.
+- Integrated RME USB files into OctoPrint's native Files view in place of its
+  line-based SD listing, including RME-backed upload, download, rename, move,
+  and delete actions.
+- Added `.gcode`, `.gco`, `.bgcode`, `.bbf`, and Buddy dump `.bin` visibility
+  while preventing firmware/dump artifacts from being selected or sliced.
+- Suppressed native `M20` refreshes only after positive RME FILE discovery and
+  retained normal OctoPrint SD behavior for non-RME printers.
+
 ## 0.1.0b18 — 2026-08-10
 
 - Deferred statistics polling and event-triggered configuration snapshots while

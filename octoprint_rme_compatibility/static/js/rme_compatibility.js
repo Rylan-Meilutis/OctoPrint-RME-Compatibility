@@ -4,6 +4,7 @@ $(function () {
         self.settings = parameters[0];
         self.loginState = parameters[1];
         self.printerState = parameters[2];
+        self.files = parameters[3];
         self.state = ko.observable({
             connected: false,
             supported: false,
@@ -23,6 +24,11 @@ $(function () {
         self.piUploadActive = ko.observable(false);
         self.piUploadProgress = ko.observable(0);
         self.pendingStorageUpload = ko.observable(null);
+        self.downloadChoiceEntry = ko.observable(null);
+        self.handledDownloadJobs = {};
+        self.activeDownloadJobId = null;
+        self.nativeFilesKey = "";
+        self.fileManagerBridgeInstalled = false;
         self.selectedFirmware = ko.observable();
         self.mappingRows = ko.observableArray([]);
         self.mappingEnabled = ko.observable(true);
@@ -197,6 +203,27 @@ $(function () {
         self.stats = ko.pureComputed(function () { return self.state().stats || {}; });
         self.storage = ko.pureComputed(function () { return self.state().storage || {}; });
         self.storageEntries = ko.pureComputed(function () { return self.storage().entries || []; });
+        self.storageDownloadJob = ko.pureComputed(function () { return self.storage().download || {}; });
+        self.storageDownloadWidth = ko.pureComputed(function () {
+            return Math.max(0, Math.min(100, Number(self.storageDownloadJob().progress) || 0)) + "%";
+        });
+        self.storageDownloadActive = ko.pureComputed(function () {
+            return ["queued", "downloading"].indexOf(self.storageDownloadJob().status) >= 0;
+        });
+        self.storageDownloads = ko.pureComputed(function () {
+            return (self.storage().downloads || []).slice().reverse();
+        });
+        self.storageDownloadSummary = ko.pureComputed(function () {
+            var job = self.storageDownloadJob();
+            if (!job.id) return "";
+            if (job.status === "queued") return "Waiting for the printer transfer queue…";
+            if (job.status === "downloading") {
+                return (job.name || "Printer file") + " · " + formatBytes(job.offset || 0) +
+                    " of " + formatBytes(job.size || 0);
+            }
+            if (job.status === "error") return job.error || "Download failed";
+            return (job.name || "Printer file") + " is stored safely on the Pi.";
+        });
         self.storageStatus = ko.pureComputed(function () {
             var storage = self.storage();
             var text = storage.error || storage.status || "not checked";
@@ -428,6 +455,42 @@ $(function () {
             if (!value) return;
             var oldPrompt = self.state().prompt || {};
             self.state(value);
+            var storageSupported = !!(value.supported && value.storage && value.storage.supported);
+            var nativeFiles = (value.storage && value.storage.native_files) || [];
+            var nativeKey = (storageSupported ? "rme|" : "native|") + nativeFiles.map(function (item) {
+                return [item.path, item.size, item.category].join(":");
+            }).join("|");
+            if (self.fileManagerBridgeInstalled && nativeKey !== self.nativeFilesKey) {
+                self.nativeFilesKey = nativeKey;
+                self.files.requestData();
+            }
+            var download = value.storage && value.storage.download;
+            if (download && download.id && self.activeDownloadJobId === "pending") {
+                self.activeDownloadJobId = download.id;
+            }
+            if (download && download.id && self.activeDownloadJobId === download.id) {
+                var progressDialog = ensureDownloadProgressDialog();
+                progressDialog.find(".bar").css("width", Math.max(0, Math.min(100, Number(download.progress) || 0)) + "%");
+                progressDialog.find(".rme-download-progress-text").text(self.storageDownloadSummary());
+                progressDialog.find(".progress").toggleClass("active", ["queued", "downloading"].indexOf(download.status) >= 0);
+                progressDialog.find(".rme-download-progress-close").toggle(download.status === "ready" || download.status === "error");
+            }
+            if (download && download.id && download.status === "ready" && !self.handledDownloadJobs[download.id]) {
+                self.handledDownloadJobs[download.id] = true;
+                if (download.target === "device") {
+                    var link = document.createElement("a");
+                    link.href = OctoPrint.getBlueprintUrl("rme_compatibility") +
+                        "storage/downloads/" + encodeURIComponent(download.id);
+                    link.download = download.name || "download.bin";
+                    link.style.display = "none";
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    new PNotify({title: "Printer file ready", text: download.name + " was copied through the Pi and sent to this device.", type: "success"});
+                } else {
+                    new PNotify({title: "Printer file stored on Pi", text: download.name, type: "success"});
+                }
+            }
             self.updateProviderSyncNotice(
                 value.spoolmanager && value.spoolmanager.pending_provider_sync
             );
@@ -649,9 +712,43 @@ $(function () {
         self.storageOpen = function (entry) {
             if (entry.type === "dir") self.command("storage_list", {path: entry.path});
         };
+        self.startStorageDownload = function (entry, target) {
+            if (!entry || !entry.path) return;
+            self.activeDownloadJobId = "pending";
+            var dialog = ensureDownloadProgressDialog();
+            dialog.find(".bar").css("width", "0%");
+            dialog.find(".progress").addClass("active");
+            dialog.find(".rme-download-progress-text").text("Waiting for the printer transfer queue…");
+            dialog.find(".rme-download-progress-close").hide();
+            dialog.modal("show");
+            self.command("storage_download", {path: entry.path, target: target}).fail(function (xhr) {
+                self.activeDownloadJobId = null;
+                dialog.find(".progress").removeClass("active");
+                dialog.find(".rme-download-progress-text").text(responseError(xhr));
+                dialog.find(".rme-download-progress-close").show();
+            });
+        };
+        self.storageDownloadToPi = function (entry) {
+            self.startStorageDownload(entry, "pi");
+        };
+        self.storageDownloadToDevice = function (entry) {
+            self.startStorageDownload(entry, "device");
+        };
         self.storageDownload = function (entry) {
-            window.location.href = OctoPrint.getBlueprintUrl("rme_compatibility") +
-                "storage/download?path=" + encodeURIComponent(entry.path);
+            self.downloadChoiceEntry(entry);
+            ensureDownloadChoiceDialog().find(".rme-download-name").text(entry.name || entry.path);
+            ensureDownloadChoiceDialog().modal("show");
+        };
+        self.downloadCachedStorageFile = function (entry) {
+            if (!entry || !entry.id) return;
+            var link = document.createElement("a");
+            link.href = OctoPrint.getBlueprintUrl("rme_compatibility") +
+                "storage/downloads/" + encodeURIComponent(entry.id);
+            link.download = entry.name || "download.bin";
+            link.style.display = "none";
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
         };
         self.storageDelete = function (entry) {
             if (window.confirm("Delete " + entry.path + " from printer USB? This cannot be undone.")) {
@@ -664,6 +761,14 @@ $(function () {
             var parent = String(entry.path).split("/").slice(0, -1).join("/") || "/";
             self.command("storage_rename", {
                 path: entry.path, destination: parent.replace(/\/$/, "") + "/" + name
+            });
+        };
+        self.storageMove = function (entry) {
+            var destination = window.prompt("New full printer path", entry.path);
+            if (!destination || destination === entry.path) return;
+            if (destination.charAt(0) !== "/") destination = "/" + destination;
+            self.command("storage_rename", {
+                path: entry.path, destination: destination
             });
         };
         self.storageMkdir = function () {
@@ -707,6 +812,7 @@ $(function () {
         };
 
         self.onBeforeBinding = function () {
+            installFileManagerBridge();
             OctoPrint.simpleApiGet("rme_compatibility").done(self.acceptState);
             window.setInterval(function () {
                 self.tick(Date.now());
@@ -723,6 +829,138 @@ $(function () {
         self.onDataUpdaterPluginMessage = function (plugin, data) {
             if (plugin === "rme_compatibility") self.acceptState(data);
         };
+
+        function ensureDownloadChoiceDialog() {
+            var dialog = $("#rme-storage-download-choice");
+            if (dialog.length) return dialog;
+            dialog = $(
+                '<div id="rme-storage-download-choice" class="modal hide fade" tabindex="-1">' +
+                '<div class="modal-header"><button type="button" class="close" data-dismiss="modal">&times;</button><h3>Download printer file</h3></div>' +
+                '<div class="modal-body"><p class="rme-download-name"></p><p>The printer copy is always staged safely on the Pi first.</p></div>' +
+                '<div class="modal-footer"><button class="btn" data-dismiss="modal">Cancel</button>' +
+                '<button class="btn rme-download-pi">Download to Pi</button>' +
+                '<button class="btn btn-primary rme-download-device">Download to device</button></div></div>'
+            ).appendTo(document.body);
+            dialog.find(".rme-download-pi").on("click", function () {
+                dialog.modal("hide");
+                self.storageDownloadToPi(self.downloadChoiceEntry());
+            });
+            dialog.find(".rme-download-device").on("click", function () {
+                dialog.modal("hide");
+                self.storageDownloadToDevice(self.downloadChoiceEntry());
+            });
+            return dialog;
+        }
+
+        function ensureDownloadProgressDialog() {
+            var dialog = $("#rme-storage-download-progress");
+            if (dialog.length) return dialog;
+            dialog = $(
+                '<div id="rme-storage-download-progress" class="modal hide fade" tabindex="-1">' +
+                '<div class="modal-header"><h3>Downloading printer file</h3></div>' +
+                '<div class="modal-body"><div class="progress progress-striped active"><div class="bar" style="width:0%"></div></div>' +
+                '<p class="rme-download-progress-text">Waiting for the printer transfer queue…</p></div>' +
+                '<div class="modal-footer"><button class="btn rme-download-progress-close" data-dismiss="modal">Close</button></div></div>'
+            ).appendTo(document.body);
+            dialog.find(".rme-download-progress-close").on("click", function () {
+                self.activeDownloadJobId = null;
+            });
+            return dialog;
+        }
+
+        function nativeFileTree() {
+            var roots = [];
+            var folders = {};
+            function childrenFor(parts) {
+                if (!parts.length) return roots;
+                var path = parts.join("/");
+                if (!folders[path]) {
+                    var parent = childrenFor(parts.slice(0, -1));
+                    var folder = {
+                        type: "folder", typePath: ["folder"], name: parts[parts.length - 1],
+                        display: parts[parts.length - 1], path: path, origin: "sdcard",
+                        children: [], rme: true
+                    };
+                    folders[path] = folder;
+                    parent.push(folder);
+                }
+                return folders[path].children;
+            }
+            ko.utils.arrayForEach((self.storage().native_files || []), function (item) {
+                var parts = String(item.path || "").split("/").filter(Boolean);
+                if (!parts.length) return;
+                var filename = parts.pop();
+                childrenFor(parts).push({
+                    type: item.category === "model" ? "model" : "machinecode",
+                    typePath: item.category === "model" ? ["model", "rme_artifact"] : ["machinecode", "gcode"],
+                    name: filename, display: filename, path: String(item.path),
+                    origin: "sdcard", size: Number(item.size || 0), rme: true,
+                    refs: {resource: OctoPrint.getBlueprintUrl("rme_compatibility") + "storage/download"}
+                });
+            });
+            return roots;
+        }
+
+        function installFileManagerBridge() {
+            if (self.fileManagerBridgeInstalled || !self.files) return;
+            self.fileManagerBridgeInstalled = true;
+            var originalFromResponse = self.files.fromResponse;
+            self.files.fromResponse = function (response, params) {
+                if (!(self.state().supported && self.storage().supported)) {
+                    return originalFromResponse.call(self.files, response, params);
+                }
+                var merged = $.extend({}, response);
+                merged.files = (response.files || []).filter(function (entry) {
+                    return entry.origin !== "sdcard";
+                }).concat(nativeFileTree());
+                return originalFromResponse.call(self.files, merged, params);
+            };
+            var originalDownloadLink = self.files.downloadLink;
+            self.files.downloadLink = function (entry) {
+                return entry && entry.rme ? "#" : originalDownloadLink.call(self.files, entry);
+            };
+            var originalEnableMove = self.files.enableMove;
+            self.files.enableMove = function (entry) {
+                return entry && entry.rme ? true : originalEnableMove.call(self.files, entry);
+            };
+            var originalShowMoveDialog = self.files.showMoveDialog;
+            self.files.showMoveDialog = function (entry, event) {
+                if (!entry || !entry.rme) return originalShowMoveDialog.call(self.files, entry, event);
+                self.storageMove({path: "/" + String(entry.path).replace(/^\//, ""), name: entry.name});
+            };
+            var originalRemoveEntry = self.files._removeEntry;
+            self.files._removeEntry = function (entry, event) {
+                if (!entry || !entry.rme) return originalRemoveEntry.call(self.files, entry, event);
+                return self.command("storage_delete", {path: "/" + String(entry.path).replace(/^\//, "")})
+                    .done(function () { self.files.requestData(); });
+            };
+            var originalEnableSelect = self.files.enableSelect;
+            var originalEnableSelectAndPrint = self.files.enableSelectAndPrint;
+            var originalEnableSlicing = self.files.enableSlicing;
+            self.files.enableSelect = function (entry) {
+                return entry && entry.rme && entry.type !== "machinecode" ? false :
+                    originalEnableSelect.apply(self.files, arguments);
+            };
+            self.files.enableSelectAndPrint = function (entry) {
+                return entry && entry.rme && entry.type !== "machinecode" ? false :
+                    originalEnableSelectAndPrint.apply(self.files, arguments);
+            };
+            if (typeof originalEnableSlicing === "function") {
+                self.files.enableSlicing = function (entry) {
+                    return entry && entry.rme ? false : originalEnableSlicing.apply(self.files, arguments);
+                };
+            }
+            $(document).off("click.rmeStorageDownload", "#files .btn-files-download")
+                .on("click.rmeStorageDownload", "#files .btn-files-download", function (event) {
+                    var entry = ko.dataFor(this);
+                    if (!entry || !entry.rme) return;
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                    self.storageDownload({
+                        path: "/" + String(entry.path).replace(/^\//, ""), name: entry.name
+                    });
+                });
+        }
 
         function scheduleCoreWorkflowRender() {
             if (coreRenderPending) return;
@@ -864,7 +1102,7 @@ $(function () {
 
     OCTOPRINT_VIEWMODELS.push({
         construct: RmeCompatibilityViewModel,
-        dependencies: ["settingsViewModel", "loginStateViewModel", "printerStateViewModel"],
+        dependencies: ["settingsViewModel", "loginStateViewModel", "printerStateViewModel", "filesViewModel"],
         elements: ["#navbar_plugin_rme_compatibility", "#tab_plugin_rme_compatibility", "#settings_plugin_rme_compatibility"]
     });
 });
