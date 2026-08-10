@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.0b16 — 2026-08-09
+
+- Negotiated the current RME FILE capabilities and accelerated uploads with
+  four-frame, 384-byte bulk windows and cumulative acknowledgements, while
+  retaining the legacy 48-byte fallback.
+- Adopted `events=31`, revisioned `RME_CHANGE` synchronization, per-mutation
+  transaction IDs, gap recovery, and event-driven domain refreshes instead of
+  steady-state printer settings polling.
+- Coalesced serial-record persistence and WebSocket publication, stopped
+  rebuilding unchanged spool selectors, and animation-frame-throttled core UI
+  rendering to remove plugin-caused UI churn.
+- Added separate browser-to-Pi firmware upload progress using OctoPrint's
+  authenticated form client.
+- Simplified theme editing to one clickable color swatch per field and removed
+  blind Encoder, Click, Back, and Home controls from Settings.
+
 ## 0.1.0b15 — 2026-08-09
 
 - Reported firmware staging as queued while waiting for the serialized printer

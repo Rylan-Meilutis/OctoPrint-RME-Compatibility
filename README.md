@@ -54,8 +54,8 @@ and `doc/gcode/M998.md`.
   OctoPrint's internal cancellation handling.
 - Reads the printer's envelope, logical tool count, shared-nozzle status, and
   live maximum feed rates, then updates the active OctoPrint printer profile.
-- Exposes guarded remote encoder/click/back/home controls, printer lock status
-  and PIN unlock, temporary and persistent light services, persistent theme
+- Exposes printer lock status and PIN unlock, temporary and persistent light
+  services, persistent theme
   colors, and synchronization of the eight RME user filament presets. The RME
   Settings page shows the printer-reported current theme and provides editors
   for the firmware-supported lock, theme, lighting, and filament settings.
@@ -67,14 +67,16 @@ and `doc/gcode/M998.md`.
   choices update the active provider. External selection and deselection opens
   a persistent confirmation before changing firmware, while explicit
   Printer → provider and Provider → printer controls resolve manual edits.
-  Periodic printer polling also imports LCD-side configuration changes.
+  Revisioned `RME_CHANGE` events import LCD-side configuration changes and
+  refresh only the affected domain; idle connections do not poll settings.
 - Exposes authenticated read-only `/plugin/rme_compatibility/selected-spools`
   and `/plugin/rme_compatibility/filament-report` aliases so OrcaSlicer and other
   clients can poll active tool, mapping, material/color loadout, available
   inventory, selected spools, and firmware statistics with an OctoPrint API key.
 - Integrates the current RME firmware's sandboxed `/usb` filesystem in Settings:
   browse directories, download files through authenticated OctoPrint, upload
-  with 48-byte acknowledged chunks and SHA-256 atomic finalization, create and
+  with negotiated pipelined bulk chunks (falling back to legacy acknowledged
+  chunks), SHA-256 atomic finalization, create and
   rename directories/files, delete entries, start USB prints, and flash BBFs.
   Paths are percent-encoded and cannot escape the printer's user-visible USB
   volume.
@@ -82,9 +84,11 @@ and `doc/gcode/M998.md`.
   streaming with acknowledged, atomic RME FILE transfers when FILE WRITE is
   advertised. OctoPrint still receives its normal transfer lifecycle callbacks.
 - Accepts signed `.bbf` files up to 32 MiB on the Pi. Current RME firmware is
-  staged as `/usb/FWUPD.BBF` through acknowledged RME FILE chunks, verified by
+  staged as `/usb/FWUPD.BBF` through the negotiated RME FILE mode, verified by
   size and SHA-256 on the printer, and handed to the bootloader with RME FILE
-  FLASH. Older RME builds retain the acknowledged M998 transfer and confirmed
+  FLASH. It can be staged and flashed in one operation, and the browser shows
+  upload-to-Pi progress separately from the printer transfer. Older RME builds
+  retain the acknowledged M998 transfer and confirmed
   `M997 /usb/FWUPD.BBF` fallback.
   Legacy M998 commands include a nonnumeric parser sentinel required by the
   original handler to retain its complete phase/offset argument body.

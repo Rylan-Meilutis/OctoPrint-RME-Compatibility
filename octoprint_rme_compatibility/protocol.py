@@ -105,6 +105,11 @@ def parse_line(raw_line):
         ("RME_FILE_CAPS ", "file_caps"),
         ("RME_FILE_WRITE_READY ", "file_write_ready"),
         ("RME_FILE_WRITE_OFFSET ", "file_write_offset"),
+        ("RME_FILE_BULK_READY ", "file_bulk_ready"),
+        ("RME_FILE_BULK_ACK ", "file_bulk_ack"),
+        ("RME_FILE_BINARY_READY ", "file_binary_ready"),
+        ("RME_FILE_BINARY_ACK ", "file_binary_ack"),
+        ("RME_FILE_BINARY_NACK ", "file_binary_nack"),
     ):
         if line.startswith(prefix):
             result = parse_fields(line[len(prefix) :])
@@ -112,6 +117,10 @@ def parse_line(raw_line):
             return result
     if line.startswith("RME_FILE_WRITE_COMPLETE path="):
         return {"record": "file_write_complete", "path": line.split("=", 1)[1]}
+    if line.startswith("RME_FILE_BULK_COMPLETE path="):
+        return {"record": "file_bulk_complete", "path": line.split("=", 1)[1]}
+    if line.startswith("RME_FILE_BINARY_COMPLETE path="):
+        return {"record": "file_binary_complete", "path": line.split("=", 1)[1]}
     for text, record in (
         ("RME_FILE_ABORTED", "file_aborted"),
         ("RME_FILE_DELETED", "file_deleted"),
@@ -128,6 +137,10 @@ def parse_line(raw_line):
     if line.startswith("RME_EVENT "):
         result = parse_fields(line[len("RME_EVENT ") :])
         result["record"] = "event"
+        return result
+    if line.startswith("RME_CHANGE "):
+        result = parse_fields(line[len("RME_CHANGE ") :])
+        result["record"] = "change"
         return result
     for prefix, record in (
         ("RME_MACHINE ", "machine"),

@@ -41,7 +41,9 @@ class FileServiceTests(unittest.TestCase):
 
         def send(command):
             commands.append(command)
-            if "WRITE_BEGIN" in command:
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line("RME_FILE_CAPS root=/usb chunk=48 bulk=0"))
+            elif "WRITE_BEGIN" in command:
                 service.handle_response(parse_line("RME_FILE_WRITE_READY offset=0 chunk=48"))
             elif "WRITE_CHUNK" in command:
                 encoded = command.split("data=", 1)[1]
@@ -59,8 +61,49 @@ class FileServiceTests(unittest.TestCase):
             service.write_file(source_path, "jobs/test file.gcode")
         finally:
             os.unlink(source_path)
-        self.assertIn("path=jobs/test%20file.gcode", commands[0])
+        self.assertTrue(any("path=jobs/test%20file.gcode" in command for command in commands))
         self.assertEqual(3, len([command for command in commands if "WRITE_CHUNK" in command]))
+
+    def test_bulk_upload_pipelines_four_negotiated_chunks_per_ack(self):
+        service = None
+        commands = []
+        pending = []
+
+        def send(command):
+            commands.append(command)
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb chunk=48 bulk=1 bulk_chunk=384 bulk_window=4 binary=1"
+                ))
+            elif "WRITE_BULK_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BULK_READY offset=0 chunk=384 window=4"
+                ))
+            elif "WRITE_BULK_CHUNK" in command:
+                encoded = command.split("data=", 1)[1]
+                start = int(command.split("offset=", 1)[1].split(" ", 1)[0])
+                pending.append(start + len(base64.b64decode(encoded)))
+                if len(pending) == 4 or pending[-1] == 1600:
+                    service.handle_response(parse_line(
+                        "RME_FILE_BULK_ACK offset=%d" % pending[-1]
+                    ))
+                    pending[:] = []
+            elif "WRITE_BULK_END" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BULK_COMPLETE path=jobs/test.bgcode"
+                ))
+
+        service = RmeFileService(send, response_timeout=1)
+        with tempfile.NamedTemporaryFile(delete=False) as source:
+            source.write(bytes(range(256)) * 6 + bytes(range(64)))
+            source_path = source.name
+        try:
+            service.write_file(source_path, "jobs/test.bgcode")
+        finally:
+            os.unlink(source_path)
+        chunks = [command for command in commands if "WRITE_BULK_CHUNK" in command]
+        self.assertEqual(5, len(chunks))
+        self.assertTrue(any("WRITE_BULK_END" in command for command in commands))
 
     def test_paths_cannot_escape_usb_root(self):
         self.assertEqual("jobs/My%20print.gcode", normalize_remote_path("/jobs/My print.gcode"))

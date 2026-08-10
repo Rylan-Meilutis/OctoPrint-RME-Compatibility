@@ -31,6 +31,12 @@ class ProtocolTests(unittest.TestCase):
         "message": "Probing point 4",
         })
         self.assertEqual(parse_line(
+            "RME_CHANGE seq=8 revision=3 domain=theme key=colors origin=local"
+        ), {
+            "record": "change", "seq": 8, "revision": 3,
+            "domain": "theme", "key": "colors", "origin": "local",
+        })
+        self.assertEqual(parse_line(
             "RME_STATS distance_x_m=12.5 distance_y_m=8 distance_z_m=0.4 "
             "distance_total_m=20.9 extruded_m=456 print_time_s=900 "
             "current_print_time_s=120 jobs_started=7"

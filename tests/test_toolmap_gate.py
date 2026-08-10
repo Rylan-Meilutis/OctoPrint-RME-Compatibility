@@ -258,7 +258,10 @@ class ToolmapGateTests(unittest.TestCase):
             for batch in plugin._printer.command_batches
             for command in (batch if isinstance(batch, list) else [batch])
         ]
-        self.assertIn('@RME FILAMENT SET slot=0 name=PLA-00C nozzle=215 preheat=175 bed=60 visible=1', commands)
+        self.assertTrue(any(
+            command.startswith('@RME FILAMENT SET slot=0 name=PLA-00C nozzle=215 preheat=175 bed=60 visible=1 tx=')
+            for command in commands
+        ))
         self.assertIn('M865 U0 L0 O"#ff7700"', commands)
 
     def test_identical_spoolmanager_read_event_is_a_noop(self):
@@ -464,7 +467,7 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0b15"
+        plugin._plugin_version = "0.1.0b16"
         templates = plugin.get_template_configs()
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])
@@ -477,6 +480,10 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("Firmware update", settings_template)
         self.assertIn("Current theme", settings_template)
         self.assertIn("rme-theme-swatch", settings_template)
+        self.assertNotIn("Encoder −", settings_template)
+        self.assertNotIn(">Back</button>", settings_template)
+        self.assertNotIn(">Home</button>", settings_template)
+        self.assertIn("piUploadStatus", settings_template)
         self.assertIn("Theme presets", settings_template)
         self.assertIn("Delete from Pi", settings_template)
         self.assertIn("Saved lighting", settings_template)
@@ -488,6 +495,8 @@ class ToolmapGateTests(unittest.TestCase):
         ) as javascript_file:
             javascript = javascript_file.read()
         self.assertIn("OctoPrint.postForm", javascript)
+        self.assertIn('request.upload.addEventListener("progress"', javascript)
+        self.assertIn("scheduleCoreWorkflowRender", javascript)
         self.assertIn("formatDurationLong", javascript)
         self.assertIn("formatDistance", javascript)
         self.assertIn("applyPersistentLights", javascript)
@@ -739,6 +748,7 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._settings = _Settings()
         queued = []
         plugin._defer = lambda callback, *args: queued.append((callback, args))
+        plugin._schedule_publish = lambda: queued.append(("publish", ()))
 
         plugin._poll_stats_if_due(True, now=100)
         self.assertEqual([], queued)
@@ -771,6 +781,34 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._handle_record({"record": "rme_error", "message": "RME_ERROR STATS unsupported"})
         plugin._poll_stats_if_due(True, now=200)
         self.assertEqual(1, len(queued))  # state publication only; no command
+
+    def test_configuration_changes_drive_domain_refresh_without_polling(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        refreshed = []
+        plugin._schedule_publish = lambda: None
+        plugin._schedule_configuration_refresh = refreshed.append
+        plugin._state["session"].update(last_seq=10, configuration_revision=4)
+
+        plugin._handle_record({
+            "record": "change", "seq": 11, "revision": 5,
+            "domain": "theme", "key": "colors", "origin": "local",
+        })
+        self.assertEqual(["theme"], refreshed)
+        self.assertEqual(11, plugin._state["session"]["last_seq"])
+        self.assertEqual(5, plugin._state["session"]["configuration_revision"])
+
+        # Provider inventory refreshes remain periodic, but they no longer
+        # issue an M865 configuration query in steady state.
+        plugin._sync_spoolmanager = lambda *args: None
+        commands = []
+        plugin._send_command = commands.append
+        plugin._periodic_filament_sync()
+        self.assertEqual([], commands)
+
+        plugin._send_command = commands.append
+        plugin._open_session()
+        self.assertEqual("@RME SESSION OPEN events=31 legacy=0", commands[-1])
 
     def test_pause_resume_cancel_use_forced_priority_path(self):
         from octoprint.events import Events

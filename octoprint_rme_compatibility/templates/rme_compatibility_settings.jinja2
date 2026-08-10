@@ -121,7 +121,7 @@
         <div class="controls">
             <input type="file" data-bind="event: {change: chooseStorageUpload}">
             <button type="button" class="btn" data-bind="click: uploadStorage, enable: pendingStorageUpload">Upload to current directory</button>
-            <p class="help-block">Uploads use contiguous 48-byte chunks, SHA-256 verification, and an atomic <code>.rme-part</code> rename.</p>
+            <p class="help-block">Uploads negotiate the fastest safe RME FILE mode, pipeline bulk chunks when supported, verify SHA-256, and atomically rename the <code>.rme-part</code> file.</p>
         </div>
     </div>
     <table class="table table-condensed rme-storage-table" data-bind="visible: storage().supported">
@@ -144,14 +144,9 @@
     <p class="help-block" data-bind="visible: storage().supported && !storageEntries().length">This directory is empty.</p>
     <hr>
     <h4>Printer settings</h4>
-    <p>These controls edit settings exposed by the connected RME firmware. Changes are queried back from the printer after saving.</p>
+    <p>These controls edit settings exposed by the connected RME firmware. Revision events refresh changed settings after saving or front-panel edits.</p>
     <p>
         <button type="button" class="btn" data-bind="click: queryControls, enable: state().supported">Refresh from printer</button>
-        <button type="button" class="btn btn-mini" data-bind="click: function() { uiControl('ENCODER', -1); }">Encoder −</button>
-        <button type="button" class="btn btn-mini" data-bind="click: function() { uiControl('CLICK', 0); }">Click</button>
-        <button type="button" class="btn btn-mini" data-bind="click: function() { uiControl('ENCODER', 1); }">Encoder +</button>
-        <button type="button" class="btn btn-mini" data-bind="click: function() { uiControl('BACK', 0); }">Back</button>
-        <button type="button" class="btn btn-mini" data-bind="click: function() { uiControl('HOME', 0); }">Home</button>
     </p>
     <div class="control-group">
         <label class="control-label">Current theme</label>
@@ -182,16 +177,16 @@
     <div class="control-group rme-theme-edit-group">
         <label class="control-label">Edit theme</label>
         <div class="controls">
-            <span class="rme-theme-fields" data-bind="foreach: themeKeys">
-                <label class="rme-color-field">
+            <div class="rme-theme-fields" data-bind="foreach: themeKeys">
+                <div class="rme-color-field">
                     <span data-bind="text: label"></span>
                     <span class="rme-theme-editor">
-                        <input type="color" data-bind="value: value">
+                        <input class="rme-theme-color-input" type="color" data-bind="value: value, attr: {title: 'Choose ' + label + ' color'}">
                         <span class="rme-theme-swatch" data-bind="style: {backgroundColor: value}, attr: {title: label + ' ' + value()}"></span>
                     </span>
                     <code data-bind="text: value"></code>
-                </label>
-            </span>
+                </div>
+            </div>
             <div class="rme-theme-save">
                 <button type="button" class="btn btn-primary" data-bind="click: applyTheme, enable: state().supported">Save theme to printer</button>
             </div>
@@ -253,12 +248,16 @@
     </div>
     <hr>
     <h4>Firmware update</h4>
-    <p>Upload a signed BBF to this Pi, transfer and verify it through the RME binary protocol, then explicitly start the printer bootloader.</p>
+    <p>Upload a signed BBF to this Pi, transfer and verify it through the negotiated RME FILE protocol, then explicitly start the printer bootloader.</p>
     <div class="control-group">
         <label class="control-label">Upload to Pi</label>
         <div class="controls">
             <input type="file" accept=".bbf" data-bind="event: {change: chooseUpload}">
-            <button type="button" class="btn" data-bind="click: uploadToPi, enable: pendingUpload">Upload to Pi</button>
+            <button type="button" class="btn" data-bind="click: uploadToPi, enable: pendingUpload() && !piUploadActive()">Upload to Pi</button>
+            <div class="progress" data-bind="visible: piUploadActive">
+                <div class="bar" data-bind="style: {width: piUploadWidth}"></div>
+            </div>
+            <p data-bind="visible: piUploadActive, text: piUploadStatus"></p>
         </div>
     </div>
     <div class="control-group">

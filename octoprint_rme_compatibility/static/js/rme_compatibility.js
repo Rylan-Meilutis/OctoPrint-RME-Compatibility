@@ -20,6 +20,8 @@ $(function () {
         self.tick = ko.observable(Date.now());
         self.coreTiming = null;
         self.pendingUpload = ko.observable(null);
+        self.piUploadActive = ko.observable(false);
+        self.piUploadProgress = ko.observable(0);
         self.pendingStorageUpload = ko.observable(null);
         self.selectedFirmware = ko.observable();
         self.mappingRows = ko.observableArray([]);
@@ -68,6 +70,8 @@ $(function () {
         // Only reset this persistent form when a different firmware request
         // arrives; routine websocket snapshots must not erase in-progress edits.
         self.pendingSpoolKey = "";
+        self.spoolSelectionKey = "";
+        var coreRenderPending = false;
         self.newSpoolName = ko.observable("");
         self.newSpoolVendor = ko.observable("");
         self.newSpoolMaterial = ko.observable("PLA");
@@ -339,6 +343,14 @@ $(function () {
         self.firmwareLabel = function (file) { return file.name + " (" + formatBytes(file.size) + ")"; };
         self.firmware = ko.pureComputed(function () { return self.state().firmware || {}; });
         self.firmwareProgress = ko.pureComputed(function () { return Number(self.firmware().progress || 0) + "%"; });
+        self.piUploadWidth = ko.pureComputed(function () {
+            return Math.max(0, Math.min(100, Number(self.piUploadProgress()) || 0)) + "%";
+        });
+        self.piUploadStatus = ko.pureComputed(function () {
+            if (!self.piUploadActive()) return "";
+            var progress = Math.round(Number(self.piUploadProgress()) || 0);
+            return progress < 100 ? "Uploading to Pi · " + progress + "%" : "Upload sent · saving on Pi…";
+        });
         self.firmwareBusy = ko.pureComputed(function () {
             return ["queued", "canceling", "starting", "uploading", "verifying"].indexOf(self.firmware().status) >= 0;
         });
@@ -429,16 +441,23 @@ $(function () {
             }
             if (value.theme) {
                 ko.utils.arrayForEach(self.themeKeys, function (entry) {
-                    if (value.theme[entry.key] !== undefined) entry.value(toHexColor(value.theme[entry.key]));
+                    if (value.theme[entry.key] !== undefined) {
+                        var color = toHexColor(value.theme[entry.key]);
+                        if (entry.value() !== color) entry.value(color);
+                    }
                 });
             }
             if (value.lock && value.lock.enabled !== undefined) {
-                self.lockEnabled(!!Number(value.lock.enabled));
+                var lockEnabled = !!Number(value.lock.enabled);
+                if (self.lockEnabled() !== lockEnabled) self.lockEnabled(lockEnabled);
             }
             if (value.light) {
-                if (Number(value.light.screen_print) >= 0) self.lightScreen(Number(value.light.screen_print));
-                if (Number(value.light.chamber_print) >= 0) self.lightChamber(Number(value.light.chamber_print));
-                if (Number(value.light.status_print) >= 0) self.lightStatus(Number(value.light.status_print));
+                var screen = Number(value.light.screen_print);
+                var chamber = Number(value.light.chamber_print);
+                var status = Number(value.light.status_print);
+                if (screen >= 0 && self.lightScreen() !== screen) self.lightScreen(screen);
+                if (chamber >= 0 && self.lightChamber() !== chamber) self.lightChamber(chamber);
+                if (status >= 0 && self.lightStatus() !== status) self.lightStatus(status);
             }
             var pending = value.spoolmanager && value.spoolmanager.pending_new;
             var pendingKey = pending ? [pending.tool, pending.material, pending.color].join(":") : "";
@@ -460,15 +479,21 @@ $(function () {
             ko.utils.arrayForEach((value.spoolmanager || {}).selected || [], function (item) {
                 selectedByTool[Number(item.tool)] = Number(item.database_id);
             });
-            var selectionRows = [];
-            for (var tool = 0; tool < machineTools; tool++) {
-                selectionRows.push({
-                    tool: tool,
-                    selected: ko.observable(selectedByTool[tool] === undefined ? null : selectedByTool[tool])
-                });
+            var selectionKey = [machineTools].concat(Object.keys(selectedByTool).sort().map(function (tool) {
+                return tool + ":" + selectedByTool[tool];
+            })).join("|");
+            if (selectionKey !== self.spoolSelectionKey) {
+                self.spoolSelectionKey = selectionKey;
+                var selectionRows = [];
+                for (var tool = 0; tool < machineTools; tool++) {
+                    selectionRows.push({
+                        tool: tool,
+                        selected: ko.observable(selectedByTool[tool] === undefined ? null : selectedByTool[tool])
+                    });
+                }
+                self.spoolSelectionRows(selectionRows);
             }
-            self.spoolSelectionRows(selectionRows);
-            renderCoreWorkflow();
+            scheduleCoreWorkflowRender();
         };
         self.discover = function () { self.command("discover"); };
         self.openSession = function () { self.command("open_session"); };
@@ -502,15 +527,31 @@ $(function () {
             // both receive the required CSRF/authentication headers. This path
             // must be relative because the client prepends BASEURL itself;
             // PLUGIN_BASEURL would create //plugin at root installations.
+            self.piUploadProgress(0);
+            self.piUploadActive(true);
             OctoPrint.postForm(
                 "plugin/rme_compatibility/firmware",
-                {file: file}
+                {file: file},
+                {xhr: function () {
+                    var request = $.ajaxSettings.xhr();
+                    if (request.upload) {
+                        request.upload.addEventListener("progress", function (event) {
+                            if (event.lengthComputable) {
+                                self.piUploadProgress(event.total ? event.loaded * 100 / event.total : 0);
+                            }
+                        });
+                    }
+                    return request;
+                }}
             ).done(function (response) {
+                self.piUploadProgress(100);
+                self.piUploadActive(false);
                 self.pendingUpload(null);
                 self.selectedFirmware(response.file.name);
                 self.acceptState(response.state);
                 new PNotify({title: "Firmware stored on Pi", text: response.file.name, type: "success"});
             }).fail(function (xhr) {
+                self.piUploadActive(false);
                 new PNotify({title: "Firmware upload failed", text: responseError(xhr), type: "error", hide: false});
             });
         };
@@ -670,7 +711,7 @@ $(function () {
             OctoPrint.simpleApiGet("rme_compatibility").done(self.acceptState);
             window.setInterval(function () {
                 self.tick(Date.now());
-                renderCoreWorkflow();
+                if (self.workflowVisible()) scheduleCoreWorkflowRender();
             }, 1000);
         };
         self.onSettingsShown = function () {
@@ -683,6 +724,15 @@ $(function () {
         self.onDataUpdaterPluginMessage = function (plugin, data) {
             if (plugin === "rme_compatibility") self.acceptState(data);
         };
+
+        function scheduleCoreWorkflowRender() {
+            if (coreRenderPending) return;
+            coreRenderPending = true;
+            (window.requestAnimationFrame || function (callback) { return window.setTimeout(callback, 16); })(function () {
+                coreRenderPending = false;
+                renderCoreWorkflow();
+            });
+        }
 
         function renderCoreWorkflow() {
             var state = self.state();

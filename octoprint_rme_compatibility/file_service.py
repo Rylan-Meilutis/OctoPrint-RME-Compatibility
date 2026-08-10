@@ -9,6 +9,8 @@ from urllib.parse import quote
 
 
 FILE_CHUNK_SIZE = 48
+BULK_CHUNK_SIZE = 384
+BULK_WINDOW_SIZE = 4
 
 
 class FileServiceError(RuntimeError):
@@ -48,6 +50,7 @@ class RmeFileService(object):
         self._error = None
         self._active = False
         self._cancel = threading.Event()
+        self._capabilities = None
 
     @property
     def busy(self):
@@ -58,6 +61,7 @@ class RmeFileService(object):
 
     def reset(self, reason="Printer disconnected"):
         """Interrupt a waiter when the serial connection disappears."""
+        self._capabilities = None
         with self._condition:
             if self._active:
                 self._error = reason
@@ -88,7 +92,7 @@ class RmeFileService(object):
                 self._records.append(dict(record))
             self._condition.notify_all()
 
-    def _exchange(self, command, expected, timeout=None):
+    def _exchange(self, command, expected, timeout=None, terminal=None):
         """Send a command and return all records through its terminal reply."""
         expected = set(expected if isinstance(expected, (tuple, list, set)) else [expected])
         with self._condition:
@@ -97,10 +101,15 @@ class RmeFileService(object):
             self._error = None
             self._active = True
         try:
-            self.send_command(command)
+            commands = command if isinstance(command, (tuple, list)) else [command]
+            for item in commands:
+                self.send_command(item)
             deadline = time.monotonic() + (timeout or self.response_timeout)
             with self._condition:
-                while not any(item.get("record") in expected for item in self._records):
+                while not any(
+                    item.get("record") in expected and (terminal is None or terminal(item))
+                    for item in self._records
+                ):
                     if self._error:
                         raise FileServiceError("Printer USB operation failed: %s" % self._error)
                     if self._cancel.is_set():
@@ -124,7 +133,9 @@ class RmeFileService(object):
         with self._operation_lock:
             self._cancel.clear()
             records = self._exchange("@RME FILE CAPS", "file_caps")
-        return self._terminal(records, "file_caps")
+        result = self._terminal(records, "file_caps")
+        self._capabilities = dict(result)
+        return result
 
     def list_directory(self, path="/"):
         encoded = normalize_remote_path(path)
@@ -185,47 +196,112 @@ class RmeFileService(object):
             try:
                 if starting:
                     starting()
-                self._exchange(
-                    "@RME FILE WRITE_BEGIN path=%s size=%d sha256=%s"
-                    % (encoded, size, digest),
-                    "file_write_ready",
-                )
-                offset = 0
-                with open(local_path, "rb") as source:
-                    while True:
-                        if self._cancel.is_set():
-                            raise FileServiceError("Printer USB operation cancelled")
-                        block = source.read(FILE_CHUNK_SIZE)
-                        if not block:
-                            break
-                        data = base64.b64encode(block).decode("ascii")
-                        records = self._exchange(
-                            "@RME FILE WRITE_CHUNK path=%s offset=%d data=%s"
-                            % (encoded, offset, data),
-                            "file_write_offset",
-                        )
-                        acknowledged = int(self._terminal(records, "file_write_offset")["offset"])
-                        expected = offset + len(block)
-                        if acknowledged != expected:
-                            raise FileServiceError("Printer returned an invalid upload offset")
-                        offset = acknowledged
-                        if progress:
-                            progress(offset, size)
+                if self._capabilities is None:
+                    records = self._exchange("@RME FILE CAPS", "file_caps")
+                    self._capabilities = dict(self._terminal(records, "file_caps"))
+                if bool(int(self._capabilities.get("bulk", 0))):
+                    offset = self._write_bulk(local_path, encoded, size, digest, progress)
+                else:
+                    offset = self._write_legacy(local_path, encoded, size, digest, progress)
                 if offset != size:
                     raise FileServiceError("Printer did not acknowledge the complete upload")
                 if finalizing:
                     finalizing()
-                self._exchange(
-                    "@RME FILE WRITE_END path=%s" % encoded,
-                    "file_write_complete",
-                    timeout=60,
-                )
+                if bool(int(self._capabilities.get("bulk", 0))):
+                    self._exchange(
+                        "@RME FILE WRITE_BULK_END path=%s" % encoded,
+                        ("file_bulk_complete", "file_write_complete"), timeout=60,
+                    )
+                else:
+                    self._exchange(
+                        "@RME FILE WRITE_END path=%s" % encoded,
+                        "file_write_complete", timeout=60,
+                    )
             except Exception:
                 try:
                     self.send_command("@RME FILE ABORT")
                 except Exception:
                     pass
                 raise
+
+    def _write_legacy(self, local_path, encoded, size, digest, progress):
+        """Use the original one-ACK-per-48-byte transfer for older firmware."""
+        self._exchange(
+            "@RME FILE WRITE_BEGIN path=%s size=%d sha256=%s" % (encoded, size, digest),
+            "file_write_ready",
+        )
+        offset = 0
+        with open(local_path, "rb") as source:
+            while True:
+                if self._cancel.is_set():
+                    raise FileServiceError("Printer USB operation cancelled")
+                block = source.read(FILE_CHUNK_SIZE)
+                if not block:
+                    return offset
+                data = base64.b64encode(block).decode("ascii")
+                records = self._exchange(
+                    "@RME FILE WRITE_CHUNK path=%s offset=%d data=%s"
+                    % (encoded, offset, data), "file_write_offset",
+                )
+                acknowledged = int(self._terminal(records, "file_write_offset")["offset"])
+                if acknowledged != offset + len(block):
+                    raise FileServiceError("Printer returned an invalid upload offset")
+                offset = acknowledged
+                if progress:
+                    progress(offset, size)
+
+    def _write_bulk(self, local_path, encoded, size, digest, progress):
+        """Pipeline negotiated Base64 chunks and pace them with cumulative ACKs.
+
+        OctoPrint's supported plugin interface is line-oriented, so raw binary
+        framing cannot safely take ownership of its receive parser. Bulk mode
+        retains the single OctoPrint serial owner while reducing ACK round trips
+        by roughly 32x compared with the legacy transport.
+        """
+        records = self._exchange(
+            "@RME FILE WRITE_BULK_BEGIN path=%s size=%d sha256=%s"
+            % (encoded, size, digest), "file_bulk_ready",
+        )
+        ready = self._terminal(records, "file_bulk_ready")
+        # Honor the negotiated pacing values instead of assuming this
+        # firmware release's defaults. Defensive ceilings bound memory and
+        # command length if a malformed capability response is received.
+        chunk_size = min(
+            4096,
+            max(1, int(ready.get("chunk", self._capabilities.get("bulk_chunk", BULK_CHUNK_SIZE)))),
+        )
+        window_size = min(
+            64,
+            max(1, int(ready.get("window", self._capabilities.get("bulk_window", BULK_WINDOW_SIZE)))),
+        )
+        offset = int(ready.get("offset", 0))
+        with open(local_path, "rb") as source:
+            source.seek(offset)
+            while offset < size:
+                if self._cancel.is_set():
+                    raise FileServiceError("Printer USB operation cancelled")
+                commands = []
+                expected_offset = offset
+                for _ in range(window_size):
+                    block = source.read(chunk_size)
+                    if not block:
+                        break
+                    commands.append(
+                        "@RME FILE WRITE_BULK_CHUNK offset=%d data=%s"
+                        % (expected_offset, base64.b64encode(block).decode("ascii"))
+                    )
+                    expected_offset += len(block)
+                records = self._exchange(
+                    commands, "file_bulk_ack",
+                    terminal=lambda item, target=expected_offset: int(item.get("offset", -1)) >= target,
+                )
+                acknowledged = int(self._terminal(records, "file_bulk_ack")["offset"])
+                if acknowledged != expected_offset:
+                    raise FileServiceError("Printer returned an invalid bulk upload offset")
+                offset = acknowledged
+                if progress:
+                    progress(offset, size)
+        return offset
 
     def mutate(self, action, path, destination=None):
         """Run one acknowledged mkdir/rename/delete/print/flash operation."""

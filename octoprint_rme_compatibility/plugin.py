@@ -94,6 +94,12 @@ class RmeCompatibilityPlugin(
         self._firmware_completed_controls = set()
         self._firmware_action_lock = threading.Lock()
         self._last_storage_publish = 0
+        self._publish_timer = None
+        self._publish_timer_lock = threading.Lock()
+        self._configuration_timer = None
+        self._configuration_timer_lock = threading.Lock()
+        self._configuration_domains = set()
+        self._transaction = int(time.time() * 1000) & 0xFFFFFFFF or 1
 
     @staticmethod
     def _empty_state():
@@ -101,7 +107,10 @@ class RmeCompatibilityPlugin(
         return {
             "connected": False,
             "supported": False,
-            "session": {"active": False, "legacy": True, "last_seq": 0},
+            "session": {
+                "active": False, "legacy": True, "last_seq": 0,
+                "configuration_revision": 0,
+            },
             "machine": {},
             "toolmap": {"enabled": False, "mapping": {}},
             "lock": {},
@@ -208,6 +217,14 @@ class RmeCompatibilityPlugin(
         # hold. In-flight prints remain under OctoPrint's normal control.
         self._release_toolmap_hold()
         self._stop.set()
+        with self._publish_timer_lock:
+            if self._publish_timer:
+                self._publish_timer.cancel()
+                self._publish_timer = None
+        with self._configuration_timer_lock:
+            if self._configuration_timer:
+                self._configuration_timer.cancel()
+                self._configuration_timer = None
         if self._uploader and self._uploader.busy:
             self._uploader.cancel()
         self._firmware_file_cancel.set()
@@ -408,14 +425,14 @@ class RmeCompatibilityPlugin(
                 flask.abort(400, description="Invalid remote UI action")
             self._send_commands(["@RME UI ENABLE 1", frame])
         elif command == "lock_now":
-            self._send_command("@RME LOCK NOW")
-            self._send_command("@RME LOCK QUERY")
+            self._send_command(self._with_transaction("@RME LOCK NOW"))
         elif command == "lock_unlock":
             pin = str(data["pin"])
             if not pin.isdigit() or len(pin) < 4 or len(pin) > 9:
                 flask.abort(400, description="PIN must contain 4 through 9 digits")
-            self._send_command("@RME LOCK UNLOCK pin=%s digits=%d" % (pin, len(pin)))
-            self._send_command("@RME LOCK QUERY")
+            self._send_command(self._with_transaction(
+                "@RME LOCK UNLOCK pin=%s digits=%d" % (pin, len(pin))
+            ))
         elif command == "set_lock":
             pin = str(data["pin"])
             timeout = int(data["timeout"])
@@ -425,11 +442,10 @@ class RmeCompatibilityPlugin(
                 flask.abort(400, description="PIN must contain 4 through 9 digits")
             if timeout < 0 or timeout > 65535:
                 flask.abort(400, description="Lock timeout must be 0 through 65535 seconds")
-            self._send_command(
+            self._send_command(self._with_transaction(
                 "@RME LOCK SET pin=%s digits=%d timeout=%d serial=%d enabled=%d"
                 % (pin, len(pin), timeout, serial, enabled)
-            )
-            self._send_command("@RME LOCK QUERY")
+            ))
         elif command == "set_theme":
             colors = data["colors"]
             keys = ("primary", "progress", "warning", "error", "image")
@@ -437,26 +453,23 @@ class RmeCompatibilityPlugin(
                 key not in colors or not self._valid_color(colors[key]) for key in keys
             ):
                 flask.abort(400, description="All theme colors must use #RRGGBB")
-            self._send_command(
+            self._send_command(self._with_transaction(
                 "@RME THEME SET " + " ".join("%s=%s" % (key, colors[key]) for key in keys)
-            )
-            self._send_command("@RME THEME QUERY")
+            ))
         elif command == "set_temp_lights":
             values = [int(data[key]) for key in ("screen", "chamber", "status")]
             if any(value < 0 or value > 100 for value in values):
                 flask.abort(400, description="Light brightness must be 0 through 100")
-            self._send_command(
+            self._send_command(self._with_transaction(
                 "@RME LIGHT TEMP screen=%d chamber=%d status=%d" % tuple(values)
-            )
-            self._send_command("@RME LIGHT QUERY")
+            ))
         elif command == "set_persistent_lights":
             values = [int(data[key]) for key in ("screen", "chamber", "status")]
             if any(not self._valid_packed_brightness(value) for value in values):
                 flask.abort(400, description="Each packed light-state byte must be 0 through 100")
-            self._send_command(
+            self._send_command(self._with_transaction(
                 "@RME LIGHT SET screen=0x%08X chamber=0x%08X status=0x%08X" % tuple(values)
-            )
-            self._send_command("@RME LIGHT QUERY")
+            ))
         elif command == "set_filament":
             slot = int(data["slot"])
             name = str(data["name"])
@@ -466,11 +479,10 @@ class RmeCompatibilityPlugin(
                 flask.abort(400, description="Filament needs slot 0-7 and a 1-7 character name without spaces")
             if any(value < 0 or value > 500 for value in temperatures):
                 flask.abort(400, description="Filament temperatures must be 0 through 500 C")
-            self._send_command(
+            self._send_command(self._with_transaction(
                 "@RME FILAMENT SET slot=%d name=%s nozzle=%d preheat=%d bed=%d visible=%d"
                 % (slot, name, temperatures[0], temperatures[1], temperatures[2], visible)
-            )
-            self._send_command("@RME FILAMENT QUERY")
+            ))
         elif command == "stage_firmware":
             self._start_firmware_upload(data["filename"])
         elif command == "stage_and_flash_firmware":
@@ -698,7 +710,10 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 self._state["connected"] = True
                 self._state["supported"] = False
-                self._state["session"] = {"active": False, "legacy": True, "last_seq": 0}
+                self._state["session"] = {
+                    "active": False, "legacy": True, "last_seq": 0,
+                    "configuration_revision": 0,
+                }
                 self._stats_supported = None
                 self._last_stats_poll = 0
                 self._priority_controls_sent.clear()
@@ -926,16 +941,8 @@ class RmeCompatibilityPlugin(
                     active=bool(record.get("active")), legacy=bool(record.get("legacy"))
                 )
                 if record.get("active"):
-                    follow_up.extend(
-                        [
-                            "@RME DIALOG QUERY",
-                            "@RME TOOLMAP QUERY",
-                            "@RME LOCK QUERY",
-                            "@RME THEME QUERY",
-                            "@RME LIGHT QUERY",
-                            "@RME FILAMENT QUERY",
-                        ]
-                    )
+                    follow_up.append("@RME DIALOG QUERY")
+                    follow_up.extend(self._configuration_queries())
             elif kind == "event":
                 now = int(time.time())
                 record["workflow"] = classify_workflow(record)
@@ -949,6 +956,7 @@ class RmeCompatibilityPlugin(
                 previous = int(self._state["session"].get("last_seq", 0))
                 if previous and sequence != previous + 1:
                     follow_up.extend(["@RME SESSION QUERY", "@RME DIALOG QUERY"])
+                    follow_up.extend(self._configuration_queries())
                 self._state["session"]["last_seq"] = sequence
                 self._state["workflow"] = dict(record)
                 if record.get("type") == "error" or record.get("state") == "waiting":
@@ -956,10 +964,24 @@ class RmeCompatibilityPlugin(
                 if workflow_is_terminal(record):
                     if (self._state.get("prompt") or {}).get("kind") == "firmware":
                         self._state["prompt"] = None
-                    # Loading dialogs can change M865 without originating on the
-                    # serial host. Query after their terminal event so an LCD-side
-                    # choice immediately propagates back to SpoolManager.
-                    follow_up.append("M865 Q")
+            elif kind == "change":
+                sequence = int(record.get("seq", 0))
+                previous_sequence = int(self._state["session"].get("last_seq", 0))
+                revision = int(record.get("revision", 0))
+                previous_revision = int(
+                    self._state["session"].get("configuration_revision", 0)
+                )
+                sequence_gap = bool(previous_sequence and sequence != previous_sequence + 1)
+                revision_gap = bool(previous_revision and revision != previous_revision + 1)
+                self._state["session"]["last_seq"] = sequence
+                self._state["session"]["configuration_revision"] = revision
+                if sequence_gap or revision_gap:
+                    follow_up.extend(["@RME SESSION QUERY", "@RME DIALOG QUERY"])
+                    follow_up.append("refresh_configuration:all")
+                else:
+                    follow_up.append(
+                        "refresh_configuration:%s" % str(record.get("domain", ""))
+                    )
             elif kind == "prompt":
                 if record["actions"]:
                     workflow = self._state.get("workflow") or {}
@@ -1047,7 +1069,7 @@ class RmeCompatibilityPlugin(
                 del errors[:-10]
         # The receive hook must remain memory-only; persistence and websocket
         # publication happen after returning control to OctoPrint's RX loop.
-        self._defer(self._persist_and_publish)
+        self._schedule_publish()
         for item in follow_up:
             if item == "open_session":
                 self._defer(self._open_session)
@@ -1059,6 +1081,8 @@ class RmeCompatibilityPlugin(
                 self._defer(self._initialize_spool_sync)
             elif item == "initialize_storage":
                 self._defer(self._initialize_storage)
+            elif item.startswith("refresh_configuration:"):
+                self._schedule_configuration_refresh(item.split(":", 1)[1])
             else:
                 self._defer(self._send_command, item)
         if apply_profile:
@@ -1075,6 +1099,64 @@ class RmeCompatibilityPlugin(
         if not self._printer.is_operational():
             raise RuntimeError("Printer is not connected")
         self._printer.commands(commands, tags={"plugin:rme_compatibility"})
+
+    def _with_transaction(self, command):
+        """Attach the firmware's nonzero mutation correlation identifier."""
+        with self._state_lock:
+            self._transaction = (self._transaction + 1) & 0xFFFFFFFF
+            if not self._transaction:
+                self._transaction = 1
+            transaction = self._transaction
+        return "%s tx=%d" % (command, transaction)
+
+    @staticmethod
+    def _configuration_queries(domain=None):
+        """Return the minimum snapshot queries for one RME change domain."""
+        queries = {
+            "lock": ["@RME LOCK QUERY"],
+            "theme": ["@RME THEME QUERY"],
+            "light": ["@RME LIGHT QUERY"],
+            "filament": ["@RME FILAMENT QUERY", "M865 Q"],
+            "color": ["M865 Q"],
+            "manufacturer": ["M865 Q"],
+            "toolmap": ["@RME TOOLMAP QUERY"],
+        }
+        if domain in queries:
+            return list(queries[domain])
+        result = []
+        for name in ("lock", "theme", "light", "filament", "toolmap"):
+            for command in queries[name]:
+                if command not in result:
+                    result.append(command)
+        return result
+
+    def _schedule_configuration_refresh(self, domain):
+        """Collapse a burst of revision events into minimal domain queries."""
+        with self._configuration_timer_lock:
+            self._configuration_domains.add(domain or "all")
+            if self._configuration_timer is not None:
+                return
+
+            def refresh():
+                with self._configuration_timer_lock:
+                    domains = set(self._configuration_domains)
+                    self._configuration_domains.clear()
+                    self._configuration_timer = None
+                commands = self._configuration_queries() if "all" in domains else []
+                if not commands:
+                    for changed_domain in sorted(domains):
+                        for command in self._configuration_queries(changed_domain):
+                            if command not in commands:
+                                commands.append(command)
+                if commands:
+                    try:
+                        self._send_commands(commands)
+                    except Exception:
+                        self._logger.exception("RME configuration refresh failed")
+
+            self._configuration_timer = threading.Timer(0.1, refresh)
+            self._configuration_timer.daemon = True
+            self._configuration_timer.start()
 
     def _request_priority_control(self, action):
         """Queue one idempotent pause/resume/cancel on OctoPrint's fast path."""
@@ -1245,11 +1327,11 @@ class RmeCompatibilityPlugin(
             self._state["active_tool"]["logical"] = int(logical)
             self._state["active_tool"]["updated"] = int(time.time())
             self._refresh_active_tool_locked()
-        self._defer(self._persist_and_publish)
+        self._schedule_publish()
 
     def _open_session(self):
         legacy = 1 if self._settings.get_boolean(["legacy_notifications"]) else 0
-        self._send_command("@RME SESSION OPEN events=15 legacy=%d" % legacy)
+        self._send_command("@RME SESSION OPEN events=31 legacy=%d" % legacy)
 
     @staticmethod
     def _valid_color(value):
@@ -1602,10 +1684,10 @@ class RmeCompatibilityPlugin(
                             "@RME FILAMENT SET slot=%d name=EMPTY nozzle=215 preheat=170 bed=60 visible=0"
                             % slot
                         )
-                commands.extend([
-                    "@RME FILAMENT SET slot=7 name=NEW nozzle=215 preheat=170 bed=60 visible=1",
-                    "@RME FILAMENT QUERY",
-                ])
+                commands.append(
+                    "@RME FILAMENT SET slot=7 name=NEW nozzle=215 preheat=170 bed=60 visible=1"
+                )
+                commands = [self._with_transaction(command) for command in commands]
                 self._send_commands(commands)
             if should_push:
                 # Reassert selected tool assignments after reconnects and after
@@ -1787,13 +1869,8 @@ class RmeCompatibilityPlugin(
             self._send_command("M865 Q")
 
     def _periodic_filament_sync(self):
-        """Refresh inventory and poll printer changes without overwriting it."""
+        """Refresh the external provider; RME_CHANGE drives printer snapshots."""
         self._sync_spoolmanager(False, False)
-        with self._state_lock:
-            pending = self._state["spoolmanager"].get("pending_provider_sync")
-            can_send = self._state["connected"] and self._state["supported"]
-        if can_send and not pending:
-            self._send_command("M865 Q")
 
     def _sync_filaments_to_printer(self):
         """Publish provider presets and assignments after explicit acceptance."""
@@ -2368,6 +2445,32 @@ class RmeCompatibilityPlugin(
         if self._store:
             self._store.request_save()
         self._publish()
+
+    def _schedule_publish(self, delay=0.075):
+        """Coalesce serial bursts into one persisted WebSocket snapshot.
+
+        A stats response or five-tool filament report arrives as several lines.
+        Publishing each line used to create one thread, JSON copy, state write,
+        and browser redraw per record. A short timer keeps the receive hook
+        non-blocking while publishing the complete burst as one snapshot.
+        """
+        with self._publish_timer_lock:
+            if self._publish_timer is not None:
+                return
+
+            def publish_once():
+                with self._publish_timer_lock:
+                    self._publish_timer = None
+                if self._stop.is_set():
+                    return
+                try:
+                    self._persist_and_publish()
+                except Exception:
+                    self._logger.exception("Deferred RME state publication failed")
+
+            self._publish_timer = threading.Timer(delay, publish_once)
+            self._publish_timer.daemon = True
+            self._publish_timer.start()
 
     def _publish(self):
         """Send one authoritative snapshot to every currently open OctoPrint UI."""
