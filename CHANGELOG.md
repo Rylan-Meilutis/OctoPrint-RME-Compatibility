@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0b18 — 2026-08-10
+
+- Deferred statistics polling and event-triggered configuration snapshots while
+  printing or paused so background RME reads cannot compete with streamed job
+  G-code in OctoPrint's normal command queue.
+- Deferred automatic manufacturer/profile publication until the active job
+  finishes, then reconciled it automatically.
+- Kept the minimal RME session keepalive active during jobs so remote workflow
+  and error events remain available without enabling telemetry polling.
+
 ## 0.1.0b17 — 2026-08-10
 
 - Fixed current Buddy `loaded_filament` parsing so its manufacturer field no

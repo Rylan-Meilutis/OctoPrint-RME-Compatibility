@@ -102,6 +102,7 @@ class RmeCompatibilityPlugin(
         self._configuration_domains = set()
         self._manufacturer_sync_timer = None
         self._manufacturer_sync_timer_lock = threading.Lock()
+        self._manufacturer_sync_pending = False
         self._transaction = int(time.time() * 1000) & 0xFFFFFFFF or 1
 
     @staticmethod
@@ -785,6 +786,7 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 self._priority_controls_sent.clear()
                 self._firmware_completed_controls.clear()
+            self._defer(self._resume_background_queries)
 
     def gcode_received_hook(self, comm_instance, line, *args, **kwargs):
         """Observe RME records without blocking or bypassing OctoPrint's queue."""
@@ -939,7 +941,7 @@ class RmeCompatibilityPlugin(
                 # selections can be resolved without first overwriting them.
                 follow_up.append("initialize_spool_sync")
                 follow_up.append("initialize_storage")
-                follow_up.append("@RME STATS QUERY")
+                follow_up.append("probe_stats")
                 if (
                     int(record.get("logical_tools", 0)) == 1
                     and self._state["active_tool"].get("logical") is None
@@ -959,7 +961,7 @@ class RmeCompatibilityPlugin(
                 )
                 if record.get("active"):
                     follow_up.append("@RME DIALOG QUERY")
-                    follow_up.extend(self._configuration_queries())
+                    follow_up.append("refresh_configuration:all")
             elif kind == "event":
                 now = int(time.time())
                 record["workflow"] = classify_workflow(record)
@@ -973,7 +975,7 @@ class RmeCompatibilityPlugin(
                 previous = int(self._state["session"].get("last_seq", 0))
                 if previous and sequence != previous + 1:
                     follow_up.extend(["@RME SESSION QUERY", "@RME DIALOG QUERY"])
-                    follow_up.extend(self._configuration_queries())
+                    follow_up.append("refresh_configuration:all")
                 self._state["session"]["last_seq"] = sequence
                 self._state["workflow"] = dict(record)
                 if record.get("type") == "error" or record.get("state") == "waiting":
@@ -1139,6 +1141,8 @@ class RmeCompatibilityPlugin(
                 self._defer(self._initialize_storage)
             elif item == "sync_manufacturer_profiles":
                 self._schedule_manufacturer_profile_sync()
+            elif item == "probe_stats":
+                self._defer(self._probe_stats)
             elif item.startswith("refresh_configuration:"):
                 self._schedule_configuration_refresh(item.split(":", 1)[1])
             else:
@@ -1196,6 +1200,17 @@ class RmeCompatibilityPlugin(
                 return
 
             def refresh():
+                if self._print_job_active():
+                    # Preserve the accumulated domains and retry later without
+                    # placing snapshot traffic ahead of streamed print G-code.
+                    with self._configuration_timer_lock:
+                        if self._stop.is_set():
+                            self._configuration_timer = None
+                            return
+                        self._configuration_timer = threading.Timer(2.0, refresh)
+                        self._configuration_timer.daemon = True
+                        self._configuration_timer.start()
+                    return
                 with self._configuration_timer_lock:
                     domains = set(self._configuration_domains)
                     self._configuration_domains.clear()
@@ -1422,7 +1437,27 @@ class RmeCompatibilityPlugin(
             if not transfer_busy and time.monotonic() - self._last_spool_sync >= interval:
                 self._defer(self._periodic_filament_sync)
             if not transfer_busy:
-                self._poll_stats_if_due(connected)
+                if self._stats_supported is None:
+                    self._defer(self._probe_stats)
+                else:
+                    self._poll_stats_if_due(connected)
+
+    def _print_job_active(self):
+        """Return whether background serial reads must yield to job G-code."""
+        try:
+            return bool(self._printer.is_printing() or self._printer.is_paused())
+        except Exception:
+            return False
+
+    def _probe_stats(self):
+        """Probe statistics support only while the serial job queue is idle."""
+        if self._print_job_active():
+            return
+        with self._state_lock:
+            connected = self._state.get("connected")
+            supported = self._state.get("supported")
+        if connected and supported and self._stats_supported is None:
+            self._send_command("@RME STATS QUERY")
 
     def _poll_stats_if_due(self, connected, now=None):
         """Queue telemetry only after firmware positively answered the probe."""
@@ -1431,6 +1466,7 @@ class RmeCompatibilityPlugin(
         if (
             self._stats_supported is True
             and connected
+            and not self._print_job_active()
             and now - self._last_stats_poll >= stats_interval
         ):
             self._last_stats_poll = now
@@ -1717,6 +1753,10 @@ class RmeCompatibilityPlugin(
 
     def _schedule_manufacturer_profile_sync(self):
         """Reconcile once after the firmware's manufacturer query burst."""
+        if self._print_job_active():
+            with self._state_lock:
+                self._manufacturer_sync_pending = True
+            return
         with self._manufacturer_sync_timer_lock:
             if self._manufacturer_sync_timer is not None:
                 self._manufacturer_sync_timer.cancel()
@@ -1724,12 +1764,26 @@ class RmeCompatibilityPlugin(
             def synchronize():
                 with self._manufacturer_sync_timer_lock:
                     self._manufacturer_sync_timer = None
-                if not self._stop.is_set():
-                    self._sync_spoolmanager(True, True)
+                if self._stop.is_set():
+                    return
+                if self._print_job_active():
+                    with self._state_lock:
+                        self._manufacturer_sync_pending = True
+                    return
+                self._sync_spoolmanager(True, True)
 
             self._manufacturer_sync_timer = threading.Timer(0.15, synchronize)
             self._manufacturer_sync_timer.daemon = True
             self._manufacturer_sync_timer.start()
+
+    def _resume_background_queries(self):
+        """Catch up deferred telemetry and provider metadata after a job."""
+        self._probe_stats()
+        with self._state_lock:
+            synchronize_manufacturers = self._manufacturer_sync_pending
+            self._manufacturer_sync_pending = False
+        if synchronize_manufacturers:
+            self._schedule_manufacturer_profile_sync()
 
     def _sync_spoolmanager(self, force=False, push_to_firmware=True):
         """Reconcile the active inventory provider with eight firmware presets.

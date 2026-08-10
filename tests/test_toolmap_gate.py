@@ -488,7 +488,7 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0b17"
+        plugin._plugin_version = "0.1.0b18"
         templates = plugin.get_template_configs()
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])
@@ -815,6 +815,20 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._poll_stats_if_due(True, now=129)
         self.assertEqual([], queued)
         plugin._poll_stats_if_due(True, now=130)
+        self.assertEqual("@RME STATS QUERY", queued[0][1][0])
+
+        # Background telemetry must never enter the normal serial queue while
+        # a print (including a paused print) owns it.
+        queued.clear()
+        plugin._printer = _Printer()
+        plugin._printer.is_printing = lambda: True
+        plugin._last_stats_poll = 100
+        plugin._poll_stats_if_due(True, now=200)
+        self.assertEqual([], queued)
+        self.assertEqual(100, plugin._last_stats_poll)
+
+        plugin._printer.is_printing = lambda: False
+        plugin._poll_stats_if_due(True, now=200)
         self.assertEqual("@RME STATS QUERY", queued[0][1][0])
 
         queued.clear()
