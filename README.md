@@ -158,10 +158,11 @@ RME_STATS_FAILURES crash_x=1 crash_y=0 power_panics=2 mmu_load_since_reset=0 mmu
 Optional hardware fields are omitted by firmware when unavailable. Keys are
 deliberately forward-compatible: the plugin merges the unordered snapshots,
 retains unknown counters, preserves `_m`, `_s`, `_total`, and `_since_reset`
-semantics, and renders meter/second values with useful units. Once any response
-has been seen, it polls at the configured interval. Firmware that returns an
-`RME_ERROR` mentioning `STATS`, or does not respond, is probed only once per
-connection and otherwise sees no statistics traffic.
+semantics, and renders meter/second values with useful units. Statistics are
+queried once after discovery and refreshed after a print finishes; they are not
+polled continuously. Firmware that returns an `RME_ERROR` mentioning `STATS`,
+or does not respond, is probed only once per connection and otherwise sees no
+statistics traffic.
 
 ## Priority print controls
 

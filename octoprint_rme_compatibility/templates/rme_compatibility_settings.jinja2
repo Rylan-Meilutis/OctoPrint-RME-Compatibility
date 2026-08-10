@@ -93,13 +93,6 @@
             <p class="help-block">OrcaSlicer can poll <code>/plugin/rme_compatibility/selected-spools</code> or <code>/plugin/rme_compatibility/filament-report</code> with an OctoPrint API key.</p>
         </div>
     </div>
-    <div class="control-group">
-        <label class="control-label">RME statistics</label>
-        <div class="controls">
-            <label>Poll supported firmware every <input class="input-mini" type="number" min="10" data-bind="value: settings.settings.plugins.rme_compatibility.stats_poll_interval"> seconds</label>
-            <p class="help-block">The plugin probes once per connection and only continues polling after the firmware returns an RME_STATS, RME_STATS_OPERATIONS, or RME_STATS_FAILURES record.</p>
-        </div>
-    </div>
     <hr>
     <h4>Printer USB storage</h4>
     <p>Browse and manage the firmware-exported <code>/usb</code> volume. RME confines every operation to this user-visible storage root.</p>

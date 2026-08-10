@@ -67,7 +67,6 @@ class _Settings(object):
         self.values = {
             "prompt_toolmap_on_print": True,
             "toolmap_timeout_seconds": 120,
-            "stats_poll_interval": 30,
             "spool_provider": "auto",
             "spoolmanager_enabled": True,
             "default_toolmap": {"0": 0, "1": 1},
@@ -491,7 +490,7 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0b19"
+        plugin._plugin_version = "0.1.0b20"
         templates = plugin.get_template_configs()
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])
@@ -516,6 +515,8 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("Saved lighting", settings_template)
         self.assertIn("Printer lock", settings_template)
         self.assertIn("Printer USB storage", settings_template)
+        self.assertNotIn("stats_poll_interval", settings_template)
+        self.assertNotIn("Poll supported firmware every", settings_template)
         self.assertIn("Download", settings_template)
         with open(
             "octoprint_rme_compatibility/static/js/rme_compatibility.js"
@@ -794,15 +795,17 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual("#000000", plugin._state["loaded_filaments"][0]["color"])
         self.assertEqual("PET-00L", accepted[0]["material"])
 
-    def test_stats_polling_starts_only_after_firmware_support_response(self):
+    def test_stats_use_connection_and_print_lifecycle_snapshots_without_polling(self):
         plugin = RmeCompatibilityPlugin()
         plugin._settings = _Settings()
         queued = []
-        plugin._defer = lambda callback, *args: queued.append((callback, args))
+        plugin._send_command = queued.append
         plugin._schedule_publish = lambda: queued.append(("publish", ()))
+        plugin._state.update(connected=True, supported=True)
 
-        plugin._poll_stats_if_due(True, now=100)
-        self.assertEqual([], queued)
+        plugin._probe_stats()
+        plugin._probe_stats()
+        self.assertEqual(["@RME STATS QUERY"], queued)
 
         plugin._handle_record({
             "record": "stats", "distance_total_m": 12.5,
@@ -821,30 +824,23 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual(3, plugin._state["stats"]["values"]["mmu_changes"])
         self.assertEqual(1, plugin._state["stats"]["values"]["crash_x"])
         queued.clear()
-        plugin._last_stats_poll = 100
+        plugin._refresh_stats_snapshot()
+        self.assertEqual("@RME STATS QUERY", queued[0])
 
-        plugin._poll_stats_if_due(True, now=129)
-        self.assertEqual([], queued)
-        plugin._poll_stats_if_due(True, now=130)
-        self.assertEqual("@RME STATS QUERY", queued[0][1][0])
-
-        # Background telemetry must never enter the normal serial queue while
-        # a print (including a paused print) owns it.
+        # The print-completion refresh must still yield while a job owns serial.
         queued.clear()
         plugin._printer = _Printer()
         plugin._printer.is_printing = lambda: True
-        plugin._last_stats_poll = 100
-        plugin._poll_stats_if_due(True, now=200)
+        plugin._refresh_stats_snapshot()
         self.assertEqual([], queued)
-        self.assertEqual(100, plugin._last_stats_poll)
 
         plugin._printer.is_printing = lambda: False
-        plugin._poll_stats_if_due(True, now=200)
-        self.assertEqual("@RME STATS QUERY", queued[0][1][0])
+        plugin._refresh_stats_snapshot()
+        self.assertEqual("@RME STATS QUERY", queued[0])
 
         queued.clear()
         plugin._handle_record({"record": "rme_error", "message": "RME_ERROR STATS unsupported"})
-        plugin._poll_stats_if_due(True, now=200)
+        plugin._refresh_stats_snapshot()
         self.assertEqual(1, len(queued))  # state publication only; no command
 
     def test_configuration_changes_drive_domain_refresh_without_polling(self):

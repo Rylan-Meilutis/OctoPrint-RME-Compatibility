@@ -91,7 +91,7 @@ class RmeCompatibilityPlugin(
         self._print_job_gcode_sent = False
         self._skip_cancel_script = False
         self._stats_supported = None
-        self._last_stats_poll = 0
+        self._stats_probe_sent = False
         self._priority_controls_sent = set()
         self._firmware_completed_controls = set()
         self._firmware_action_lock = threading.Lock()
@@ -286,7 +286,6 @@ class RmeCompatibilityPlugin(
             "spoolmanager_default_weight": 1000,
             "spoolmanager_default_diameter": 1.75,
             "spoolmanager_default_density": 1.24,
-            "stats_poll_interval": 30,
         }
 
     def get_assets(self):
@@ -786,7 +785,7 @@ class RmeCompatibilityPlugin(
                     "configuration_revision": 0,
                 }
                 self._stats_supported = None
-                self._last_stats_poll = 0
+                self._stats_probe_sent = False
                 self._priority_controls_sent.clear()
                 self._firmware_completed_controls.clear()
                 self._state["stats"] = {"supported": None, "updated": None, "values": {}}
@@ -1096,7 +1095,6 @@ class RmeCompatibilityPlugin(
                 }
             elif kind == "stats":
                 self._stats_supported = True
-                self._last_stats_poll = time.monotonic()
                 values = dict(self._state.get("stats", {}).get("values") or {})
                 values.update({
                     key: value for key, value in record.items() if key != "record"
@@ -1505,8 +1503,6 @@ class RmeCompatibilityPlugin(
             if not transfer_busy:
                 if self._stats_supported is None:
                     self._defer(self._probe_stats)
-                else:
-                    self._poll_stats_if_due(connected)
 
     def _print_job_active(self):
         """Return whether background serial reads must yield to job G-code."""
@@ -1522,21 +1518,26 @@ class RmeCompatibilityPlugin(
         with self._state_lock:
             connected = self._state.get("connected")
             supported = self._state.get("supported")
-        if connected and supported and self._stats_supported is None:
+            should_probe = bool(
+                connected and supported and self._stats_supported is None
+                and not self._stats_probe_sent
+            )
+            if should_probe:
+                self._stats_probe_sent = True
+        if should_probe:
             self._send_command("@RME STATS QUERY")
 
-    def _poll_stats_if_due(self, connected, now=None):
-        """Queue telemetry only after firmware positively answered the probe."""
-        now = time.monotonic() if now is None else float(now)
-        stats_interval = max(10, int(self._settings.get_int(["stats_poll_interval"]) or 30))
-        if (
-            self._stats_supported is True
-            and connected
-            and not self._print_job_active()
-            and now - self._last_stats_poll >= stats_interval
-        ):
-            self._last_stats_poll = now
-            self._defer(self._send_command, "@RME STATS QUERY")
+    def _refresh_stats_snapshot(self):
+        """Refresh supported statistics at a lifecycle boundary, never on a timer."""
+        if self._print_job_active():
+            return
+        with self._state_lock:
+            connected = self._state.get("connected")
+            supported = self._state.get("supported")
+        if connected and supported and self._stats_supported is True:
+            self._send_command("@RME STATS QUERY")
+        elif self._stats_supported is None:
+            self._probe_stats()
 
     def _apply_toolmap(self, mapping, enabled, release_hold=False):
         machine = self._state.get("machine", {})
@@ -1844,7 +1845,7 @@ class RmeCompatibilityPlugin(
 
     def _resume_background_queries(self):
         """Catch up deferred telemetry and provider metadata after a job."""
-        self._probe_stats()
+        self._refresh_stats_snapshot()
         with self._state_lock:
             synchronize_manufacturers = self._manufacturer_sync_pending
             self._manufacturer_sync_pending = False

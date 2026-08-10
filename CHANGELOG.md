@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0b20 — 2026-08-10
+
+- Removed the obsolete configurable statistics polling interval and all
+  steady-state `@RME STATS QUERY` traffic.
+- Kept one statistics capability/snapshot query after RME discovery and one
+  supported snapshot refresh after each print completes.
+
 ## 0.1.0b19 — 2026-08-10
 
 - Replaced request-context-bound printer downloads with atomic background
