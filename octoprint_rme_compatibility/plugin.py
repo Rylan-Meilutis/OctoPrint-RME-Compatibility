@@ -10,6 +10,7 @@ from __future__ import absolute_import
 import copy
 import functools
 import os
+import queue
 import re
 import shutil
 import tempfile
@@ -102,6 +103,8 @@ class RmeCompatibilityPlugin(
         self._configuration_timer = None
         self._configuration_timer_lock = threading.Lock()
         self._configuration_domains = set()
+        self._binary_frame_lock = threading.Lock()
+        self._binary_session = None
         self._manufacturer_sync_timer = None
         self._manufacturer_sync_timer_lock = threading.Lock()
         self._manufacturer_sync_pending = False
@@ -225,7 +228,12 @@ class RmeCompatibilityPlugin(
         self._uploader = FirmwareUploader(
             self._send_command, self._firmware_state_changed, self._logger
         )
-        self._file_service = RmeFileService(self._send_command, self._logger)
+        self._file_service = RmeFileService(
+            self._send_command, self._logger,
+            send_binary=self._send_binary_frame,
+            begin_binary=self._begin_binary_transport,
+            end_binary=self._end_binary_transport,
+        )
         self._spoolmanager_bridge = SpoolManagerBridge(self._plugin_manager, self._logger)
         self._spoolman_bridge = SpoolmanBridge(self._plugin_manager, self._logger)
         self._internal_spool_bridge = InternalSpoolBridge(
@@ -893,6 +901,52 @@ class RmeCompatibilityPlugin(
         if phase != "sending" or str(command).upper() != "RME":
             return
         parameters = str(parameters or "").strip()
+        raw_match = re.match(r"^FILE RAW_SESSION token=([0-9a-f]{32})$", parameters)
+        if raw_match:
+            token = raw_match.group(1)
+            with self._binary_frame_lock:
+                session = self._binary_session
+            if session is None or session["token"] != token:
+                self._logger.error("RME binary session marker expired before transmission")
+                return
+            try:
+                serial_port = getattr(comm_instance, "_serial", None)
+                if serial_port is None or not callable(getattr(serial_port, "write", None)):
+                    raise RuntimeError("OctoPrint raw serial transport is unavailable")
+                while True:
+                    pending = session["queue"].get(timeout=65)
+                    if pending is None:
+                        return
+                    frame = pending["frame"]
+                    try:
+                        written = 0
+                        while written < len(frame):
+                            count = serial_port.write(frame[written:])
+                            if count is None:
+                                written = len(frame)
+                                continue
+                            count = int(count)
+                            if count <= 0:
+                                raise RuntimeError(
+                                    "OctoPrint raw serial transport made no progress"
+                                )
+                            written += count
+                    except Exception as exc:
+                        pending["error"] = exc
+                    finally:
+                        pending["event"].set()
+                    # Finalize and abort frames both have a zero payload. The
+                    # firmware restores its line parser before this hook lets
+                    # OctoPrint's send loop continue.
+                    if len(frame) == 10 and frame[4:6] == b"\x00\x00":
+                        return
+            except Exception as exc:
+                self._logger.error("RME binary send session failed: %s", exc)
+            finally:
+                with self._binary_frame_lock:
+                    if self._binary_session is session:
+                        self._binary_session = None
+            return
         if "\r" in parameters or "\n" in parameters:
             self._logger.warning("Refusing multiline @RME command")
             return
@@ -905,6 +959,39 @@ class RmeCompatibilityPlugin(
             )
             return
         do_send(full_command, gcode=None)
+
+    def _begin_binary_transport(self):
+        """Reserve OctoPrint's writer thread until raw mode is finalized."""
+        token = uuid.uuid4().hex
+        with self._binary_frame_lock:
+            if self._binary_session is not None:
+                raise FileServiceError("A raw printer transfer is already active")
+            self._binary_session = {"token": token, "queue": queue.Queue()}
+        return "@RME FILE RAW_SESSION token=%s" % token
+
+    def _send_binary_frame(self, frame):
+        """Pass one raw frame to the reserved OctoPrint writer thread."""
+        pending = {
+            "frame": bytes(frame), "event": threading.Event(), "error": None,
+        }
+        with self._binary_frame_lock:
+            session = self._binary_session
+        if session is None:
+            raise FileServiceError("Raw printer transport is not active")
+        session["queue"].put(pending)
+        if not pending["event"].wait(20):
+            raise FileServiceError("Timed out writing raw printer data")
+        if pending["error"]:
+            raise FileServiceError(
+                "Could not write raw printer data: %s" % pending["error"]
+            )
+
+    def _end_binary_transport(self):
+        """Release an armed raw writer when binary negotiation fails."""
+        with self._binary_frame_lock:
+            session = self._binary_session
+        if session is not None:
+            session["queue"].put(None)
 
     def _consume_firmware_completed_control(self, action):
         with self._state_lock:

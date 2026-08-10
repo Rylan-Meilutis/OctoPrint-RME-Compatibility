@@ -3,8 +3,10 @@
 import base64
 import hashlib
 import os
+import struct
 import threading
 import time
+import zlib
 from urllib.parse import quote
 
 
@@ -45,8 +47,14 @@ class RmeFileService(object):
     parsed records by the receive hook.
     """
 
-    def __init__(self, send_command, logger=None, response_timeout=20):
+    def __init__(
+        self, send_command, logger=None, response_timeout=20, send_binary=None,
+        begin_binary=None, end_binary=None,
+    ):
         self.send_command = send_command
+        self.send_binary = send_binary
+        self.begin_binary = begin_binary
+        self.end_binary = end_binary
         self.logger = logger
         self.response_timeout = response_timeout
         self._operation_lock = threading.Lock()
@@ -57,6 +65,7 @@ class RmeFileService(object):
         self._active = False
         self._cancel = threading.Event()
         self._capabilities = None
+        self._binary_active = False
 
     @property
     def busy(self):
@@ -68,6 +77,7 @@ class RmeFileService(object):
     def reset(self, reason="Printer disconnected"):
         """Interrupt a waiter when the serial connection disappears."""
         self._capabilities = None
+        self._binary_active = False
         with self._condition:
             if self._active:
                 self._error = reason
@@ -81,7 +91,10 @@ class RmeFileService(object):
                 self._error = "cancelled"
             self._condition.notify_all()
         try:
-            self.send_command("@RME FILE ABORT")
+            if self._binary_active and self.send_binary:
+                self.send_binary(self._binary_frame(0xFFFFFFFF, b""))
+            else:
+                self.send_command("@RME FILE ABORT")
         except Exception:
             pass
 
@@ -109,7 +122,12 @@ class RmeFileService(object):
         try:
             commands = command if isinstance(command, (tuple, list)) else [command]
             for item in commands:
-                self.send_command(item)
+                if isinstance(item, bytes):
+                    if not self.send_binary:
+                        raise FileServiceError("Raw printer transport is unavailable")
+                    self.send_binary(item)
+                else:
+                    self.send_command(item)
             deadline = time.monotonic() + (timeout or self.response_timeout)
             with self._condition:
                 while not any(
@@ -242,7 +260,35 @@ class RmeFileService(object):
                 if self._capabilities is None:
                     records = self._exchange("@RME FILE CAPS", "file_caps")
                     self._capabilities = dict(self._terminal(records, "file_caps"))
-                if bool(int(self._capabilities.get("bulk", 0))):
+                use_binary = bool(
+                    self.send_binary and self.begin_binary and self.end_binary
+                    and int(self._capabilities.get("binary", 0))
+                )
+                if use_binary:
+                    try:
+                        offset = self._write_binary(
+                            local_path, encoded, size, digest, progress
+                        )
+                    except Exception as exc:
+                        if self._cancel.is_set():
+                            raise
+                        self._abort_binary_transport()
+                        self._capabilities["binary"] = 0
+                        if self.logger:
+                            self.logger.warning(
+                                "RME binary upload failed; retrying with text transport: %s",
+                                exc,
+                            )
+                        use_binary = False
+                        if bool(int(self._capabilities.get("bulk", 0))):
+                            offset = self._write_bulk(
+                                local_path, encoded, size, digest, progress
+                            )
+                        else:
+                            offset = self._write_legacy(
+                                local_path, encoded, size, digest, progress
+                            )
+                elif bool(int(self._capabilities.get("bulk", 0))):
                     offset = self._write_bulk(local_path, encoded, size, digest, progress)
                 else:
                     offset = self._write_legacy(local_path, encoded, size, digest, progress)
@@ -250,7 +296,15 @@ class RmeFileService(object):
                     raise FileServiceError("Printer did not acknowledge the complete upload")
                 if finalizing:
                     finalizing()
-                if bool(int(self._capabilities.get("bulk", 0))):
+                if use_binary:
+                    # A zero-length frame verifies SHA-256, atomically installs
+                    # the file, and restores firmware's line parser.
+                    self._exchange(
+                        self._binary_frame(size, b""), "file_binary_complete",
+                        timeout=60,
+                    )
+                    self._binary_active = False
+                elif bool(int(self._capabilities.get("bulk", 0))):
                     self._exchange(
                         "@RME FILE WRITE_BULK_END path=%s" % encoded,
                         ("file_bulk_complete", "file_write_complete"), timeout=60,
@@ -262,10 +316,109 @@ class RmeFileService(object):
                     )
             except Exception:
                 try:
-                    self.send_command("@RME FILE ABORT")
+                    if self._binary_active and self.send_binary:
+                        self._abort_binary_transport()
+                    else:
+                        self.send_command("@RME FILE ABORT")
                 except Exception:
                     pass
                 raise
+
+    def _abort_binary_transport(self):
+        """Return firmware and OctoPrint to line mode after a raw failure."""
+        try:
+            if self._binary_active and self.send_binary:
+                self.send_binary(self._binary_frame(0xFFFFFFFF, b""))
+        except Exception as exc:
+            if self.logger:
+                self.logger.warning("Could not transmit binary abort frame: %s", exc)
+        finally:
+            if self.end_binary:
+                self.end_binary()
+            self._binary_active = False
+
+    @staticmethod
+    def _binary_frame(offset, payload):
+        """Build one firmware raw frame with a CRC32-protected payload."""
+        payload = bytes(payload)
+        return struct.pack(
+            "<IHI", int(offset), len(payload), zlib.crc32(payload) & 0xFFFFFFFF
+        ) + payload
+
+    def _write_binary(self, local_path, encoded, size, digest, progress):
+        """Use negotiated 4096-byte raw frames with cumulative ACK recovery."""
+        marker = self.begin_binary()
+        try:
+            records = self._exchange(
+                [
+                    "@RME FILE WRITE_BINARY_BEGIN path=%s size=%d sha256=%s"
+                    % (encoded, size, digest),
+                    marker,
+                ],
+                "file_binary_ready",
+            )
+        except Exception:
+            self.end_binary()
+            raise
+        ready = self._terminal(records, "file_binary_ready")
+        self._binary_active = True
+        if int(ready.get("header", 10)) != 10:
+            raise FileServiceError("Printer returned an unsupported binary header")
+        if str(ready.get("endian", "little")) != "little":
+            raise FileServiceError("Printer returned an unsupported binary byte order")
+        if str(ready.get("crc", "crc32")) != "crc32":
+            raise FileServiceError("Printer returned an unsupported binary checksum")
+        chunk_size = min(
+            65535,
+            max(1, int(ready.get("chunk", self._capabilities.get("binary_chunk", 4096)))),
+        )
+        window_size = min(
+            64,
+            max(1, int(ready.get("window", self._capabilities.get("binary_window", 8)))),
+        )
+        offset = int(ready.get("offset", 0))
+        if self.logger:
+            self.logger.info(
+                "Using RME binary upload: chunk=%d window=%d", chunk_size, window_size
+            )
+        retries = 0
+        with open(local_path, "rb") as source:
+            while offset < size:
+                source.seek(offset)
+                frames = []
+                expected_offset = offset
+                for _ in range(window_size):
+                    payload = source.read(chunk_size)
+                    if not payload:
+                        break
+                    frames.append(self._binary_frame(expected_offset, payload))
+                    expected_offset += len(payload)
+                records = self._exchange(
+                    frames, ("file_binary_ack", "file_binary_nack"),
+                )
+                response = next(
+                    item for item in reversed(records)
+                    if item.get("record") in ("file_binary_ack", "file_binary_nack")
+                )
+                acknowledged = int(response.get("offset", -1))
+                if not offset <= acknowledged <= expected_offset:
+                    raise FileServiceError("Printer returned an invalid binary upload offset")
+                if response["record"] == "file_binary_nack":
+                    retries += 1
+                    if retries > 3:
+                        raise FileServiceError(
+                            "Printer repeatedly rejected binary data at offset %d"
+                            % acknowledged
+                        )
+                    offset = acknowledged
+                    continue
+                if acknowledged != expected_offset:
+                    raise FileServiceError("Printer returned an incomplete binary upload ACK")
+                retries = 0
+                offset = acknowledged
+                if progress:
+                    progress(offset, size)
+        return offset
 
     def _write_legacy(self, local_path, encoded, size, digest, progress):
         """Use the original one-ACK-per-48-byte transfer for older firmware."""

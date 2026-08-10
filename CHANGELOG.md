@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0b23 — 2026-08-10
+
+- Firmware and USB uploads now prefer the negotiated raw-binary transport:
+  4096-byte CRC32 frames in eight-frame cumulative-ACK windows.
+- Raw transfers exclusively reserve OctoPrint's existing serial writer thread,
+  preventing normal G-code or plugin traffic from being interleaved while the
+  firmware's receiver is in binary mode.
+- Binary NACKs retry from the firmware's last committed offset; failed raw
+  negotiation or transport safely aborts and falls back to text bulk upload.
+- Upload completion still requires firmware-side byte-count and full-file
+  SHA-256 verification before the atomic file is exposed or flashed.
+
 ## 0.1.0b22 — 2026-08-10
 
 - Fixed firmware and USB uploads failing with `write_failed` when the

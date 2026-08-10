@@ -1,6 +1,7 @@
 import ast
 import logging
 import os
+import queue
 import sys
 import tempfile
 import threading
@@ -633,6 +634,50 @@ class ToolmapGateTests(unittest.TestCase):
         )
 
         self.assertEqual([("@RME MACHINE QUERY", None)], sent)
+
+    def test_binary_marker_writes_raw_frame_on_octoprint_send_thread(self):
+        class RawSerial(object):
+            def __init__(self):
+                self.data = bytearray()
+
+            def write(self, data):
+                # Exercise partial writes as a real serial adapter may return
+                # fewer bytes than requested.
+                count = min(3, len(data))
+                self.data.extend(data[:count])
+                return count
+
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-binary-marker-test")
+        token = "1" * 32
+        pending_data = {
+            "frame": b"\x00\xffbinary-frame",
+            "event": threading.Event(),
+            "error": None,
+        }
+        pending_end = {
+            "frame": b"\x0e\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+            "event": threading.Event(),
+            "error": None,
+        }
+        session_queue = queue.Queue()
+        session_queue.put(pending_data)
+        session_queue.put(pending_end)
+        plugin._binary_session = {"token": token, "queue": session_queue}
+        serial = RawSerial()
+        comm = types.SimpleNamespace(_serial=serial)
+
+        plugin.atcommand_sending_hook(
+            comm, "sending", "RME", "FILE RAW_SESSION token=%s" % token, tags=set()
+        )
+
+        self.assertTrue(pending_data["event"].is_set())
+        self.assertTrue(pending_end["event"].is_set())
+        self.assertIsNone(pending_data["error"])
+        self.assertEqual(
+            pending_data["frame"] + pending_end["frame"], bytes(serial.data)
+        )
+        self.assertIsNone(plugin._binary_session)
 
     def test_prestart_hold_pauses_timeout_then_configures_validator_before_release(self):
         plugin = RmeCompatibilityPlugin()

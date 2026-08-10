@@ -1,7 +1,9 @@
 import base64
 import os
+import struct
 import tempfile
 import unittest
+import zlib
 
 from octoprint_rme_compatibility.file_service import (
     FileServiceError,
@@ -12,6 +14,115 @@ from octoprint_rme_compatibility.protocol import parse_line
 
 
 class FileServiceTests(unittest.TestCase):
+    def test_binary_upload_uses_crc_frames_and_recovers_from_nack(self):
+        service = None
+        source_data = bytes(range(256)) * 36
+        received = bytearray()
+        window = []
+        rejected_once = [False]
+
+        def send(command):
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb write=1 bulk=1 binary=1 "
+                    "binary_chunk=1024 binary_window=8"
+                ))
+            elif "WRITE_BINARY_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_READY offset=0 chunk=1024 window=8 "
+                    "header=10 endian=little crc=crc32"
+                ))
+
+        def send_binary(frame):
+            offset, length, checksum = struct.unpack("<IHI", frame[:10])
+            payload = frame[10:]
+            self.assertEqual(length, len(payload))
+            self.assertEqual(checksum, zlib.crc32(payload) & 0xFFFFFFFF)
+            if not payload:
+                self.assertEqual(len(source_data), offset)
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_COMPLETE path=FWUPD.BBF"
+                ))
+                return
+            window.append((offset, payload))
+            final = offset + len(payload) == len(source_data)
+            if len(window) == 8 or final:
+                if not rejected_once[0]:
+                    rejected_once[0] = True
+                    service.handle_response(parse_line("RME_FILE_BINARY_NACK offset=0"))
+                else:
+                    for frame_offset, frame_payload in window:
+                        self.assertEqual(len(received), frame_offset)
+                        received.extend(frame_payload)
+                    service.handle_response(parse_line(
+                        "RME_FILE_BINARY_ACK offset=%d" % len(received)
+                    ))
+                window[:] = []
+
+        service = RmeFileService(
+            send, response_timeout=1, send_binary=send_binary,
+            begin_binary=lambda: "@RME FILE RAW_SESSION token=" + "1" * 32,
+            end_binary=lambda: None,
+        )
+        with tempfile.NamedTemporaryFile(delete=False) as source:
+            source.write(source_data)
+            source_path = source.name
+        try:
+            service.write_file(source_path, "FWUPD.BBF")
+        finally:
+            os.unlink(source_path)
+        self.assertTrue(rejected_once[0])
+        self.assertEqual(source_data, bytes(received))
+
+    def test_binary_transport_failure_aborts_and_falls_back_to_bulk(self):
+        service = None
+        commands = []
+        ended = []
+
+        def send(command):
+            commands.append(command)
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb write=1 bulk=1 bulk_chunk=320 "
+                    "bulk_window=4 binary=1 binary_chunk=4096 binary_window=8"
+                ))
+            elif "WRITE_BINARY_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_READY offset=0 chunk=4096 window=8 "
+                    "header=10 endian=little crc=crc32"
+                ))
+            elif "WRITE_BULK_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BULK_READY offset=0 chunk=320 window=4"
+                ))
+            elif "WRITE_BULK_CHUNK" in command:
+                payload = base64.b64decode(command.split("data=", 1)[1])
+                offset = int(command.split("offset=", 1)[1].split(" ", 1)[0])
+                service.handle_response(parse_line(
+                    "RME_FILE_BULK_ACK offset=%d" % (offset + len(payload))
+                ))
+            elif "WRITE_BULK_END" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BULK_COMPLETE path=FWUPD.BBF"
+                ))
+
+        service = RmeFileService(
+            send, response_timeout=1,
+            send_binary=lambda frame: (_ for _ in ()).throw(IOError("raw failed")),
+            begin_binary=lambda: "@RME FILE RAW_SESSION token=" + "2" * 32,
+            end_binary=lambda: ended.append(True),
+        )
+        with tempfile.NamedTemporaryFile(delete=False) as source:
+            source.write(b"signed-firmware")
+            source_path = source.name
+        try:
+            service.write_file(source_path, "FWUPD.BBF")
+        finally:
+            os.unlink(source_path)
+        self.assertTrue(ended)
+        self.assertTrue(any("WRITE_BULK_BEGIN" in command for command in commands))
+        self.assertTrue(any("WRITE_BULK_END" in command for command in commands))
+
     def test_lists_and_downloads_space_containing_binary_file(self):
         service = None
 
