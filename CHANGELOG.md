@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0b25 — 2026-08-10
+
+- Removed the remaining timed filament-provider reconciliation and its obsolete
+  interval setting. SpoolManager, Spoolman, and the built-in provider now
+  synchronize only on connection, provider events, explicit user actions, or
+  relevant revisioned firmware changes.
+- Idle connections no longer poll statistics, firmware configuration, or
+  filament providers. The required `@RME SESSION KEEPALIVE` every 10 seconds is
+  retained because current firmware expires the RME control lease after 30
+  seconds without it.
+
 ## 0.1.0b24 — 2026-08-10
 
 - Aligned the plugin with the current Buddy RME 6.6.3 protocol: binary upload

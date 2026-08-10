@@ -42,7 +42,6 @@
                     <option value="spoolman">Spoolman</option>
                 </select>
             </label>
-            <label>Reconcile every <input class="input-mini" type="number" min="10" data-bind="value: settings.settings.plugins.rme_compatibility.spoolmanager_sync_interval"> seconds</label>
             <label>Default new-spool weight <input class="input-small" type="number" min="1" data-bind="value: settings.settings.plugins.rme_compatibility.spoolmanager_default_weight"> g</label>
             <p>
                 <button type="button" class="btn" data-bind="click: syncFilamentsFromPrinter, enable: state().supported">Printer → provider</button>

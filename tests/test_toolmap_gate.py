@@ -525,6 +525,8 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("Printer USB storage", settings_template)
         self.assertNotIn("stats_poll_interval", settings_template)
         self.assertNotIn("Poll supported firmware every", settings_template)
+        self.assertNotIn("spoolmanager_sync_interval", settings_template)
+        self.assertNotIn("Reconcile every", settings_template)
         self.assertIn("Download", settings_template)
         with open(
             "octoprint_rme_compatibility/static/js/rme_compatibility.js"
@@ -957,14 +959,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual(12, plugin._state["session"]["last_seq"])
         self.assertEqual(6, plugin._state["session"]["configuration_revision"])
 
-        # Provider inventory refreshes remain periodic, but they no longer
-        # issue an M865 configuration query in steady state.
-        plugin._sync_spoolmanager = lambda *args: None
         commands = []
-        plugin._send_command = commands.append
-        plugin._periodic_filament_sync()
-        self.assertEqual([], commands)
-
         plugin._send_command = commands.append
         plugin._open_session()
         self.assertEqual("@RME SESSION OPEN events=31 legacy=0", commands[-1])

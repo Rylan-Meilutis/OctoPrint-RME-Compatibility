@@ -83,7 +83,6 @@ class RmeCompatibilityPlugin(
         self._last_fw_publish = 0
         self._spoolmanager = None
         self._spool_sync_lock = threading.Lock()
-        self._last_spool_sync = 0
         self._expected_provider_events = {}
         self._expected_spoolman_event_until = 0
         self._toolmap_hold_active = False
@@ -293,7 +292,6 @@ class RmeCompatibilityPlugin(
             "toolmap_timeout_seconds": 120,
             "spoolmanager_enabled": True,
             "spool_provider": "auto",
-            "spoolmanager_sync_interval": 30,
             "spoolmanager_default_weight": 1000,
             "spoolmanager_default_diameter": 1.75,
             "spoolmanager_default_density": 1.24,
@@ -1601,7 +1599,7 @@ class RmeCompatibilityPlugin(
         return 0 <= value <= 0xFFFFFFFF and all(((value >> shift) & 0xFF) <= 100 for shift in (0, 8, 16, 24))
 
     def _keepalive_loop(self):
-        """Renew the RME lease and periodically reconcile optional spool state."""
+        """Renew the required RME lease without polling configuration state."""
         while not self._stop.wait(10):
             with self._state_lock:
                 active = self._state["session"].get("active")
@@ -1617,9 +1615,6 @@ class RmeCompatibilityPlugin(
                     self._send_command("@RME SESSION KEEPALIVE")
                 except Exception:
                     self._logger.debug("RME keepalive could not be queued", exc_info=True)
-            interval = max(10, int(self._settings.get_int(["spoolmanager_sync_interval"]) or 30))
-            if not transfer_busy and time.monotonic() - self._last_spool_sync >= interval:
-                self._defer(self._periodic_filament_sync)
             if not transfer_busy:
                 if self._stats_supported is None:
                     self._defer(self._probe_stats)
@@ -2162,7 +2157,6 @@ class RmeCompatibilityPlugin(
                 self._state["spoolmanager"].update(status="error", error=str(exc))
             self._persist_and_publish()
         finally:
-            self._last_spool_sync = time.monotonic()
             self._spool_sync_lock.release()
 
     def _resolve_spool_provider(self):
@@ -2308,10 +2302,6 @@ class RmeCompatibilityPlugin(
             can_send = self._state["connected"] and self._state["supported"]
         if can_send and not pending:
             self._send_command("M865 Q")
-
-    def _periodic_filament_sync(self):
-        """Refresh the external provider; RME_CHANGE drives printer snapshots."""
-        self._sync_spoolmanager(False, False)
 
     def _sync_filaments_to_printer(self):
         """Publish provider presets and assignments after explicit acceptance."""

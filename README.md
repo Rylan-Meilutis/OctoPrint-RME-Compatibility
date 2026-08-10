@@ -68,7 +68,8 @@ and `doc/gcode/M998.md`.
   a persistent confirmation before changing firmware, while explicit
   Printer → provider and Provider → printer controls resolve manual edits.
   Revisioned `RME_CHANGE` events import LCD-side configuration changes and
-  refresh only the affected domain; idle connections do not poll settings.
+  refresh only the affected domain. Provider plugin events update inventory and
+  selections; idle connections do not poll firmware settings or providers.
 - Exposes authenticated read-only `/plugin/rme_compatibility/selected-spools`
   and `/plugin/rme_compatibility/filament-report` aliases so OrcaSlicer and other
   clients can poll active tool, mapping, material/color loadout, available
