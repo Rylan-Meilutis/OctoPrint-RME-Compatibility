@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0b22 — 2026-08-10
+
+- Fixed firmware and USB uploads failing with `write_failed` when the
+  negotiated 384-byte Base64 chunks produced commands longer than the safe
+  OctoPrint serial-command boundary.
+- Text-mode bulk uploads now use 320-byte chunks while retaining the firmware's
+  four-command cumulative acknowledgement window.
+
 ## 0.1.0b21 — 2026-08-10
 
 - Fixed a provider synchronization feedback loop that repeatedly rewrote RME

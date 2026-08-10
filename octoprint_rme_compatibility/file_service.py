@@ -11,6 +11,12 @@ from urllib.parse import quote
 FILE_CHUNK_SIZE = 48
 BULK_CHUNK_SIZE = 384
 BULK_WINDOW_SIZE = 4
+# Firmware accepts a 384-byte decoded Base64 chunk, but the complete command
+# then grows beyond 550 characters. OctoPrint's line-oriented command path and
+# third-party serial hooks are not all safe above 512 characters. Keep the
+# encoded command below that boundary; firmware still acknowledges each
+# four-command window cumulatively.
+OCTOPRINT_SAFE_BULK_CHUNK_SIZE = 320
 
 
 class FileServiceError(RuntimeError):
@@ -304,7 +310,7 @@ class RmeFileService(object):
         # firmware release's defaults. Defensive ceilings bound memory and
         # command length if a malformed capability response is received.
         chunk_size = min(
-            4096,
+            OCTOPRINT_SAFE_BULK_CHUNK_SIZE,
             max(1, int(ready.get("chunk", self._capabilities.get("bulk_chunk", BULK_CHUNK_SIZE)))),
         )
         window_size = min(
