@@ -340,7 +340,7 @@ $(function () {
         self.firmware = ko.pureComputed(function () { return self.state().firmware || {}; });
         self.firmwareProgress = ko.pureComputed(function () { return Number(self.firmware().progress || 0) + "%"; });
         self.firmwareBusy = ko.pureComputed(function () {
-            return ["starting", "uploading", "verifying"].indexOf(self.firmware().status) >= 0;
+            return ["queued", "canceling", "starting", "uploading", "verifying"].indexOf(self.firmware().status) >= 0;
         });
         self.firmwareActive = ko.pureComputed(function () { return self.firmwareBusy() || self.firmware().status === "staged"; });
         self.firmwareError = ko.pureComputed(function () {
@@ -349,6 +349,8 @@ $(function () {
         self.firmwareStatus = ko.pureComputed(function () {
             var fw = self.firmware();
             if (!fw.status || fw.status === "idle") return "No firmware staged.";
+            if (fw.status === "queued") return "Waiting for the printer USB queue; no firmware bytes have been sent yet.";
+            if (fw.status === "canceling") return "Canceling the queued transfer before any firmware bytes are sent.";
             if (fw.status === "staged") return "Verified on printer USB. Ready for explicit flash.";
             if (fw.status === "flashing") return "Bootloader handoff requested; the printer should reboot.";
             if (fw.status === "uploading") return "Sending " + formatBytes(fw.offset || 0) + " of " + formatBytes(fw.size || 0) +

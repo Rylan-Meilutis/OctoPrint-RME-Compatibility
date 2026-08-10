@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0b15 — 2026-08-09
+
+- Reported firmware staging as queued while waiting for the serialized printer
+  USB service and explicitly stated that no bytes have been sent yet.
+- Changed the status to starting only after the RME FILE operation lock is
+  acquired immediately before `WRITE_BEGIN`.
+- Made cancellation of a queued firmware transfer leave the unrelated USB
+  operation ahead of it untouched and stop before the first firmware command.
+
 ## 0.1.0b14 — 2026-08-09
 
 - Recovered manufacturer, display name, provider, and spool identity for

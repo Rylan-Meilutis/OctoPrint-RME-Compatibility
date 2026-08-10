@@ -66,3 +66,18 @@ class FileServiceTests(unittest.TestCase):
         self.assertEqual("jobs/My%20print.gcode", normalize_remote_path("/jobs/My print.gcode"))
         with self.assertRaises(FileServiceError):
             normalize_remote_path("jobs/../secret")
+
+    def test_queued_upload_can_cancel_before_first_command(self):
+        commands = []
+        service = RmeFileService(commands.append, response_timeout=1)
+        with tempfile.NamedTemporaryFile(delete=False) as source:
+            source.write(b"firmware")
+            source_path = source.name
+        try:
+            with self.assertRaisesRegex(FileServiceError, "before sending"):
+                service.write_file(
+                    source_path, "FWUPD.BBF", cancel_check=lambda: True
+                )
+        finally:
+            os.unlink(source_path)
+        self.assertEqual([], commands)

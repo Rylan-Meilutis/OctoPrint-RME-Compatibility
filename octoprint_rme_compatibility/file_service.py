@@ -171,13 +171,20 @@ class RmeFileService(object):
                 if not block:
                     raise FileServiceError("Printer file download made no progress")
 
-    def write_file(self, local_path, remote_path, progress=None, finalizing=None):
+    def write_file(
+        self, local_path, remote_path, progress=None, finalizing=None,
+        starting=None, cancel_check=None,
+    ):
         """Upload, hash-check, and atomically publish one local file on USB."""
         encoded = normalize_remote_path(remote_path)
         size, digest = self._hash_file(local_path)
         with self._operation_lock:
+            if cancel_check and cancel_check():
+                raise FileServiceError("Printer USB operation cancelled before sending")
             self._cancel.clear()
             try:
+                if starting:
+                    starting()
                 self._exchange(
                     "@RME FILE WRITE_BEGIN path=%s size=%d sha256=%s"
                     % (encoded, size, digest),

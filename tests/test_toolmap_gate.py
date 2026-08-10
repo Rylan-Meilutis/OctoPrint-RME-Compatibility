@@ -348,9 +348,16 @@ class ToolmapGateTests(unittest.TestCase):
 
             def __init__(self):
                 self.upload = None
+                self.status = None
+                self.status_before_start = None
 
-            def write_file(self, local_path, remote_path, progress=None, finalizing=None):
+            def write_file(
+                self, local_path, remote_path, progress=None, finalizing=None,
+                starting=None, cancel_check=None,
+            ):
                 self.upload = (local_path, remote_path)
+                self.status_before_start = self.status()
+                starting()
                 size = os.path.getsize(local_path)
                 progress(size, size)
                 finalizing()
@@ -366,6 +373,7 @@ class ToolmapGateTests(unittest.TestCase):
             plugin._logger = logging.getLogger("rme-file-firmware-test")
             plugin._uploader = types.SimpleNamespace(busy=False)
             plugin._file_service = FileService()
+            plugin._file_service.status = lambda: plugin._state["firmware"]["status"]
             plugin._firmware_directory = firmware_directory
             plugin._persist_and_publish = lambda: None
             plugin._defer = lambda callback, *args: None
@@ -378,6 +386,7 @@ class ToolmapGateTests(unittest.TestCase):
             plugin._firmware_file_thread.join(timeout=2)
 
             self.assertEqual((path, "FWUPD.BBF"), plugin._file_service.upload)
+            self.assertEqual("queued", plugin._file_service.status_before_start)
             self.assertEqual("staged", plugin._state["firmware"]["status"])
             self.assertEqual("/usb/FWUPD.BBF", plugin._state["firmware"]["staged_path"])
 
@@ -455,7 +464,7 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._plugin_version = "0.1.0b14"
+        plugin._plugin_version = "0.1.0b15"
         templates = plugin.get_template_configs()
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])

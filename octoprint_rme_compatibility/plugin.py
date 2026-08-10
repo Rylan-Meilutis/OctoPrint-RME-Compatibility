@@ -73,6 +73,7 @@ class RmeCompatibilityPlugin(
         self._uploader = None
         self._file_service = None
         self._firmware_file_thread = None
+        self._firmware_file_cancel = threading.Event()
         self._stop = threading.Event()
         self._keepalive_thread = None
         self._firmware_directory = None
@@ -209,6 +210,7 @@ class RmeCompatibilityPlugin(
         self._stop.set()
         if self._uploader and self._uploader.busy:
             self._uploader.cancel()
+        self._firmware_file_cancel.set()
         if self._file_service:
             with self._state_lock:
                 firmware_transfer = self._state["firmware"].get("status") in (
@@ -477,9 +479,16 @@ class RmeCompatibilityPlugin(
             if self._uploader:
                 self._uploader.cancel()
             with self._state_lock:
-                file_firmware_active = self._state["firmware"].get("status") in (
+                firmware_status = self._state["firmware"].get("status")
+                file_firmware_active = firmware_status in (
                     "starting", "uploading", "verifying"
                 )
+            if firmware_status == "queued":
+                # Do not abort the unrelated USB operation currently ahead of
+                # this transfer. The queued worker will observe this before its
+                # first WRITE_BEGIN command.
+                self._firmware_file_cancel.set()
+                self._firmware_state_changed(status="canceling")
             if file_firmware_active and self._file_service and self._file_service.busy:
                 self._file_service.cancel()
         elif command == "flash_firmware":
@@ -2172,6 +2181,12 @@ class RmeCompatibilityPlugin(
                 # directory listing and capability probes. Starting the worker
                 # here lets a short UI refresh finish first instead of exposing
                 # a transient HTTP 409 to the user.
+                self._firmware_file_cancel.clear()
+                self._firmware_state_changed(
+                    status="queued", filename=metadata["name"], size=metadata["size"],
+                    sha256=metadata["sha256"], offset=0, progress=0, error=None,
+                    staged_path=None,
+                )
                 self._firmware_file_thread = threading.Thread(
                     target=self._run_file_firmware_upload,
                     args=(path, metadata),
@@ -2190,15 +2205,12 @@ class RmeCompatibilityPlugin(
     def _run_file_firmware_upload(self, path, metadata):
         """Stage and verify ``FWUPD.BBF`` through the current FILE service."""
         try:
-            self._firmware_state_changed(
-                status="starting", filename=metadata["name"], size=metadata["size"],
-                sha256=metadata["sha256"], offset=0, progress=0, error=None,
-                staged_path=None,
-            )
             self._file_service.write_file(
                 path,
                 "FWUPD.BBF",
                 progress=self._firmware_file_progress,
+                starting=lambda: self._firmware_state_changed(status="starting"),
+                cancel_check=self._firmware_file_cancel.is_set,
                 finalizing=lambda: self._firmware_state_changed(
                     status="verifying", offset=metadata["size"], progress=100
                 ),
