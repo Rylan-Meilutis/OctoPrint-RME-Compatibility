@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0b21 — 2026-08-10
+
+- Fixed a provider synchronization feedback loop that repeatedly rewrote RME
+  colors, filament presets, and manufacturer assignments, then queried the
+  complete firmware catalogs again.
+- Provider-originated transaction acknowledgements now advance session state
+  without scheduling another configuration refresh.
+- Unchanged provider snapshots are now idempotent, while reconnects and actual
+  provider metadata or selection changes still publish to the firmware.
+
 ## 0.1.0b20 — 2026-08-10
 
 - Removed the obsolete configurable statistics polling interval and all

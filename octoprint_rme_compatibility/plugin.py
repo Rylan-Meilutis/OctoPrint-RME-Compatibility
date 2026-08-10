@@ -106,6 +106,8 @@ class RmeCompatibilityPlugin(
         self._manufacturer_sync_timer_lock = threading.Lock()
         self._manufacturer_sync_pending = False
         self._transaction = int(time.time() * 1000) & 0xFFFFFFFF or 1
+        self._suppressed_refresh_transactions = {}
+        self._provider_firmware_signature = None
 
     @staticmethod
     def _empty_state():
@@ -794,6 +796,8 @@ class RmeCompatibilityPlugin(
                 self._state["loaded_filaments"] = []
                 self._state["manufacturers"] = {"profiles": [], "loaded": []}
                 self._state["active_tool"] = self._empty_state()["active_tool"]
+                self._suppressed_refresh_transactions.clear()
+                self._provider_firmware_signature = None
             self._publish()
             self._send_command("@RME MACHINE QUERY")
             self._defer(self._sync_spoolmanager, True)
@@ -813,6 +817,8 @@ class RmeCompatibilityPlugin(
                     supported=False, status="printer disconnected", progress=None,
                     entries=[], native_files=[],
                 )
+                self._suppressed_refresh_transactions.clear()
+                self._provider_firmware_signature = None
             self._publish()
         elif event == Events.PRINT_STARTED:
             with self._state_lock:
@@ -1057,9 +1063,23 @@ class RmeCompatibilityPlugin(
                 )
                 sequence_gap = bool(previous_sequence and sequence != previous_sequence + 1)
                 revision_gap = bool(previous_revision and revision != previous_revision + 1)
+                transaction = int(record.get("tx", 0) or 0)
+                now = time.monotonic()
+                self._suppressed_refresh_transactions = {
+                    tx: expiry for tx, expiry in self._suppressed_refresh_transactions.items()
+                    if expiry > now
+                }
+                suppress_refresh = bool(
+                    record.get("origin") == "host"
+                    and self._suppressed_refresh_transactions.pop(transaction, 0) > now
+                )
                 self._state["session"]["last_seq"] = sequence
                 self._state["session"]["configuration_revision"] = revision
-                if record.get("domain") == "manufacturer" and record.get("key") == "custom":
+                if (
+                    not suppress_refresh
+                    and record.get("domain") == "manufacturer"
+                    and record.get("key") == "custom"
+                ):
                     self._state["manufacturers"]["profiles"][:] = [
                         item for item in self._state["manufacturers"]["profiles"]
                         if int(item.get("builtin", 0))
@@ -1067,7 +1087,7 @@ class RmeCompatibilityPlugin(
                 if sequence_gap or revision_gap:
                     follow_up.extend(["@RME SESSION QUERY", "@RME DIALOG QUERY"])
                     follow_up.append("refresh_configuration:all")
-                else:
+                elif not suppress_refresh:
                     follow_up.append(
                         "refresh_configuration:%s" % str(record.get("domain", ""))
                     )
@@ -1226,13 +1246,20 @@ class RmeCompatibilityPlugin(
             raise RuntimeError("Printer is not connected")
         self._printer.commands(commands, tags={"plugin:rme_compatibility"})
 
-    def _with_transaction(self, command):
+    def _with_transaction(self, command, suppress_refresh=False):
         """Attach the firmware's nonzero mutation correlation identifier."""
         with self._state_lock:
             self._transaction = (self._transaction + 1) & 0xFFFFFFFF
             if not self._transaction:
                 self._transaction = 1
             transaction = self._transaction
+            if suppress_refresh:
+                now = time.monotonic()
+                self._suppressed_refresh_transactions = {
+                    tx: expiry for tx, expiry in self._suppressed_refresh_transactions.items()
+                    if expiry > now
+                }
+                self._suppressed_refresh_transactions[transaction] = now + 120
         return "%s tx=%d" % (command, transaction)
 
     @staticmethod
@@ -1809,12 +1836,14 @@ class RmeCompatibilityPlugin(
                 current = custom.get(slot)
                 if current and (wanted is None or current.casefold() != wanted.casefold()):
                     commands.append(self._with_transaction(
-                        "@RME MANUFACTURER DELETE slot=%d" % slot
+                        "@RME MANUFACTURER DELETE slot=%d" % slot,
+                        suppress_refresh=True,
                     ))
                 if wanted and (not current or current.casefold() != wanted.casefold()):
                     commands.append(self._with_transaction(
                         "@RME MANUFACTURER CREATE slot=%d name=%s"
-                        % (slot, quote(wanted, safe="-_.~"))
+                        % (slot, quote(wanted, safe="-_.~")),
+                        suppress_refresh=True,
                     ))
         return commands, manufacturer_for_spool
 
@@ -1837,7 +1866,10 @@ class RmeCompatibilityPlugin(
                     with self._state_lock:
                         self._manufacturer_sync_pending = True
                     return
-                self._sync_spoolmanager(True, True)
+                # Query completion is reconciliation, not a provider edit.
+                # Only publish when this connection has not received the
+                # current provider snapshot yet.
+                self._sync_spoolmanager(False, True)
 
             self._manufacturer_sync_timer = threading.Timer(0.15, synchronize)
             self._manufacturer_sync_timer.daemon = True
@@ -1914,8 +1946,22 @@ class RmeCompatibilityPlugin(
                 published.append(record)
             published.sort(key=lambda item: item["slot"])
 
-            old_signature = [(item.get("slot"), item.get("alias"), item.get("database_id")) for item in old_published]
-            new_signature = [(item["slot"], item["alias"], item["database_id"]) for item in published]
+            firmware_signature = (
+                tuple(
+                    (
+                        item.get("slot"), item.get("alias"), item.get("database_id"),
+                        item.get("material"), item.get("vendor"), item.get("color"),
+                        item.get("color_name"), item.get("display_name"),
+                        int(item.get("nozzle_temperature", 0)),
+                        int(item.get("bed_temperature", 0)),
+                    )
+                    for item in published
+                ),
+                tuple(
+                    (int(item.get("tool", 0)), item.get("database_id"))
+                    for item in selected
+                ),
+            )
             # Publish the alias map before queueing M865 Q. OctoPrint's serial
             # worker may return the loadout while this reconciliation thread is
             # still running, and the receive side must recognize every alias.
@@ -1941,7 +1987,9 @@ class RmeCompatibilityPlugin(
             profile_commands, manufacturer_by_spool = self._provider_profile_commands(
                 published, provider_name
             )
-            metadata_changed = force or old_signature != new_signature
+            metadata_changed = (
+                force or self._provider_firmware_signature != firmware_signature
+            )
             if should_push and metadata_changed and profile_commands:
                 self._send_commands(profile_commands)
             if should_push and metadata_changed:
@@ -1964,9 +2012,12 @@ class RmeCompatibilityPlugin(
                 commands.append(
                     "@RME FILAMENT SET slot=7 name=NEW nozzle=215 preheat=170 bed=60 visible=1"
                 )
-                commands = [self._with_transaction(command) for command in commands]
+                commands = [
+                    self._with_transaction(command, suppress_refresh=True)
+                    for command in commands
+                ]
                 self._send_commands(commands)
-            if should_push:
+            if should_push and metadata_changed:
                 # Reassert selected tool assignments after reconnects and after
                 # inventory edits; publishing a preset alone does not mark it as
                 # physically loaded in Buddy's M865 metadata.
@@ -1978,7 +2029,8 @@ class RmeCompatibilityPlugin(
                     if tool not in selected_tools:
                         assignments.append('M865 S"---" L%d' % tool)
                         assignments.append(self._with_transaction(
-                            "@RME MANUFACTURER ASSIGN tool=%d name=none" % tool
+                            "@RME MANUFACTURER ASSIGN tool=%d name=none" % tool,
+                            suppress_refresh=True,
                         ))
                 for selected_item in selected:
                     item = slot_by_id.get(selected_item["database_id"])
@@ -1992,10 +2044,12 @@ class RmeCompatibilityPlugin(
                         )
                         assignments.append(self._with_transaction(
                             "@RME MANUFACTURER ASSIGN tool=%d name=%s"
-                            % (selected_item["tool"], quote(manufacturer, safe="-_.~"))
+                            % (selected_item["tool"], quote(manufacturer, safe="-_.~")),
+                            suppress_refresh=True,
                         ))
                 assignments.append("M865 Q")
                 self._send_commands(assignments)
+                self._provider_firmware_signature = firmware_signature
 
             with self._state_lock:
                 if should_push:

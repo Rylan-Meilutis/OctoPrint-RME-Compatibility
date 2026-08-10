@@ -236,6 +236,13 @@ class ToolmapGateTests(unittest.TestCase):
             for command in commands
         ))
 
+        # A manufacturer-query completion reconciles with force=False. Once
+        # this exact snapshot has been published, it must not enqueue the
+        # colors, presets, assignments, or another M865 query again.
+        batch_count = len(plugin._printer.command_batches)
+        plugin._sync_spoolmanager(False, True)
+        self.assertEqual(batch_count, len(plugin._printer.command_batches))
+
     def test_pending_provider_change_waits_for_confirmation(self):
         record = {
             "database_id": 12, "display_name": "Orange PLA", "vendor": "",
@@ -858,6 +865,23 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual(["theme"], refreshed)
         self.assertEqual(11, plugin._state["session"]["last_seq"])
         self.assertEqual(5, plugin._state["session"]["configuration_revision"])
+
+        # Provider publication transactions are acknowledgements of commands
+        # this plugin just sent. They advance sequence state but must not start
+        # another full catalog query/publication cycle.
+        command = plugin._with_transaction(
+            "@RME FILAMENT SET slot=0 name=PLA-001 nozzle=215 preheat=175 bed=60 visible=1",
+            suppress_refresh=True,
+        )
+        transaction = int(command.rsplit("tx=", 1)[1])
+        plugin._handle_record({
+            "record": "change", "seq": 12, "revision": 6,
+            "domain": "filament", "key": "preset", "origin": "host",
+            "tx": transaction,
+        })
+        self.assertEqual(["theme"], refreshed)
+        self.assertEqual(12, plugin._state["session"]["last_seq"])
+        self.assertEqual(6, plugin._state["session"]["configuration_revision"])
 
         # Provider inventory refreshes remain periodic, but they no longer
         # issue an M865 configuration query in steady state.
