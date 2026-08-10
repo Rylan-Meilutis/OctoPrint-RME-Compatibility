@@ -77,6 +77,8 @@ class RmeFileService(object):
     def reset(self, reason="Printer disconnected"):
         """Interrupt a waiter when the serial connection disappears."""
         self._capabilities = None
+        if self.end_binary:
+            self.end_binary()
         self._binary_active = False
         with self._condition:
             if self._active:
@@ -91,9 +93,9 @@ class RmeFileService(object):
                 self._error = "cancelled"
             self._condition.notify_all()
         try:
-            if self._binary_active and self.send_binary:
-                self.send_binary(self._binary_frame(0xFFFFFFFF, b""))
-            else:
+            # The active worker performs the raw abort handshake so it can
+            # wait for RME_FILE_BINARY_ABORTED before releasing line traffic.
+            if not (self._binary_active and self.send_binary):
                 self.send_command("@RME FILE ABORT")
         except Exception:
             pass
@@ -111,7 +113,9 @@ class RmeFileService(object):
                 self._records.append(dict(record))
             self._condition.notify_all()
 
-    def _exchange(self, command, expected, timeout=None, terminal=None):
+    def _exchange(
+        self, command, expected, timeout=None, terminal=None, respect_cancel=True
+    ):
         """Send a command and return all records through its terminal reply."""
         expected = set(expected if isinstance(expected, (tuple, list, set)) else [expected])
         with self._condition:
@@ -136,7 +140,7 @@ class RmeFileService(object):
                 ):
                     if self._error:
                         raise FileServiceError("Printer USB operation failed: %s" % self._error)
-                    if self._cancel.is_set():
+                    if respect_cancel and self._cancel.is_set():
                         raise FileServiceError("Printer USB operation cancelled")
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -303,6 +307,9 @@ class RmeFileService(object):
                         self._binary_frame(size, b""), "file_binary_complete",
                         timeout=60,
                     )
+                    # The completion record confirms that firmware has restored
+                    # line mode; normal OctoPrint traffic may now resume.
+                    self.end_binary()
                     self._binary_active = False
                 elif bool(int(self._capabilities.get("bulk", 0))):
                     self._exchange(
@@ -328,7 +335,12 @@ class RmeFileService(object):
         """Return firmware and OctoPrint to line mode after a raw failure."""
         try:
             if self._binary_active and self.send_binary:
-                self.send_binary(self._binary_frame(0xFFFFFFFF, b""))
+                self._exchange(
+                    self._binary_frame(0xFFFFFFFF, b""),
+                    "file_binary_aborted",
+                    timeout=10,
+                    respect_cancel=False,
+                )
         except Exception as exc:
             if self.logger:
                 self.logger.warning("Could not transmit binary abort frame: %s", exc)
@@ -346,7 +358,7 @@ class RmeFileService(object):
         ) + payload
 
     def _write_binary(self, local_path, encoded, size, digest, progress):
-        """Use negotiated 4096-byte raw frames with cumulative ACK recovery."""
+        """Use negotiated raw frames with cumulative ACK recovery."""
         marker = self.begin_binary()
         try:
             records = self._exchange(
@@ -370,7 +382,7 @@ class RmeFileService(object):
             raise FileServiceError("Printer returned an unsupported binary checksum")
         chunk_size = min(
             65535,
-            max(1, int(ready.get("chunk", self._capabilities.get("binary_chunk", 4096)))),
+            max(1, int(ready.get("chunk", self._capabilities.get("binary_chunk", 1024)))),
         )
         window_size = min(
             64,

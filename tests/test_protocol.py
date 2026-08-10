@@ -63,6 +63,19 @@ class ProtocolTests(unittest.TestCase):
             "mmu_load_total": 5, "mmu_general_since_reset": 6,
             "mmu_general_total": 7,
         })
+        self.assertEqual(parse_line(
+            "RME_STATS_MEMORY heap_free=123456 heap_total=524288"
+        ), {
+            "record": "stats", "heap_free": 123456, "heap_total": 524288,
+        })
+        self.assertEqual(parse_line(
+            "RME_SESSION active=1 legacy=0 preferred_baud=1000000 "
+            "fallback_baud=250000,230400,115200"
+        ), {
+            "record": "session", "active": 1, "legacy": 0,
+            "preferred_baud": 1000000,
+            "fallback_baud": "250000,230400,115200",
+        })
 
 
     def test_parses_prompt_toolmap_and_upload_records(self):
@@ -116,6 +129,21 @@ class ProtocolTests(unittest.TestCase):
             parse_line("echo:RME_ERROR workflow=file code=invalid_path")["record"],
             "file_error",
         )
+        self.assertEqual(
+            parse_line("RME_FILE_BINARY_ABORTED"),
+            {"record": "file_binary_aborted"},
+        )
+        self.assertEqual(parse_line(
+            "RME_FILE_BINARY_READ_READY path=part.bgcode offset=0 length=1024"
+        )["record"], "file_binary_read_ready")
+        self.assertEqual(parse_line(
+            "RME_FILE_BINARY_READ_COMPLETE next=1024 eof=0"
+        ), {
+            "record": "file_binary_read_complete", "next": 1024, "eof": 0,
+        })
+        self.assertEqual(parse_line(
+            "RME_FIRMWARE_RESTART reconnect=1"
+        ), {"record": "firmware_restart", "reconnect": 1})
 
     def test_terminal_workflow_state_dismisses_remote_prompt(self):
         self.assertTrue(workflow_is_terminal({"state": "closed"}))

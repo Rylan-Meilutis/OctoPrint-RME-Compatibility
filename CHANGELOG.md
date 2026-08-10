@@ -1,9 +1,24 @@
 # Changelog
 
+## 0.1.0b24 — 2026-08-10
+
+- Aligned the plugin with the current Buddy RME 6.6.3 protocol: binary upload
+  frames now use the firmware-negotiated size (currently 1024 bytes), and
+  session baud hints, memory statistics, binary-read control records, binary
+  abort confirmation, and firmware-restart records are parsed and preserved.
+- Raw uploads now keep exclusive ownership of OctoPrint's serial writer until
+  the firmware confirms `RME_FILE_BINARY_COMPLETE` or
+  `RME_FILE_BINARY_ABORTED`; normal line traffic can no longer resume during
+  the firmware's final hash/rename or abort transition.
+- Binary upload cancellation now performs one confirmed abort handshake.
+- Fast raw downloads remain on the protocol's supported Base64 fallback because
+  OctoPrint 1.11.2 owns and decodes its serial `readline()` before plugin hooks;
+  attempting a second raw reader would corrupt the shared receive stream.
+
 ## 0.1.0b23 — 2026-08-10
 
 - Firmware and USB uploads now prefer the negotiated raw-binary transport:
-  4096-byte CRC32 frames in eight-frame cumulative-ACK windows.
+  CRC32 frames in eight-frame cumulative-ACK windows.
 - Raw transfers exclusively reserve OctoPrint's existing serial writer thread,
   preventing normal G-code or plugin traffic from being interleaved while the
   firmware's receiver is in binary mode.

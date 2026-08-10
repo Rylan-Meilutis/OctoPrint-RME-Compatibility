@@ -667,9 +667,16 @@ class ToolmapGateTests(unittest.TestCase):
         serial = RawSerial()
         comm = types.SimpleNamespace(_serial=serial)
 
-        plugin.atcommand_sending_hook(
-            comm, "sending", "RME", "FILE RAW_SESSION token=%s" % token, tags=set()
+        worker = threading.Thread(
+            target=plugin.atcommand_sending_hook,
+            args=(comm, "sending", "RME", "FILE RAW_SESSION token=%s" % token),
+            kwargs={"tags": set()},
         )
+        worker.start()
+        self.assertTrue(pending_end["event"].wait(1))
+        self.assertTrue(worker.is_alive())
+        session_queue.put(None)
+        worker.join(1)
 
         self.assertTrue(pending_data["event"].is_set())
         self.assertTrue(pending_end["event"].is_set())
@@ -677,6 +684,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual(
             pending_data["frame"] + pending_end["frame"], bytes(serial.data)
         )
+        self.assertFalse(worker.is_alive())
         self.assertIsNone(plugin._binary_session)
 
     def test_prestart_hold_pauses_timeout_then_configures_validator_before_release(self):
@@ -894,6 +902,27 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._handle_record({"record": "rme_error", "message": "RME_ERROR STATS unsupported"})
         plugin._refresh_stats_snapshot()
         self.assertEqual(1, len(queued))  # state publication only; no command
+
+    def test_latest_session_fields_and_firmware_restart_are_preserved(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._settings.values["auto_open_session"] = False
+        plugin._defer = lambda callback, *args: None
+        plugin._schedule_publish = lambda: None
+
+        plugin._handle_record(parse_line(
+            "RME_SESSION active=1 legacy=0 preferred_baud=1000000 "
+            "fallback_baud=250000,230400,115200"
+        ))
+        self.assertEqual(1000000, plugin._state["session"]["preferred_baud"])
+        self.assertEqual(
+            "250000,230400,115200",
+            plugin._state["session"]["fallback_baud"],
+        )
+
+        plugin._handle_record(parse_line("RME_FIRMWARE_RESTART reconnect=1"))
+        self.assertEqual("restarting", plugin._state["firmware"]["status"])
+        self.assertTrue(plugin._state["firmware"]["reconnect_expected"])
 
     def test_configuration_changes_drive_domain_refresh_without_polling(self):
         plugin = RmeCompatibilityPlugin()

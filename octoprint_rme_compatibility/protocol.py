@@ -112,6 +112,8 @@ def parse_line(raw_line):
         ("RME_FILE_BINARY_READY ", "file_binary_ready"),
         ("RME_FILE_BINARY_ACK ", "file_binary_ack"),
         ("RME_FILE_BINARY_NACK ", "file_binary_nack"),
+        ("RME_FILE_BINARY_READ_READY ", "file_binary_read_ready"),
+        ("RME_FILE_BINARY_READ_COMPLETE ", "file_binary_read_complete"),
     ):
         if line.startswith(prefix):
             result = parse_fields(line[len(prefix) :])
@@ -125,6 +127,7 @@ def parse_line(raw_line):
         return {"record": "file_binary_complete", "path": line.split("=", 1)[1]}
     for text, record in (
         ("RME_FILE_ABORTED", "file_aborted"),
+        ("RME_FILE_BINARY_ABORTED", "file_binary_aborted"),
         ("RME_FILE_DELETED", "file_deleted"),
         ("RME_FILE_RENAMED", "file_renamed"),
         ("RME_FILE_DIRECTORY_CREATED", "file_directory_created"),
@@ -166,11 +169,16 @@ def parse_line(raw_line):
         ("RME_STATS ", "stats"),
         ("RME_STATS_OPERATIONS ", "stats"),
         ("RME_STATS_FAILURES ", "stats"),
+        ("RME_STATS_MEMORY ", "stats"),
     ):
         if line.startswith(prefix):
             result = parse_fields(line[len(prefix) :])
             result["record"] = record
             return result
+    if line.startswith("RME_FIRMWARE_RESTART "):
+        result = parse_fields(line[len("RME_FIRMWARE_RESTART ") :])
+        result["record"] = "firmware_restart"
+        return result
     if line.startswith("RME_PROMPT "):
         actions = line[len("RME_PROMPT ") :].strip()
         return {

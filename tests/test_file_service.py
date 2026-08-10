@@ -18,6 +18,7 @@ class FileServiceTests(unittest.TestCase):
         service = None
         source_data = bytes(range(256)) * 36
         received = bytearray()
+        ended = []
         window = []
         rejected_once = [False]
 
@@ -62,7 +63,7 @@ class FileServiceTests(unittest.TestCase):
         service = RmeFileService(
             send, response_timeout=1, send_binary=send_binary,
             begin_binary=lambda: "@RME FILE RAW_SESSION token=" + "1" * 32,
-            end_binary=lambda: None,
+            end_binary=lambda: ended.append(True),
         )
         with tempfile.NamedTemporaryFile(delete=False) as source:
             source.write(source_data)
@@ -73,6 +74,7 @@ class FileServiceTests(unittest.TestCase):
             os.unlink(source_path)
         self.assertTrue(rejected_once[0])
         self.assertEqual(source_data, bytes(received))
+        self.assertEqual([True], ended)
 
     def test_binary_transport_failure_aborts_and_falls_back_to_bulk(self):
         service = None
@@ -84,11 +86,11 @@ class FileServiceTests(unittest.TestCase):
             if command == "@RME FILE CAPS":
                 service.handle_response(parse_line(
                     "RME_FILE_CAPS root=/usb write=1 bulk=1 bulk_chunk=320 "
-                    "bulk_window=4 binary=1 binary_chunk=4096 binary_window=8"
+                    "bulk_window=4 binary=1 binary_chunk=1024 binary_window=8"
                 ))
             elif "WRITE_BINARY_BEGIN" in command:
                 service.handle_response(parse_line(
-                    "RME_FILE_BINARY_READY offset=0 chunk=4096 window=8 "
+                    "RME_FILE_BINARY_READY offset=0 chunk=1024 window=8 "
                     "header=10 endian=little crc=crc32"
                 ))
             elif "WRITE_BULK_BEGIN" in command:

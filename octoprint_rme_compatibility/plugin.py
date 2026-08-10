@@ -167,6 +167,7 @@ class RmeCompatibilityPlugin(
                 "error": None,
                 "staged_path": None,
                 "flash_after_stage": False,
+                "reconnect_expected": False,
             },
             "storage": {
                 "supported": False, "caps": {}, "path": "/", "entries": [],
@@ -935,11 +936,9 @@ class RmeCompatibilityPlugin(
                         pending["error"] = exc
                     finally:
                         pending["event"].set()
-                    # Finalize and abort frames both have a zero payload. The
-                    # firmware restores its line parser before this hook lets
-                    # OctoPrint's send loop continue.
-                    if len(frame) == 10 and frame[4:6] == b"\x00\x00":
-                        return
+                    # Zero-payload frames only request finalize/abort. Keep the
+                    # writer reserved until the matching receive record causes
+                    # the file service to release this session explicitly.
             except Exception as exc:
                 self._logger.error("RME binary send session failed: %s", exc)
             finally:
@@ -1114,9 +1113,11 @@ class RmeCompatibilityPlugin(
                     apply_profile = self._settings.get_boolean(["auto_machine_profile"])
                     follow_up.append("@RME TOOLMAP QUERY")
             elif kind == "session":
-                self._state["session"].update(
-                    active=bool(record.get("active")), legacy=bool(record.get("legacy"))
-                )
+                self._state["session"].update({
+                    key: value for key, value in record.items() if key != "record"
+                })
+                self._state["session"]["active"] = bool(record.get("active"))
+                self._state["session"]["legacy"] = bool(record.get("legacy"))
                 if record.get("active"):
                     follow_up.append("@RME DIALOG QUERY")
                     follow_up.append("refresh_configuration:all")
@@ -1211,6 +1212,11 @@ class RmeCompatibilityPlugin(
                     "updated": int(time.time()),
                     "values": values,
                 }
+            elif kind == "firmware_restart":
+                self._state["firmware"].update(
+                    status="restarting", error=None,
+                    reconnect_expected=bool(record.get("reconnect", 0)),
+                )
             elif kind == "filament":
                 filament = {key: value for key, value in record.items() if key != "record"}
                 identity = (filament.get("user"), filament.get("slot"))
