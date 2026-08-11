@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0b29 — 2026-08-11
+
+- Stopped periodic session keepalive acknowledgements from being interpreted
+  as newly opened sessions. The initial inactive-to-active lease transition
+  still loads the complete configuration once, but subsequent ten-second
+  keepalives no longer trigger repeated dialog, lock, theme, light, filament,
+  color, manufacturer, and tool-map queries.
+
 ## 0.1.0b28 — 2026-08-11
 
 - Prevented corrupted bulk-fallback bursts by limiting Base64 payloads to 192

@@ -944,13 +944,18 @@ class ToolmapGateTests(unittest.TestCase):
         plugin = RmeCompatibilityPlugin()
         plugin._settings = _Settings()
         plugin._settings.values["auto_open_session"] = False
-        plugin._defer = lambda callback, *args: None
+        commands = []
+        refreshes = []
+        plugin._defer = lambda callback, *args: callback(*args)
+        plugin._send_command = commands.append
+        plugin._schedule_configuration_refresh = refreshes.append
         plugin._schedule_publish = lambda: None
 
-        plugin._handle_record(parse_line(
+        session = parse_line(
             "RME_SESSION lease=1 printer_state=idle legacy=0 preferred_baud=1000000 "
             "fallback_baud=250000,230400,115200"
-        ))
+        )
+        plugin._handle_record(session)
         self.assertEqual(1000000, plugin._state["session"]["preferred_baud"])
         self.assertTrue(plugin._state["session"]["active"])
         self.assertEqual("idle", plugin._state["session"]["printer_state"])
@@ -958,6 +963,14 @@ class ToolmapGateTests(unittest.TestCase):
             "250000,230400,115200",
             plugin._state["session"]["fallback_baud"],
         )
+        self.assertEqual(["@RME DIALOG QUERY"], commands)
+        self.assertEqual(["all"], refreshes)
+
+        # The reply to each periodic KEEPALIVE updates lease metadata but must
+        # not turn into another complete configuration snapshot.
+        plugin._handle_record(dict(session))
+        self.assertEqual(["@RME DIALOG QUERY"], commands)
+        self.assertEqual(["all"], refreshes)
 
         plugin._handle_record(parse_line("RME_FIRMWARE_RESTART reconnect=1"))
         self.assertEqual("restarting", plugin._state["firmware"]["status"])

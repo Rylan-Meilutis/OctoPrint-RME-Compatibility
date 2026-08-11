@@ -1137,6 +1137,7 @@ class RmeCompatibilityPlugin(
                     apply_profile = self._settings.get_boolean(["auto_machine_profile"])
                     follow_up.append("@RME TOOLMAP QUERY")
             elif kind == "session":
+                previous_lease = bool(self._state["session"].get("active"))
                 self._state["session"].update({
                     key: value for key, value in record.items() if key != "record"
                 })
@@ -1145,7 +1146,11 @@ class RmeCompatibilityPlugin(
                 lease = record.get("lease", record.get("active"))
                 self._state["session"]["active"] = bool(lease)
                 self._state["session"]["legacy"] = bool(record.get("legacy"))
-                if lease:
+                # KEEPALIVE returns the same session record every ten seconds.
+                # Only the inactive -> active transition needs the discovery
+                # snapshot; treating every acknowledgement as a new session
+                # creates an endless full configuration poll loop.
+                if lease and not previous_lease:
                     follow_up.append("@RME DIALOG QUERY")
                     follow_up.append("refresh_configuration:all")
             elif kind == "event":
