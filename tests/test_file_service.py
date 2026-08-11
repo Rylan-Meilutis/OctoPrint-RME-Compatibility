@@ -2,6 +2,7 @@ import base64
 import os
 import struct
 import tempfile
+import threading
 import unittest
 import zlib
 
@@ -51,6 +52,21 @@ class FileServiceTests(unittest.TestCase):
                 if not rejected_once[0]:
                     rejected_once[0] = True
                     service.handle_response(parse_line("RME_FILE_BINARY_NACK offset=0"))
+                    # Firmware also rejects the later frames that were already
+                    # in the failed eight-frame window. They must be drained,
+                    # not counted as independent retry failures.
+                    threading.Timer(
+                        0.02,
+                        lambda: service.handle_response(parse_line(
+                            "RME_FILE_BINARY_NACK offset=0"
+                        )),
+                    ).start()
+                    threading.Timer(
+                        0.04,
+                        lambda: service.handle_response(parse_line(
+                            "RME_FILE_BINARY_NACK offset=0"
+                        )),
+                    ).start()
                 else:
                     for frame_offset, frame_payload in window:
                         self.assertEqual(len(received), frame_offset)

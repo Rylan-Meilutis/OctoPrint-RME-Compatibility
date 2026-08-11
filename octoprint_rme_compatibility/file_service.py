@@ -66,6 +66,7 @@ class RmeFileService(object):
         self._cancel = threading.Event()
         self._capabilities = None
         self._binary_active = False
+        self._last_binary_response = 0.0
 
     @property
     def busy(self):
@@ -105,13 +106,33 @@ class RmeFileService(object):
         if not record or not str(record.get("record", "")).startswith("file_"):
             return
         with self._condition:
+            if record["record"] in ("file_binary_ack", "file_binary_nack"):
+                # A failed pipelined window can produce one NACK for the bad
+                # frame and more for frames that were already in flight. Track
+                # them even between exchanges so recovery can wait for quiet.
+                self._last_binary_response = time.monotonic()
             if not self._active:
+                self._condition.notify_all()
                 return
             if record["record"] == "file_error":
                 self._error = record.get("code") or record.get("message")
             else:
                 self._records.append(dict(record))
             self._condition.notify_all()
+
+    def _wait_for_binary_quiet(self, quiet=0.15, timeout=2.0):
+        """Drain responses from a failed in-flight raw window before retrying."""
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while True:
+                now = time.monotonic()
+                quiet_remaining = quiet - (now - self._last_binary_response)
+                if quiet_remaining <= 0:
+                    return
+                remaining = deadline - now
+                if remaining <= 0:
+                    return
+                self._condition.wait(min(quiet_remaining, remaining))
 
     def _exchange(
         self, command, expected, timeout=None, terminal=None, respect_cancel=True
@@ -422,7 +443,13 @@ class RmeFileService(object):
                             "Printer repeatedly rejected binary data at offset %d"
                             % acknowledged
                         )
+                    # Frames after the failed one were already handed to the
+                    # USB driver and can produce stale NACKs for this same
+                    # offset. Let those drain before retransmitting. Firmware
+                    # acknowledges only after its advertised full window, so
+                    # recovery must retain that negotiated cadence.
                     offset = acknowledged
+                    self._wait_for_binary_quiet()
                     continue
                 if acknowledged != expected_offset:
                     raise FileServiceError("Printer returned an incomplete binary upload ACK")

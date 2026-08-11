@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0b26 — 2026-08-10
+
+- Fixed pipelined binary recovery counting NACKs from already-in-flight frames
+  as separate failed retransmissions at the same offset.
+- After a binary NACK, the uploader now drains the rejected window before
+  retransmitting from the committed offset. It retains the negotiated
+  eight-frame cadence because current firmware emits cumulative ACKs only at
+  that boundary (or the end of the file).
+
 ## 0.1.0b25 — 2026-08-10
 
 - Removed the remaining timed filament-provider reconciliation and its obsolete
