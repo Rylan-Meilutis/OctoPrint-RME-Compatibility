@@ -24,6 +24,8 @@ $(function () {
         self.piUploadActive = ko.observable(false);
         self.piUploadProgress = ko.observable(0);
         self.pendingStorageUpload = ko.observable(null);
+        self.storageUploadActive = ko.observable(false);
+        self.storageUploadProgress = ko.observable(0);
         self.downloadChoiceEntry = ko.observable(null);
         self.handledDownloadJobs = {};
         self.activeDownloadJobId = null;
@@ -263,6 +265,82 @@ $(function () {
             if (light.screen_persistent !== undefined) values.push("saved screen " + light.screen_persistent + "%");
             return values.length ? values.join(" · ") : "Not reported yet";
         });
+        self.navbarTransfer = ko.pureComputed(function () {
+            var state = self.state();
+            var firmware = state.firmware || {};
+            var storage = state.storage || {};
+            var download = storage.download || {};
+            var firmwareStatuses = ["queued", "canceling", "starting", "uploading", "verifying", "flashing", "restarting"];
+            var progress;
+            function numericProgress(value) {
+                if (value === null || value === undefined || value === "") return null;
+                var number = Number(value);
+                return isFinite(number) ? number : null;
+            }
+            if (self.piUploadActive()) {
+                progress = Number(self.piUploadProgress());
+                return {
+                    active: true, icon: "fa-microchip", title: "Firmware upload",
+                    summary: "Firmware → Pi · " + Math.round(progress || 0) + "%",
+                    detail: "Uploading firmware to OctoPrint", progress: progress
+                };
+            }
+            if (firmwareStatuses.indexOf(String(firmware.status || "")) >= 0) {
+                progress = numericProgress(firmware.progress);
+                var firmwareLabels = {
+                    queued: "Firmware queued", canceling: "Canceling firmware transfer",
+                    starting: "Starting firmware transfer", uploading: "Firmware → printer",
+                    verifying: "Verifying firmware", flashing: "Flashing firmware",
+                    restarting: "Printer restarting"
+                };
+                var firmwareLabel = firmwareLabels[firmware.status] || "Firmware update";
+                return {
+                    active: true, icon: "fa-microchip", title: "Firmware update",
+                    summary: firmwareLabel + (progress !== null ? " · " + Math.round(progress) + "%" : ""),
+                    detail: firmware.filename || firmwareLabel,
+                    progress: progress
+                };
+            }
+            if (["queued", "downloading"].indexOf(String(download.status || "")) >= 0) {
+                progress = numericProgress(download.progress);
+                return {
+                    active: true, icon: "fa-download", title: "File download",
+                    summary: (download.status === "queued" ? "Download queued" : "Printer → Pi") +
+                        (progress !== null ? " · " + Math.round(progress) + "%" : ""),
+                    detail: download.name || "Downloading printer file",
+                    progress: progress
+                };
+            }
+            if (storage.status === "uploading") {
+                progress = numericProgress(storage.progress);
+                return {
+                    active: true, icon: "fa-upload", title: "File upload",
+                    summary: "File → printer" + (progress !== null ? " · " + Math.round(progress) + "%" : ""),
+                    detail: "Verified printer USB transfer",
+                    progress: progress
+                };
+            }
+            if (self.storageUploadActive()) {
+                progress = Number(self.storageUploadProgress());
+                return {
+                    active: true, icon: "fa-upload", title: "File upload",
+                    summary: "File → OctoPrint · " + Math.round(progress || 0) + "%",
+                    detail: (self.pendingStorageUpload() || {}).name || "Uploading file",
+                    progress: progress
+                };
+            }
+            return {active: false, icon: "", title: "", summary: "", detail: "", progress: null};
+        });
+        self.navbarTransferActive = ko.pureComputed(function () { return !!self.navbarTransfer().active; });
+        self.navbarTransferWidth = ko.pureComputed(function () {
+            var value = self.navbarTransfer().progress;
+            var progress = value === null || value === undefined ? NaN : Number(value);
+            return isFinite(progress) ? Math.max(0, Math.min(100, progress)) + "%" : "100%";
+        });
+        self.navbarTransferIndeterminate = ko.pureComputed(function () {
+            var value = self.navbarTransfer().progress;
+            return value === null || value === undefined || !isFinite(Number(value));
+        });
         self.mmuDetected = ko.pureComputed(function () {
             var machine = self.state().machine || {};
             var workflow = self.workflow();
@@ -292,11 +370,13 @@ $(function () {
             return self.navbarMmuActive() && self.hasFirmwarePrompt();
         });
         self.navbarModeText = ko.pureComputed(function () {
+            if (self.navbarTransferActive()) return self.navbarTransfer().title;
             if (!self.state().supported) return "RME Compatibility";
             return self.mmuDetected() ? "RME MMU" : "RME multi-tool";
         });
         self.navbarMmuText = ko.pureComputed(function () {
             var workflow = self.workflow();
+            if (self.navbarTransferActive()) return self.navbarTransfer().detail;
             if (!self.state().supported) return self.connectionText();
             if (!self.navbarMmuActive()) return self.mmuDetected() ? "MMU idle" : "Multi-tool ready";
             var state = String(workflow.state || "active").replace(/_/g, " ");
@@ -305,6 +385,7 @@ $(function () {
             return label;
         });
         self.navbarCompactText = ko.pureComputed(function () {
+            if (self.navbarTransferActive()) return self.navbarTransfer().summary;
             if (!self.state().connected) return "RME · disconnected";
             if (!self.state().supported) return "RME · not detected";
             if (self.navbarMmuActive()) {
@@ -321,9 +402,16 @@ $(function () {
             return label;
         });
         self.navbarTitle = ko.pureComputed(function () {
+            if (self.navbarTransferActive()) {
+                return self.navbarTransfer().summary + " · " + self.navbarTransfer().detail;
+            }
             if (!self.state().supported) return self.connectionText();
             var details = self.activeToolText();
             return self.navbarMmuActive() ? details + " · " + self.navbarMmuText() : details;
+        });
+        self.navbarIconClass = ko.pureComputed(function () {
+            if (self.navbarTransferActive()) return self.navbarTransfer().icon;
+            return self.mmuDetected() ? "fa-random" : "fa-tools";
         });
         self.navbarToolRows = ko.pureComputed(function () {
             var state = self.state();
@@ -396,7 +484,7 @@ $(function () {
             if (!fw.status || fw.status === "idle") return "No firmware staged.";
             if (fw.status === "queued") return "Waiting for the printer USB queue; no firmware bytes have been sent yet.";
             if (fw.status === "canceling") return "Canceling the queued transfer before any firmware bytes are sent.";
-            if (fw.status === "staged") return "Verified on printer USB. Ready for explicit flash.";
+            if (fw.status === "staged") return "Verified in the printer's protected FWUPD.RME stage. Ready for explicit flash.";
             if (fw.status === "flashing") return "Bootloader handoff requested; the printer should reboot.";
             if (fw.status === "uploading") return "Sending " + formatBytes(fw.offset || 0) + " of " + formatBytes(fw.size || 0) +
                 (fw.flash_after_stage ? "; flashing automatically after verification." : ".");
@@ -794,13 +882,30 @@ $(function () {
         self.uploadStorage = function () {
             var file = self.pendingStorageUpload();
             if (!file) return;
-            OctoPrint.postForm("plugin/rme_compatibility/storage/upload", {
-                file: file, path: self.storage().path || "/"
-            }).done(function (response) {
+            self.storageUploadProgress(0);
+            self.storageUploadActive(true);
+            OctoPrint.postForm(
+                "plugin/rme_compatibility/storage/upload",
+                {file: file, path: self.storage().path || "/"},
+                {xhr: function () {
+                    var request = $.ajaxSettings.xhr();
+                    if (request.upload) {
+                        request.upload.addEventListener("progress", function (event) {
+                            if (event.lengthComputable) {
+                                self.storageUploadProgress(event.total ? event.loaded * 100 / event.total : 0);
+                            }
+                        });
+                    }
+                    return request;
+                }}
+            ).done(function (response) {
+                self.storageUploadProgress(100);
+                self.storageUploadActive(false);
                 self.pendingStorageUpload(null);
                 self.acceptState(response);
                 new PNotify({title: "Uploaded to printer USB", text: file.name, type: "success"});
             }).fail(function (xhr) {
+                self.storageUploadActive(false);
                 new PNotify({title: "Printer USB upload failed", text: responseError(xhr), type: "error", hide: false});
             });
         };

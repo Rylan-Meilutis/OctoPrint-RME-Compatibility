@@ -269,7 +269,7 @@
             </div>
             <p data-bind="text: firmwareStatus"></p>
             <div class="alert alert-error" data-bind="visible: firmwareError, text: firmwareError"></div>
-            <p class="help-block">Delete from Pi removes the selected uploaded BBF. To remove a BBF already on the printer, use Delete in the Printer USB storage browser above.</p>
+            <p class="help-block">Choose the BBF in the “Firmware on Pi” list, then use Stage or Stage and flash. Current firmware protects a verified stage as hidden <code>/usb/FWUPD.RME</code>, so it will not appear as a selectable BBF in the printer USB browser. Delete from Pi only removes the source copy.</p>
         </div>
     </div>
 </form>

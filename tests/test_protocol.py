@@ -76,6 +76,12 @@ class ProtocolTests(unittest.TestCase):
             "preferred_baud": 1000000,
             "fallback_baud": "250000,230400,115200",
         })
+        self.assertEqual(parse_line(
+            "RME_SESSION lease=1 printer_state=idle legacy=0"
+        ), {
+            "record": "session", "lease": 1,
+            "printer_state": "idle", "legacy": 0,
+        })
 
 
     def test_parses_prompt_toolmap_and_upload_records(self):

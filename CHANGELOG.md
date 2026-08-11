@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.0b27 — 2026-08-11
+
+- Added live firmware and printer-file transfer status to the RME/MMU navbar
+  item, including compact percentage text, operation-specific icons, detailed
+  hover/dropdown text, and a dropdown progress bar.
+- Navbar progress covers browser-to-OctoPrint firmware/file uploads,
+  OctoPrint-to-printer firmware/file uploads, printer-to-Pi downloads,
+  verification, flashing, and restart handoff states.
+- Kept exclusive ownership of OctoPrint's serial writer for the complete raw
+  upload, paced CDC frame boundaries, and extended stale-NACK draining so
+  background queries cannot corrupt a binary firmware transfer.
+- Matched RME firmware build 8's renamed session lease and protected
+  `FWUPD.RME` staging/explicit-flash contract.
+
 ## 0.1.0b26 — 2026-08-10
 
 - Fixed pipelined binary recovery counting NACKs from already-in-flight frames

@@ -120,7 +120,7 @@ class RmeFileService(object):
                 self._records.append(dict(record))
             self._condition.notify_all()
 
-    def _wait_for_binary_quiet(self, quiet=0.15, timeout=2.0):
+    def _wait_for_binary_quiet(self, quiet=0.5, timeout=3.0):
         """Drain responses from a failed in-flight raw window before retrying."""
         deadline = time.monotonic() + timeout
         with self._condition:

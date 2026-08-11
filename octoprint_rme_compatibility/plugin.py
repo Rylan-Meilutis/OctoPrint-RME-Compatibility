@@ -913,7 +913,10 @@ class RmeCompatibilityPlugin(
                 if serial_port is None or not callable(getattr(serial_port, "write", None)):
                     raise RuntimeError("OctoPrint raw serial transport is unavailable")
                 while True:
-                    pending = session["queue"].get(timeout=65)
+                    # Hold OctoPrint's writer until COMPLETE/ABORTED queues the
+                    # sentinel. Releasing it on a timeout lets ordinary line
+                    # traffic corrupt firmware's active raw-frame decoder.
+                    pending = session["queue"].get()
                     if pending is None:
                         return
                     frame = pending["frame"]
@@ -930,6 +933,13 @@ class RmeCompatibilityPlugin(
                                     "OctoPrint raw serial transport made no progress"
                                 )
                             written += count
+                        # Drain each CDC frame boundary and give Buddy's raw
+                        # decoder a small turn without reducing its negotiated
+                        # eight-frame cumulative-ACK window.
+                        flush = getattr(serial_port, "flush", None)
+                        if callable(flush):
+                            flush()
+                        time.sleep(0.001)
                     except Exception as exc:
                         pending["error"] = exc
                     finally:
@@ -1114,9 +1124,12 @@ class RmeCompatibilityPlugin(
                 self._state["session"].update({
                     key: value for key, value in record.items() if key != "record"
                 })
-                self._state["session"]["active"] = bool(record.get("active"))
+                # Build 8 renamed this field to distinguish the RME lease from
+                # actual printer activity. Older firmware remains supported.
+                lease = record.get("lease", record.get("active"))
+                self._state["session"]["active"] = bool(lease)
                 self._state["session"]["legacy"] = bool(record.get("legacy"))
-                if record.get("active"):
+                if lease:
                     follow_up.append("@RME DIALOG QUERY")
                     follow_up.append("refresh_configuration:all")
             elif kind == "event":
@@ -2891,7 +2904,7 @@ class RmeCompatibilityPlugin(
             )
             self._firmware_state_changed(
                 status="staged", offset=metadata["size"], progress=100,
-                staged_path="/usb/FWUPD.BBF",
+                staged_path="/usb/FWUPD.RME",
             )
         except Exception as exc:
             self._logger.exception("RME FILE firmware transfer failed")
@@ -2988,7 +3001,7 @@ class RmeCompatibilityPlugin(
                 and int(self._state["storage"].get("caps", {}).get("flash", 0))
             )
         if use_file_service:
-            self._file_service.mutate("FLASH", "FWUPD.BBF")
+            self._file_service.mutate("FLASH", "FWUPD.RME")
         else:
             self._send_command("M997 /usb/FWUPD.BBF")
         with self._state_lock:

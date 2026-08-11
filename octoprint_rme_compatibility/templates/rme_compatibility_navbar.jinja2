@@ -3,7 +3,7 @@
    data-toggle="dropdown"
    data-bind="attr: {title: navbarTitle, 'aria-label': navbarTitle}">
     <span class="rme-color-dot" data-bind="style: {backgroundColor: activeToolColor}"></span>
-    <i class="fas" data-bind="css: {'fa-random': mmuDetected(), 'fa-tools': !mmuDetected()}"></i>
+    <i class="fas" data-bind="css: navbarIconClass"></i>
     <span class="rme-navbar-label" data-bind="text: navbarCompactText"></span>
     <b class="caret"></b>
 </a>
@@ -17,6 +17,12 @@
                 <small data-bind="text: navbarMmuText"></small>
             </span>
         </a>
+    </li>
+    <li class="rme-navbar-transfer" data-bind="visible: navbarTransferActive">
+        <div class="rme-navbar-transfer-track" data-bind="css: {'rme-indeterminate': navbarTransferIndeterminate}">
+            <span data-bind="style: {width: navbarTransferWidth}"></span>
+        </div>
+        <small data-bind="text: navbarTransfer().summary"></small>
     </li>
     <li class="rme-navbar-actions" data-bind="visible: navbarMmuActionable">
         <strong data-bind="text: promptMessage"></strong>

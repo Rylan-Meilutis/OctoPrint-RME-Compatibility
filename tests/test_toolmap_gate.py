@@ -419,7 +419,7 @@ class ToolmapGateTests(unittest.TestCase):
             self.assertEqual((path, "FWUPD.BBF"), plugin._file_service.upload)
             self.assertEqual("queued", plugin._file_service.status_before_start)
             self.assertEqual("staged", plugin._state["firmware"]["status"])
-            self.assertEqual("/usb/FWUPD.BBF", plugin._state["firmware"]["staged_path"])
+            self.assertEqual("/usb/FWUPD.RME", plugin._state["firmware"]["staged_path"])
 
     def test_current_firmware_flashes_through_file_service(self):
         class FileService(object):
@@ -440,7 +440,7 @@ class ToolmapGateTests(unittest.TestCase):
 
         plugin._flash_firmware()
 
-        self.assertEqual([("FLASH", "FWUPD.BBF")], plugin._file_service.mutations)
+        self.assertEqual([("FLASH", "FWUPD.RME")], plugin._file_service.mutations)
         self.assertEqual([], plugin._printer.command_batches)
         self.assertEqual("flashing", plugin._state["firmware"]["status"])
 
@@ -504,6 +504,12 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])
         self.assertEqual("visible: navbarVisible", navbar["data_bind"])
         with open(
+            "octoprint_rme_compatibility/templates/rme_compatibility_navbar.jinja2"
+        ) as navbar_file:
+            navbar_template = navbar_file.read()
+        self.assertIn("navbarTransferActive", navbar_template)
+        self.assertIn("navbarTransferWidth", navbar_template)
+        with open(
             "octoprint_rme_compatibility/templates/rme_compatibility_settings.jinja2"
         ) as template_file:
             settings_template = template_file.read()
@@ -535,6 +541,9 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("OctoPrint.postForm", javascript)
         self.assertIn('request.upload.addEventListener("progress"', javascript)
         self.assertIn("scheduleCoreWorkflowRender", javascript)
+        self.assertIn("self.navbarTransfer = ko.pureComputed", javascript)
+        self.assertIn("Firmware → printer", javascript)
+        self.assertIn("Printer → Pi", javascript)
         self.assertIn("formatDurationLong", javascript)
         self.assertIn("formatDistance", javascript)
         self.assertIn("applyPersistentLights", javascript)
@@ -913,10 +922,12 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._schedule_publish = lambda: None
 
         plugin._handle_record(parse_line(
-            "RME_SESSION active=1 legacy=0 preferred_baud=1000000 "
+            "RME_SESSION lease=1 printer_state=idle legacy=0 preferred_baud=1000000 "
             "fallback_baud=250000,230400,115200"
         ))
         self.assertEqual(1000000, plugin._state["session"]["preferred_baud"])
+        self.assertTrue(plugin._state["session"]["active"])
+        self.assertEqual("idle", plugin._state["session"]["printer_state"])
         self.assertEqual(
             "250000,230400,115200",
             plugin._state["session"]["fallback_baud"],
