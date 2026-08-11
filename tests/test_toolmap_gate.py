@@ -101,6 +101,7 @@ class _Printer(object):
         self.holds = []
         self.command_batches = []
         self.forced_commands = []
+        self.cancel_calls = []
 
     def set_job_on_hold(self, value, blocking=True):
         self.holds.append(value)
@@ -119,6 +120,9 @@ class _Printer(object):
         self.command_batches.append(commands)
         if force:
             self.forced_commands.append((commands, tags))
+
+    def cancel_print(self, tags=None):
+        self.cancel_calls.append(tags)
 
 
 class _Validator(object):
@@ -145,6 +149,28 @@ class _Comm(object):
 
 
 class ToolmapGateTests(unittest.TestCase):
+    def test_print_and_printer_transfer_ownership_are_mutually_exclusive(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+        plugin._logger = logging.getLogger("rme-transfer-print-exclusion-test")
+        plugin._uploader = types.SimpleNamespace(busy=False)
+        plugin._file_service = types.SimpleNamespace(busy=True)
+        plugin._release_toolmap_hold = lambda: None
+
+        plugin.on_event("PrintStarted", {})
+        plugin.on_event("PrintCancelling", {})
+
+        self.assertEqual([True], plugin._printer.holds)
+        self.assertEqual(1, len(plugin._printer.cancel_calls))
+        self.assertEqual([], plugin._printer.command_batches)
+
+        plugin._printer.is_printing = lambda: True
+        plugin._state.update(connected=True, supported=True)
+        with self.assertRaisesRegex(RuntimeError, "while a print is active"):
+            plugin._require_storage()
+        with self.assertRaisesRegex(RuntimeError, "while a print is active"):
+            plugin._require_print_idle("Firmware transfers")
+
     def test_external_spool_provider_exclusively_disables_internal_backend(self):
         class Provider(object):
             def __init__(self, available):

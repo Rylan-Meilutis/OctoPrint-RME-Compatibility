@@ -138,6 +138,7 @@ class FileServiceTests(unittest.TestCase):
         finally:
             os.unlink(source_path)
         self.assertTrue(ended)
+        self.assertEqual(1, service._capabilities["binary"])
         self.assertTrue(any("WRITE_BULK_BEGIN" in command for command in commands))
         self.assertTrue(any("WRITE_BULK_END" in command for command in commands))
 
@@ -258,12 +259,12 @@ class FileServiceTests(unittest.TestCase):
         finally:
             os.unlink(source_path)
         chunks = [command for command in commands if "WRITE_BULK_CHUNK" in command]
-        self.assertEqual(5, len(chunks))
+        self.assertEqual(9, len(chunks))
         self.assertLessEqual(max(
             len(base64.b64decode(command.split("data=", 1)[1]))
             for command in chunks
-        ), 320)
-        self.assertLess(max(map(len, chunks)), 512)
+        ), 192)
+        self.assertLess(max(map(len, chunks)), 320)
         self.assertTrue(any("WRITE_BULK_END" in command for command in commands))
 
     def test_paths_cannot_escape_usb_root(self):

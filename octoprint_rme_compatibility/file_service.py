@@ -13,12 +13,13 @@ from urllib.parse import quote
 FILE_CHUNK_SIZE = 48
 BULK_CHUNK_SIZE = 384
 BULK_WINDOW_SIZE = 4
-# Firmware accepts a 384-byte decoded Base64 chunk, but the complete command
-# then grows beyond 550 characters. OctoPrint's line-oriented command path and
-# third-party serial hooks are not all safe above 512 characters. Keep the
-# encoded command below that boundary; firmware still acknowledges each
-# four-command window cumulatively.
-OCTOPRINT_SAFE_BULK_CHUNK_SIZE = 320
+# Firmware accepts a 384-byte decoded Base64 chunk, but OctoPrint can pipeline
+# four long commands before their ``ok`` replies. Some CDC/Marlin paths have
+# duplicated or truncated those bursts even when each individual command was
+# just below 512 characters. Keep each fallback line near 300 characters and
+# pace submission; the raw binary transport remains the preferred fast path.
+OCTOPRINT_SAFE_BULK_CHUNK_SIZE = 192
+BULK_COMMAND_PACING_SECONDS = 0.01
 
 
 class FileServiceError(RuntimeError):
@@ -135,7 +136,8 @@ class RmeFileService(object):
                 self._condition.wait(min(quiet_remaining, remaining))
 
     def _exchange(
-        self, command, expected, timeout=None, terminal=None, respect_cancel=True
+        self, command, expected, timeout=None, terminal=None, respect_cancel=True,
+        send_delay=0,
     ):
         """Send a command and return all records through its terminal reply."""
         expected = set(expected if isinstance(expected, (tuple, list, set)) else [expected])
@@ -146,13 +148,15 @@ class RmeFileService(object):
             self._active = True
         try:
             commands = command if isinstance(command, (tuple, list)) else [command]
-            for item in commands:
+            for index, item in enumerate(commands):
                 if isinstance(item, bytes):
                     if not self.send_binary:
                         raise FileServiceError("Raw printer transport is unavailable")
                     self.send_binary(item)
                 else:
                     self.send_command(item)
+                if send_delay and index + 1 < len(commands):
+                    time.sleep(send_delay)
             deadline = time.monotonic() + (timeout or self.response_timeout)
             with self._condition:
                 while not any(
@@ -298,7 +302,6 @@ class RmeFileService(object):
                         if self._cancel.is_set():
                             raise
                         self._abort_binary_transport()
-                        self._capabilities["binary"] = 0
                         if self.logger:
                             self.logger.warning(
                                 "RME binary upload failed; retrying with text transport: %s",
@@ -529,6 +532,7 @@ class RmeFileService(object):
                 records = self._exchange(
                     commands, "file_bulk_ack",
                     terminal=lambda item, target=expected_offset: int(item.get("offset", -1)) >= target,
+                    send_delay=BULK_COMMAND_PACING_SECONDS,
                 )
                 acknowledged = int(self._terminal(records, "file_bulk_ack")["offset"])
                 if acknowledged != expected_offset:

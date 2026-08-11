@@ -110,6 +110,7 @@ class RmeCompatibilityPlugin(
         self._transaction = int(time.time() * 1000) & 0xFFFFFFFF or 1
         self._suppressed_refresh_transactions = {}
         self._provider_firmware_signature = None
+        self._transfer_conflict_cancel = False
 
     @staticmethod
     def _empty_state():
@@ -714,10 +715,12 @@ class RmeCompatibilityPlugin(
 
     # A separate multipart route is needed for browser-to-Pi BBF upload.
     @octoprint.plugin.BlueprintPlugin.route("/firmware", methods=["POST"])
+    @api_errors
     def upload_firmware(self):
         """Store one browser-uploaded BBF and return machine-readable errors."""
         if not Permissions.CONTROL.can():
             flask.abort(403)
+        self._require_print_idle("Firmware uploads")
         uploaded = flask.request.files.get("file")
         upload_path_suffix = self._settings.global_get(
             ["server", "uploads", "pathSuffix"]
@@ -805,6 +808,7 @@ class RmeCompatibilityPlugin(
                 self._state["active_tool"] = self._empty_state()["active_tool"]
                 self._suppressed_refresh_transactions.clear()
                 self._provider_firmware_signature = None
+                self._transfer_conflict_cancel = False
             self._publish()
             self._send_command("@RME MACHINE QUERY")
             self._defer(self._sync_spoolmanager, True)
@@ -826,8 +830,12 @@ class RmeCompatibilityPlugin(
                 )
                 self._suppressed_refresh_transactions.clear()
                 self._provider_firmware_signature = None
+                self._transfer_conflict_cancel = False
             self._publish()
         elif event == Events.PRINT_STARTED:
+            if self._printer_transfer_active():
+                self._stop_print_started_during_transfer()
+                return
             with self._state_lock:
                 self._priority_controls_sent.clear()
                 self._firmware_completed_controls.clear()
@@ -839,6 +847,10 @@ class RmeCompatibilityPlugin(
                 if self._preflight_gate_started and not self._print_job_gcode_sent:
                     self._skip_cancel_script = True
             self._release_toolmap_hold()
+            with self._state_lock:
+                transfer_conflict = self._transfer_conflict_cancel
+            if transfer_conflict:
+                return
             self._request_priority_control("cancel")
         elif event == Events.PRINT_PAUSED:
             # Fallback for pause configurations that do not enqueue a tagged
@@ -853,6 +865,7 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 self._priority_controls_sent.clear()
                 self._firmware_completed_controls.clear()
+                self._transfer_conflict_cancel = False
             self._defer(self._resume_background_queries)
 
     def gcode_received_hook(self, comm_instance, line, *args, **kwargs):
@@ -1015,6 +1028,9 @@ class RmeCompatibilityPlugin(
         loop starts, including when another plugin calls ``start_print``.
         """
         if script_type == "gcode" and script_name == "beforePrintStarted":
+            if self._printer_transfer_active():
+                self._stop_print_started_during_transfer()
+                return None
             with self._state_lock:
                 self._preflight_gate_started = True
                 self._print_job_gcode_sent = False
@@ -1638,6 +1654,44 @@ class RmeCompatibilityPlugin(
             return bool(self._printer.is_printing() or self._printer.is_paused())
         except Exception:
             return False
+
+    def _require_print_idle(self, operation="This operation"):
+        """Reject printer-storage and firmware work during an active print."""
+        if self._print_job_active():
+            raise UploadError("%s are unavailable while a print is active" % operation)
+
+    def _printer_transfer_active(self):
+        """Return whether a new print must yield to transfer/flash ownership."""
+        with self._state_lock:
+            firmware_status = self._state["firmware"].get("status")
+        return bool(
+            (self._uploader and self._uploader.busy)
+            or (self._file_service and self._file_service.busy)
+            or firmware_status in (
+                "queued", "canceling", "starting", "uploading", "verifying",
+                "flashing", "restarting",
+            )
+        )
+
+    def _stop_print_started_during_transfer(self):
+        """Hold and cancel a print that raced an existing transfer or flash."""
+        with self._state_lock:
+            if self._transfer_conflict_cancel:
+                return
+            self._transfer_conflict_cancel = True
+        try:
+            self._printer.set_job_on_hold(True, blocking=False)
+        except Exception:
+            self._logger.debug("Could not hold conflicting print before cancel", exc_info=True)
+        self._logger.warning(
+            "Canceling print start because an RME file/firmware operation is active"
+        )
+        try:
+            self._printer.cancel_print(tags={"plugin:rme_compatibility", "rme:transfer_conflict"})
+        except TypeError:
+            self._printer.cancel_print()
+        except Exception:
+            self._logger.exception("Could not cancel print conflicting with active transfer")
 
     def _probe_stats(self):
         """Probe statistics support only while the serial job queue is idle."""
@@ -2772,6 +2826,12 @@ class RmeCompatibilityPlugin(
         if not remote_name:
             return None
         start_callback(filename, remote_name)
+        if self._print_job_active():
+            self._logger.warning(
+                "Rejecting printer USB upload because a print is active"
+            )
+            failure_callback(filename, remote_name, 0)
+            return remote_name
 
         def transfer():
             started = time.monotonic()
@@ -2826,8 +2886,7 @@ class RmeCompatibilityPlugin(
 
     def _start_firmware_upload(self, filename, flash_after_stage=False):
         """Stage a BBF through FILE on current firmware or legacy M998."""
-        if self._printer.is_printing() or self._printer.is_paused():
-            raise UploadError("Firmware transfer is only allowed while the printer is idle")
+        self._require_print_idle("Firmware transfers")
         if not self._state.get("supported"):
             raise UploadError("The connected printer did not complete the RME handshake")
         path = self._firmware_path(filename)
@@ -2991,8 +3050,7 @@ class RmeCompatibilityPlugin(
             self._open_session()
 
     def _flash_firmware(self):
-        if self._printer.is_printing() or self._printer.is_paused():
-            raise UploadError("Firmware flashing is only allowed while the printer is idle")
+        self._require_print_idle("Firmware flashing")
         with self._state_lock:
             if self._state["firmware"].get("status") != "staged":
                 raise UploadError("Stage and verify firmware on the printer before flashing")
@@ -3012,6 +3070,7 @@ class RmeCompatibilityPlugin(
 
     def _delete_firmware(self, filename):
         """Remove one explicitly selected BBF from the plugin's Pi storage."""
+        self._require_print_idle("Firmware actions")
         if (self._uploader and self._uploader.busy) or (
             self._firmware_file_thread and self._firmware_file_thread.is_alive()
         ):

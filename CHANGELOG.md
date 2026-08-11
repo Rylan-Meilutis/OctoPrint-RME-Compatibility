@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0b28 — 2026-08-11
+
+- Prevented corrupted bulk-fallback bursts by limiting Base64 payloads to 192
+  bytes and pacing the firmware's four-command cumulative-ACK window.
+- A recoverable binary-transfer failure now applies only to that operation;
+  later uploads retry the preferred fast binary transport instead of remaining
+  downgraded to bulk mode until OctoPrint restarts.
+- Made print jobs and printer file/firmware operations mutually exclusive:
+  active prints reject storage and firmware actions, while a print that races
+  an active transfer or flash is held and canceled without injecting a serial
+  cancel command into the transfer stream.
+
 ## 0.1.0b27 — 2026-08-11
 
 - Added live firmware and printer-file transfer status to the RME/MMU navbar

@@ -82,8 +82,11 @@ and `doc/gcode/M998.md`.
   Paths are percent-encoded and cannot escape the printer's user-visible USB
   volume.
 - Hooks OctoPrint's standard SD-card upload action and replaces M28/M29
-  streaming with acknowledged, atomic RME FILE transfers when FILE WRITE is
-  advertised. OctoPrint still receives its normal transfer lifecycle callbacks.
+streaming with acknowledged, atomic RME FILE transfers when FILE WRITE is
+advertised. OctoPrint still receives its normal transfer lifecycle callbacks.
+Printer storage and firmware operations are rejected while a print is active;
+if a print races an operation that already owns the transfer channel, the print
+is held and canceled without inserting print-control G-code into that channel.
 - Accepts signed `.bbf` files up to 32 MiB on the Pi. Current RME firmware
   accepts the compatible `FWUPD.BBF` wire name but protects the verified file
   as hidden `/usb/FWUPD.RME` until an explicit RME FILE FLASH request hands it
@@ -213,8 +216,10 @@ Beta tags use OctoPrint-safe PEP 440 versions such as `v0.1.0b1` and
 Firmware storage on the Pi, transfer to printer USB, and flashing remain
 separately controllable, and a combined **Stage and flash** action performs the
 last two in one click while still waiting for printer-side verification before
-bootloader handoff. Transfer and flashing are rejected while a
-print is active or paused. The plugin verifies the Pi copy before transfer and
+bootloader handoff. Uploads, downloads, storage mutations, firmware staging,
+and flashing are rejected while a print is active or paused. Conversely, a
+print that starts while one of those operations owns the printer is canceled.
+The plugin verifies the Pi copy before transfer and
 the printer verifies the declared byte count and SHA-256 before publishing its
 protected `/usb/FWUPD.RME` stage. The Prusa bootloader remains responsible for signature,
 printer-model, and compatibility checks.
