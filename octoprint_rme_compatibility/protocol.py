@@ -162,6 +162,15 @@ def parse_line(raw_line):
         result["name"] = unquote(str(result.get("name", "")))
         return result
     for prefix, record in (
+        ("RME_LIGHT_STATE ", "light_state"),
+        ("RME_LIGHT_POLICY ", "light_policy"),
+        ("RME_LIGHT_LIVE ", "light_live"),
+    ):
+        if line.startswith(prefix):
+            result = parse_fields(line[len(prefix) :])
+            result["record"] = record
+            return result
+    for prefix, record in (
         ("RME_MACHINE ", "machine"),
         ("RME_ENVELOPE ", "envelope"),
         ("RME_LIMITS ", "limits"),

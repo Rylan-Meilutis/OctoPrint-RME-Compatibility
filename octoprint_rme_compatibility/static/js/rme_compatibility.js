@@ -34,6 +34,7 @@ $(function () {
         self.activeDownloadJobId = null;
         self.nativeFilesKey = "";
         self.fileManagerBridgeInstalled = false;
+        self.octoprintFirmwareEntry = ko.observable(null);
         self.selectedFirmware = ko.observable();
         self.mappingRows = ko.observableArray([]);
         self.mappingEnabled = ko.observable(true);
@@ -67,6 +68,7 @@ $(function () {
         });
         self.providerSyncNotice = null;
         self.providerSyncNoticeKey = "";
+        self.lightSnapshotKey = "";
         self.persistentLightProfiles = [
             makeLightProfile("screen", "Screen", 20, 20, 100, 60),
             makeLightProfile("chamber", "Chamber", 20, 20, 100, 100),
@@ -261,12 +263,29 @@ $(function () {
         });
         self.currentLightsText = ko.pureComputed(function () {
             var light = self.state().light || {};
+            var live = light.live || {};
             var values = [];
-            if (light.screen_print !== undefined) values.push("screen " + light.screen_print + "%");
-            if (light.chamber_print !== undefined) values.push("chamber " + light.chamber_print + "%");
-            if (light.status_print !== undefined) values.push("status " + light.status_print + "%");
-            if (light.screen_persistent !== undefined) values.push("saved screen " + light.screen_persistent + "%");
+            if (live.state) {
+                values.push(String(live.state).replace(/_/g, " "));
+                if (Number(live.screen) >= 0) values.push("screen " + live.screen + "%");
+                if (Number(live.chamber) >= 0) values.push("chamber " + live.chamber + "%");
+            } else {
+                if (Number(light.screen_print) >= 0) values.push("screen " + light.screen_print + "%");
+                if (Number(light.chamber_print) >= 0) values.push("chamber " + light.chamber_print + "%");
+            }
+            if (light.status_print !== undefined && Number(light.status_print) >= 0) values.push("print status " + light.status_print + "%");
             return values.length ? values.join(" · ") : "Not reported yet";
+        });
+        self.lightPolicyText = ko.pureComputed(function () {
+            var policy = (self.state().light || {}).policy || {};
+            var values = [];
+            if (policy.activity_timeout_s !== undefined) values.push("activity " + formatDurationLong(policy.activity_timeout_s));
+            if (policy.event_timeout_s !== undefined) values.push("event " + formatDurationLong(policy.event_timeout_s));
+            if (policy.off_timeout_s !== undefined) values.push("off " + formatDurationLong(policy.off_timeout_s));
+            if (policy.status_finished_hold_s !== undefined) values.push("finished status " + formatDurationLong(policy.status_finished_hold_s));
+            if (policy.door_holds_active !== undefined) values.push(Number(policy.door_holds_active) ? "door keeps lights active" : "door hold disabled");
+            if (policy.post_print_hold !== undefined) values.push(Number(policy.post_print_hold) ? "post-print hold enabled" : "post-print hold disabled");
+            return values.join(" · ");
         });
         self.navbarTransfer = ko.pureComputed(function () {
             var state = self.state();
@@ -638,6 +657,24 @@ $(function () {
                 if (screen >= 0 && self.lightScreen() !== screen) self.lightScreen(screen);
                 if (chamber >= 0 && self.lightChamber() !== chamber) self.lightChamber(chamber);
                 if (status >= 0 && self.lightStatus() !== status) self.lightStatus(status);
+                if (Number(value.light.schema) >= 2) {
+                    var snapshotKey = [value.light.screen, value.light.chamber, value.light.status,
+                        value.light.screen_supported, value.light.chamber_supported,
+                        value.light.status_supported].join(":");
+                    if (snapshotKey !== self.lightSnapshotKey) {
+                        self.lightSnapshotKey = snapshotKey;
+                        var packed = {
+                            screen: Number(value.light.screen) || 0,
+                            chamber: Number(value.light.chamber) || 0,
+                            status: Number(value.light.status) || 0
+                        };
+                        ko.utils.arrayForEach(self.persistentLightProfiles, function (profile) {
+                            var supported = !!Number(value.light[profile.key + "_supported"]);
+                            profile.supported(supported);
+                            applyPackedBrightness(profile, packed[profile.key]);
+                        });
+                    }
+                }
             }
             var pending = value.spoolmanager && value.spoolmanager.pending_new;
             var pendingKey = pending ? [pending.tool, pending.material, pending.color].join(":") : "";
@@ -740,6 +777,14 @@ $(function () {
             if (window.confirm("Stage, verify, and flash this firmware in one operation? The printer will reboot only after the transfer is verified.")) {
                 self.command("stage_and_flash_firmware", {filename: self.selectedFirmware()});
             }
+        };
+        self.stageOctoprintFirmware = function (flashAfterStage) {
+            var entry = self.octoprintFirmwareEntry();
+            if (!entry || !entry.path) return;
+            var command = flashAfterStage ?
+                "stage_and_flash_octoprint_firmware" : "stage_octoprint_firmware";
+            ensureOctoprintFirmwareDialog().modal("hide");
+            self.command(command, {path: entry.path});
         };
         self.cancelFirmware = function () { self.command("cancel_firmware"); };
         self.unstageFirmware = function () {
@@ -1044,14 +1089,18 @@ $(function () {
             self.fileManagerBridgeInstalled = true;
             var originalFromResponse = self.files.fromResponse;
             self.files.fromResponse = function (response, params) {
+                var result;
                 if (!(self.state().supported && self.storage().supported)) {
-                    return originalFromResponse.call(self.files, response, params);
+                    result = originalFromResponse.call(self.files, response, params);
+                } else {
+                    var merged = $.extend({}, response);
+                    merged.files = (response.files || []).filter(function (entry) {
+                        return entry.origin !== "sdcard";
+                    }).concat(nativeFileTree());
+                    result = originalFromResponse.call(self.files, merged, params);
                 }
-                var merged = $.extend({}, response);
-                merged.files = (response.files || []).filter(function (entry) {
-                    return entry.origin !== "sdcard";
-                }).concat(nativeFileTree());
-                return originalFromResponse.call(self.files, merged, params);
+                window.setTimeout(decorateOctoprintFirmwareEntries, 0);
+                return result;
             };
             var originalDownloadLink = self.files.downloadLink;
             self.files.downloadLink = function (entry) {
@@ -1098,6 +1147,56 @@ $(function () {
                         path: "/" + String(entry.path).replace(/^\//, ""), name: entry.name
                     });
                 });
+            $(document).off("click.rmeLocalFirmware", "#files .rme-local-firmware-action")
+                .on("click.rmeLocalFirmware", "#files .rme-local-firmware-action", function (event) {
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                    var entry = ko.dataFor($(this).closest(".entry, li")[0]);
+                    if (!isOctoprintFirmwareEntry(entry)) return;
+                    self.octoprintFirmwareEntry(entry);
+                    ensureOctoprintFirmwareDialog().find(".rme-firmware-name")
+                        .text(entry.display || entry.name || entry.path);
+                    ensureOctoprintFirmwareDialog().modal("show");
+                });
+        }
+
+        function isOctoprintFirmwareEntry(entry) {
+            return !!entry && entry.origin === "local" && entry.type !== "folder" &&
+                /\.bbf$/i.test(String(entry.path || entry.name || ""));
+        }
+
+        function decorateOctoprintFirmwareEntries() {
+            $("#files .entry, #files li").each(function () {
+                var row = $(this);
+                var entry = ko.dataFor(this);
+                if (!isOctoprintFirmwareEntry(entry) || row.find(".rme-local-firmware-action").length) return;
+                var host = row.find(".btn-group").last();
+                if (!host.length) host = row;
+                $('<button type="button" class="btn btn-mini rme-local-firmware-action" title="Firmware actions"><i class="fa fa-microchip"></i> Firmware</button>')
+                    .appendTo(host);
+            });
+        }
+
+        function ensureOctoprintFirmwareDialog() {
+            var dialog = $("#rme-octoprint-firmware-dialog");
+            if (dialog.length) return dialog;
+            dialog = $(
+                '<div id="rme-octoprint-firmware-dialog" class="modal hide fade" tabindex="-1">' +
+                '<div class="modal-header"><button type="button" class="close" data-dismiss="modal">&times;</button><h3>Printer firmware</h3></div>' +
+                '<div class="modal-body"><p class="rme-firmware-name"></p><p>Use this BBF from OctoPrint’s local Files storage. The guarded RME transfer remains blocked while printing or while another printer transfer owns the latch.</p></div>' +
+                '<div class="modal-footer"><button class="btn" data-dismiss="modal">Cancel</button>' +
+                '<button class="btn rme-fw-stage">Upload candidate</button>' +
+                '<button class="btn btn-danger rme-fw-flash">Upload and flash…</button></div></div>'
+            ).appendTo(document.body);
+            dialog.find(".rme-fw-stage").on("click", function () {
+                self.stageOctoprintFirmware(false);
+            });
+            dialog.find(".rme-fw-flash").on("click", function () {
+                if (window.confirm("Upload, verify, and hand this firmware to the bootloader? The printer will reboot only after verification.")) {
+                    self.stageOctoprintFirmware(true);
+                }
+            });
+            return dialog;
         }
 
         function scheduleCoreWorkflowRender() {
@@ -1205,9 +1304,17 @@ $(function () {
     function makeLightProfile(key, label, deepIdle, idle, active, printing) {
         return {
             key: key, label: label,
+            supported: ko.observable(true),
             deepIdle: ko.observable(deepIdle), idle: ko.observable(idle),
             active: ko.observable(active), printing: ko.observable(printing)
         };
+    }
+    function applyPackedBrightness(profile, packed) {
+        var value = Number(packed) >>> 0;
+        profile.deepIdle((value >>> 24) & 0xff);
+        profile.idle((value >>> 16) & 0xff);
+        profile.active((value >>> 8) & 0xff);
+        profile.printing(value & 0xff);
     }
     function packBrightness(profile) {
         function byte(value) { return Math.max(0, Math.min(100, Number(value) || 0)); }

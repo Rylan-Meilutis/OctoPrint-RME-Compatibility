@@ -616,6 +616,10 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("applyPersistentLights", javascript)
         self.assertIn("stageAndFlashFirmware", javascript)
         self.assertIn("unstageFirmware", javascript)
+        self.assertIn("stage_octoprint_firmware", javascript)
+        self.assertIn("rme-local-firmware-action", javascript)
+        self.assertIn("applyPackedBrightness", javascript)
+        self.assertIn("lightPolicyText", javascript)
         self.assertIn("Filament resynchronization required", javascript)
         self.assertIn("MMU · idle", javascript)
         self.assertIn("deleteFirmware", javascript)
@@ -625,6 +629,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("Download to Pi", settings_template)
         self.assertIn("Download to device", settings_template)
         self.assertIn("storageDownloadWidth", settings_template)
+        self.assertIn("Schema 2 firmware", settings_template)
         self.assertIn('"plugin/rme_compatibility/storage/upload"', javascript)
         self.assertIn("octoprint.printer.sdcardupload", __import__(
             "octoprint_rme_compatibility.plugin", fromlist=["__plugin_hooks__"]
@@ -687,6 +692,26 @@ class ToolmapGateTests(unittest.TestCase):
             self.assertEqual("coreone_6.5.7-RME.bbf", response["file"]["name"])
             with open(os.path.join(firmware_directory, response["file"]["name"]), "rb") as stored:
                 self.assertEqual(b"signed-bbf-test", stored.read())
+
+    def test_standard_octoprint_file_can_start_guarded_firmware_workflow(self):
+        with tempfile.TemporaryDirectory() as local_directory:
+            firmware = os.path.join(local_directory, "coreone-current.bbf")
+            with open(firmware, "wb") as stream:
+                stream.write(b"signed-bbf-test")
+            plugin = RmeCompatibilityPlugin()
+            plugin._file_manager = types.SimpleNamespace(
+                path_on_disk=lambda origin, path: firmware
+            )
+            started = []
+            plugin._start_firmware_path = lambda path, flash_after_stage=False: started.append(
+                (path, flash_after_stage)
+            )
+
+            plugin._start_octoprint_firmware_upload(
+                "updates/coreone-current.bbf", flash_after_stage=True
+            )
+
+            self.assertEqual([(firmware, True)], started)
 
     def test_package_declares_python_compatibility_before_import(self):
         """OctoPrint's AST preflight must see compatibility in __init__.py."""
@@ -1105,6 +1130,33 @@ class ToolmapGateTests(unittest.TestCase):
 
         plugin._unstage_firmware()
         self.assertEqual([("DELETE", "FWUPD.RME")], plugin._file_service.mutations)
+
+    def test_schema_two_lighting_snapshot_is_aggregated_without_polling(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        records = [
+            "RME_LIGHT screen_persistent=60 chamber_print=100 screen_print=60 "
+            "status_print=100 schema=2 screen_supported=1 chamber_supported=1 "
+            "status_supported=1 screen=336862780 chamber=336862820 status=336862820",
+            "RME_LIGHT_STATE state=deep_idle screen=20 chamber=20 status=20",
+            "RME_LIGHT_STATE state=idle screen=20 chamber=20 status=20",
+            "RME_LIGHT_STATE state=active screen=100 chamber=100 status=100",
+            "RME_LIGHT_STATE state=printing screen=60 chamber=100 status=100",
+            "RME_LIGHT_POLICY activity_timeout_s=120 event_timeout_s=300 "
+            "off_timeout_s=120 door_holds_active=1 post_print_hold=1 "
+            "status_finished_hold_s=300",
+            "RME_LIGHT_LIVE state=idle screen=20 chamber=20 print_screen=60 "
+            "print_chamber=100 print_status=100",
+        ]
+        for line in records:
+            plugin._handle_record(parse_line(line))
+
+        light = plugin._state["light"]
+        self.assertEqual(2, light["schema"])
+        self.assertEqual(60, light["states"]["printing"]["screen"])
+        self.assertEqual(300, light["policy"]["event_timeout_s"])
+        self.assertEqual("idle", light["live"]["state"])
+        self.assertEqual(20, light["live"]["chamber"])
 
     def test_configuration_changes_drive_domain_refresh_without_polling(self):
         plugin = RmeCompatibilityPlugin()

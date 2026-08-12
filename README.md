@@ -96,6 +96,9 @@ is held and canceled without inserting print-control G-code into that channel.
   `M997 /usb/FWUPD.BBF` fallback.
   Legacy M998 commands include a nonnumeric parser sentinel required by the
   original handler to retain its complete phase/offset argument body.
+- Adds firmware actions to `.BBF` entries in OctoPrint's standard local Files
+  sidebar, so an existing OctoPrint file can be uploaded as a verified
+  candidate or uploaded and flashed without making a second browser upload.
 
 The plugin always uses OctoPrint's serialized printer command queue. It never
 opens a competing serial descriptor, suppresses normal Marlin responses, or

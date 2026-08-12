@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.0b37 — 2026-08-12
+
+- Started current-firmware raw uploads at a reliable 512-byte CDC boundary and
+  immediately reduce/cap the payload after reasoned CRC or oversize NACKs.
+  Stale offset-mismatch responses from an already-sent window no longer hide
+  the diagnostic that should drive recovery.
+- Added Upload candidate and Upload and flash actions to `.BBF` entries in
+  OctoPrint's standard local Files sidebar. These use the same print/transfer
+  exclusion, verification, progress, recovery, and explicit flash workflow as
+  firmware selected in RME settings.
+- Parsed the current firmware's schema-2 lighting state matrix, live state, and
+  timeout policy while preserving event-driven refresh behavior and avoiding
+  periodic configuration polling.
+- Added `FIRMWARE_UPSTREAM_REQUIRED_FIXES.md`, validated against firmware
+  `0702267843`, covering raw-parser resynchronization, abort/reconnect recovery,
+  authoritative candidate/bootloader-stage reporting, unstage, shared latches,
+  and free-air INDEX PA calibration followed by pellet-forming wiping.
+
 ## 0.1.0b36 — 2026-08-12
 
 - Added an idempotent “Unstage from printer” action that removes only the

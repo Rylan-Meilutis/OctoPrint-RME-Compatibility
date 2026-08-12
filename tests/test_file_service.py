@@ -77,8 +77,8 @@ class FileServiceTests(unittest.TestCase):
 
     def test_repeated_binary_nack_reduces_raw_chunk_before_fallback(self):
         service = None
-        # Large enough to prove adaptation: start at the negotiated 1024-byte
-        # maximum, then reduce after repeated NACKs on a marginal path.
+        # Large enough to prove adaptation: start at the safe 512-byte CDC
+        # boundary, then reduce after repeated NACKs on a marginal path.
         source_data = bytes(range(256)) * 512
         committed = bytearray()
         window = []
@@ -137,8 +137,75 @@ class FileServiceTests(unittest.TestCase):
             os.unlink(source_path)
 
         self.assertEqual(source_data, bytes(committed))
-        self.assertIn(1024, payload_sizes)
         self.assertIn(512, payload_sizes)
+        self.assertIn(256, payload_sizes)
+
+    def test_reasoned_crc_nack_reduces_chunk_immediately_and_stays_reduced(self):
+        service = None
+        source_data = bytes(range(256)) * 96
+        committed = bytearray()
+        window = []
+        rejected = [False]
+        payload_sizes = []
+
+        def send(command):
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb write=1 binary=1 "
+                    "binary_chunk=1024 binary_window=8"
+                ))
+            elif "WRITE_BINARY_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_READY offset=0 chunk=1024 window=8 "
+                    "header=10 endian=little crc=crc32"
+                ))
+
+        def send_binary(frame):
+            offset, length, _ = struct.unpack("<IHI", frame[:10])
+            payload = frame[10:]
+            if not payload:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_COMPLETE path=FWUPD.BBF"
+                ))
+                return
+            payload_sizes.append(length)
+            window.append((offset, payload))
+            if len(window) == 8 or offset + length == len(source_data):
+                if not rejected[0]:
+                    rejected[0] = True
+                    service.handle_response(parse_line(
+                        "RME_FILE_BINARY_NACK offset=0 reason=crc_mismatch"
+                    ))
+                    service.handle_response(parse_line(
+                        "RME_FILE_BINARY_NACK offset=0 reason=offset_mismatch"
+                    ))
+                else:
+                    for frame_offset, frame_payload in window:
+                        self.assertEqual(len(committed), frame_offset)
+                        committed.extend(frame_payload)
+                    service.handle_response(parse_line(
+                        "RME_FILE_BINARY_ACK offset=%d" % len(committed)
+                    ))
+                window[:] = []
+
+        service = RmeFileService(
+            send, response_timeout=1, send_binary=send_binary,
+            begin_binary=lambda: "@RME FILE RAW_SESSION token=" + "9" * 32,
+            end_binary=lambda: None,
+        )
+        service._wait_for_binary_quiet = lambda: None
+        with tempfile.NamedTemporaryFile(delete=False) as source:
+            source.write(source_data)
+            source_path = source.name
+        try:
+            service.write_file(source_path, "FWUPD.BBF")
+        finally:
+            os.unlink(source_path)
+
+        self.assertEqual(source_data, bytes(committed))
+        self.assertEqual(512, payload_sizes[0])
+        self.assertIn(256, payload_sizes)
+        self.assertEqual(256, payload_sizes[-1])
 
     def test_binary_upload_uses_crc_frames_and_recovers_from_nack(self):
         service = None

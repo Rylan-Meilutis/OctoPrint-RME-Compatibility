@@ -230,15 +230,16 @@
             <table class="table table-condensed rme-light-table">
                 <thead><tr><th>Light</th><th>Deep idle</th><th>Idle</th><th>Active</th><th>Printing</th></tr></thead>
                 <tbody data-bind="foreach: persistentLightProfiles"><tr>
-                    <th data-bind="text: label"></th>
-                    <td><input class="input-mini" type="number" min="0" max="100" data-bind="value: deepIdle">%</td>
-                    <td><input class="input-mini" type="number" min="0" max="100" data-bind="value: idle">%</td>
-                    <td><input class="input-mini" type="number" min="0" max="100" data-bind="value: active">%</td>
-                    <td><input class="input-mini" type="number" min="0" max="100" data-bind="value: printing">%</td>
+                    <th><span data-bind="text: label"></span> <small data-bind="visible: !supported()">unsupported</small></th>
+                    <td><input class="input-mini" type="number" min="0" max="100" data-bind="value: deepIdle, enable: supported">%</td>
+                    <td><input class="input-mini" type="number" min="0" max="100" data-bind="value: idle, enable: supported">%</td>
+                    <td><input class="input-mini" type="number" min="0" max="100" data-bind="value: active, enable: supported">%</td>
+                    <td><input class="input-mini" type="number" min="0" max="100" data-bind="value: printing, enable: supported">%</td>
                 </tr></tbody>
             </table>
             <button type="button" class="btn btn-primary" data-bind="click: applyPersistentLights, enable: state().supported">Save lighting profiles</button>
-            <p class="help-block">The current firmware reports live print brightness but not the complete saved four-state matrix. Review all draft values before saving.</p>
+            <p class="help-block" data-bind="visible: lightPolicyText, text: lightPolicyText"></p>
+            <p class="help-block">Schema 2 firmware supplies the complete saved four-state matrix, channel support, live state, and timeout policy. Older firmware retains the legacy print-light controls.</p>
         </div>
     </div>
     <hr>

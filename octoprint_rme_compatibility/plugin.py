@@ -399,6 +399,8 @@ class RmeCompatibilityPlugin(
             "set_filament": ["slot", "name", "nozzle", "preheat", "bed", "visible"],
             "stage_firmware": ["filename"],
             "stage_and_flash_firmware": ["filename"],
+            "stage_octoprint_firmware": ["path"],
+            "stage_and_flash_octoprint_firmware": ["path"],
             "unstage_firmware": [],
             "cancel_firmware": [],
             "flash_firmware": [],
@@ -550,6 +552,12 @@ class RmeCompatibilityPlugin(
             self._start_firmware_upload(data["filename"])
         elif command == "stage_and_flash_firmware":
             self._start_firmware_upload(data["filename"], flash_after_stage=True)
+        elif command == "stage_octoprint_firmware":
+            self._start_octoprint_firmware_upload(data["path"])
+        elif command == "stage_and_flash_octoprint_firmware":
+            self._start_octoprint_firmware_upload(
+                data["path"], flash_after_stage=True
+            )
         elif command == "unstage_firmware":
             self._unstage_firmware()
         elif command == "cancel_firmware":
@@ -1331,8 +1339,31 @@ class RmeCompatibilityPlugin(
                     "mapping": record["mapping"],
                 }
                 self._refresh_active_tool_locked()
-            elif kind in ("lock", "theme", "light"):
+            elif kind in ("lock", "theme"):
                 self._state[kind] = {
+                    key: value for key, value in record.items() if key != "record"
+                }
+            elif kind == "light":
+                light = {
+                    key: value for key, value in record.items() if key != "record"
+                }
+                if int(light.get("schema", 1)) >= 2:
+                    light.update(states={}, policy={}, live={})
+                self._state["light"] = light
+            elif kind == "light_state":
+                state_name = str(record.get("state", ""))
+                if state_name in ("deep_idle", "idle", "active", "printing"):
+                    states = self._state.setdefault("light", {}).setdefault("states", {})
+                    states[state_name] = {
+                        key: value for key, value in record.items()
+                        if key not in ("record", "state")
+                    }
+            elif kind == "light_policy":
+                self._state.setdefault("light", {})["policy"] = {
+                    key: value for key, value in record.items() if key != "record"
+                }
+            elif kind == "light_live":
+                self._state.setdefault("light", {})["live"] = {
                     key: value for key, value in record.items() if key != "record"
                 }
             elif kind == "stats":
@@ -3056,11 +3087,36 @@ class RmeCompatibilityPlugin(
 
     def _start_firmware_upload(self, filename, flash_after_stage=False):
         """Stage a BBF through FILE on current firmware or legacy M998."""
+        path = self._firmware_path(filename)
+        if not os.path.isfile(path):
+            raise UploadError("Firmware file was not found on the Pi")
+        self._start_firmware_path(path, flash_after_stage=flash_after_stage)
+
+    def _start_octoprint_firmware_upload(self, path, flash_after_stage=False):
+        """Stage a BBF selected in OctoPrint's standard local Files list."""
+        logical_path = str(path or "").replace("\\", "/").lstrip("/")
+        if (
+            not logical_path
+            or not logical_path.lower().endswith(".bbf")
+            or any(part in ("", ".", "..") for part in logical_path.split("/"))
+        ):
+            raise UploadError("Select a valid local .BBF firmware file")
+        try:
+            disk_path = self._file_manager.path_on_disk("local", logical_path)
+        except Exception as exc:
+            raise UploadError("OctoPrint firmware file was not found") from exc
+        if not disk_path or not os.path.isfile(disk_path):
+            raise UploadError("OctoPrint firmware file was not found")
+        self._start_firmware_path(
+            disk_path, flash_after_stage=flash_after_stage
+        )
+
+    def _start_firmware_path(self, path, flash_after_stage=False):
+        """Start the guarded firmware workflow for one trusted local BBF."""
         self._require_print_idle("Firmware transfers")
         if not self._state.get("supported"):
             raise UploadError("The connected printer did not complete the RME handshake")
-        path = self._firmware_path(filename)
-        if not os.path.isfile(path):
+        if not str(path).lower().endswith(".bbf") or not os.path.isfile(path):
             raise UploadError("Firmware file was not found on the Pi")
         metadata = firmware_metadata(path)
         with self._firmware_action_lock:

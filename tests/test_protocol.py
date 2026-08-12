@@ -160,6 +160,21 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(parse_line(
             "RME_FIRMWARE_RESTART reconnect=1"
         ), {"record": "firmware_restart", "reconnect": 1})
+        self.assertEqual(parse_line(
+            "RME_LIGHT_STATE state=deep_idle screen=20 chamber=20 status=20"
+        ), {
+            "record": "light_state", "state": "deep_idle",
+            "screen": 20, "chamber": 20, "status": 20,
+        })
+        self.assertEqual(parse_line(
+            "RME_LIGHT_POLICY activity_timeout_s=120 event_timeout_s=300 "
+            "off_timeout_s=120 door_holds_active=1 post_print_hold=1 "
+            "status_finished_hold_s=300"
+        )["record"], "light_policy")
+        self.assertEqual(parse_line(
+            "RME_LIGHT_LIVE state=idle screen=20 chamber=20 print_screen=60 "
+            "print_chamber=100 print_status=100"
+        )["record"], "light_live")
 
     def test_terminal_workflow_state_dismisses_remote_prompt(self):
         self.assertTrue(workflow_is_terminal({"state": "closed"}))

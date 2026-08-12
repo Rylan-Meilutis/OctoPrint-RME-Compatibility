@@ -498,10 +498,14 @@ class RmeFileService(object):
             65535,
             max(1, int(ready.get("chunk", self._capabilities.get("binary_chunk", 1024)))),
         )
-        # Current firmware advertises the largest frame its CDC receiver and
-        # storage pipeline accept. Start on that fast path and retain the
-        # existing adaptive backoff for a marginal host/USB path.
-        chunk_size = negotiated_chunk_size
+        # The current Buddy endpoint advertises 1024 bytes, but field traces
+        # show occasional header/CRC loss at that exact boundary followed by a
+        # bogus oversized-length discard. 512-byte payloads retain the raw
+        # protocol's throughput advantage while fitting safely inside common
+        # CDC packet/FIFO boundaries. Never climb back above a size that has
+        # produced a reasoned NACK during this upload.
+        chunk_size = min(512, negotiated_chunk_size)
+        adaptive_ceiling = chunk_size
         window_size = min(
             64,
             max(1, int(ready.get("window", self._capabilities.get("binary_window", 8)))),
@@ -528,27 +532,49 @@ class RmeFileService(object):
                 records = self._exchange(
                     frames, ("file_binary_ack", "file_binary_nack"),
                 )
-                response = next(
-                    item for item in reversed(records)
+                responses = [
+                    item for item in records
                     if item.get("record") in ("file_binary_ack", "file_binary_nack")
-                )
-                acknowledged = int(response.get("offset", -1))
+                ]
+                # A bad frame in a pipelined window is followed by stale
+                # offset_mismatch NACKs for frames already in flight. Preserve
+                # the first diagnostic reason instead of allowing the last
+                # stale response to hide crc_mismatch/chunk_too_large.
+                nacks = [item for item in responses if item["record"] == "file_binary_nack"]
+                if nacks:
+                    response = nacks[0]
+                    acknowledged = min(int(item.get("offset", -1)) for item in nacks)
+                    reasons = {
+                        str(item.get("reason") or "").lower() for item in nacks
+                    }
+                else:
+                    response = responses[-1]
+                    acknowledged = int(response.get("offset", -1))
+                    reasons = set()
                 if not offset <= acknowledged <= expected_offset:
                     raise FileServiceError("Printer returned an invalid binary upload offset")
-                if response["record"] == "file_binary_nack":
+                if nacks:
                     successful_windows = 0
                     retries += 1
-                    if acknowledged == rejected_offset and retries >= 2 and chunk_size > 256:
+                    reasoned_failure = bool(
+                        reasons.intersection(("crc_mismatch", "chunk_too_large"))
+                    )
+                    repeated_failure = acknowledged == rejected_offset and retries >= 2
+                    if (reasoned_failure or repeated_failure) and chunk_size > 256:
                         # Repeating the identical maximum-size frame cannot
                         # recover from a marginal CDC packet boundary. Smaller
                         # raw frames retain the firmware-advertised cumulative
                         # window while reducing each USB write atomically.
                         chunk_size = max(256, chunk_size // 2)
+                        adaptive_ceiling = min(adaptive_ceiling, chunk_size)
                         if self.logger:
                             self.logger.warning(
-                                "RME binary upload NACK repeated at offset %d; "
-                                "reducing raw chunk to %d bytes",
-                                acknowledged, chunk_size,
+                                "RME binary upload NACK at offset %d (%s); "
+                                "reducing and capping raw chunk at %d bytes",
+                                acknowledged,
+                                ",".join(sorted(reason for reason in reasons if reason))
+                                or "unreported",
+                                chunk_size,
                             )
                     rejected_offset = acknowledged
                     if retries > 6:
@@ -570,8 +596,8 @@ class RmeFileService(object):
                 rejected_offset = None
                 offset = acknowledged
                 successful_windows += 1
-                if chunk_size < negotiated_chunk_size and successful_windows >= 16:
-                    chunk_size = min(negotiated_chunk_size, chunk_size * 2)
+                if chunk_size < adaptive_ceiling and successful_windows >= 16:
+                    chunk_size = min(adaptive_ceiling, chunk_size * 2)
                     successful_windows = 0
                     if self.logger:
                         self.logger.info(
