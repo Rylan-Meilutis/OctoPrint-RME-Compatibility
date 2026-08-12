@@ -259,9 +259,10 @@
         <label class="control-label">Firmware on Pi</label>
         <div class="controls">
             <select data-bind="options: firmwareFiles, optionsText: firmwareLabel, optionsValue: 'name', value: selectedFirmware, optionsCaption: 'Choose firmware on Pi'"></select>
-            <button type="button" class="btn btn-primary" data-bind="click: stageFirmware, enable: canStage">Stage on printer</button>
-            <button type="button" class="btn btn-danger" data-bind="click: stageAndFlashFirmware, enable: canStage">Stage and flash…</button>
+            <button type="button" class="btn btn-primary" data-bind="click: stageFirmware, enable: canStage">Upload candidate</button>
+            <button type="button" class="btn btn-danger" data-bind="click: stageAndFlashFirmware, enable: canStage">Upload and flash…</button>
             <button type="button" class="btn btn-danger" data-bind="click: flashFirmware, enable: canFlash">Flash and reboot…</button>
+            <button type="button" class="btn" data-bind="click: unstageFirmware, enable: canUnstage">Unstage from printer…</button>
             <button type="button" class="btn" data-bind="click: deleteFirmware, enable: selectedFirmware() && !firmwareBusy()">Delete from Pi…</button>
             <button type="button" class="btn" data-bind="click: cancelFirmware, visible: firmwareBusy">Cancel transfer</button>
             <div class="progress" data-bind="visible: firmwareActive">
@@ -274,7 +275,7 @@
                 Power-cycle the printer. RME command, file, and firmware traffic is locked until reboot recovery is confirmed.
                 <button type="button" class="btn btn-warning" data-bind="click: confirmPrinterReboot">I rebooted the printer</button>
             </div>
-            <p class="help-block">Choose the BBF in the “Firmware on Pi” list, then use Stage or Stage and flash. Current firmware protects and verifies the upload as hidden <code>/usb/FWUPD.RME</code>; it deliberately will not appear in the printer's BBF picker. After Stage, use “Flash and reboot” here to send the required FILE FLASH command. Delete from Pi only removes the source copy.</p>
+            <p class="help-block">Choose the BBF in the “Firmware on Pi” list, then upload it or upload and flash. Current firmware protects and verifies the candidate as hidden <code>/usb/FWUPD.RME</code>, but it is not armed for the bootloader until the explicit FILE FLASH handoff. Unstage removes only that protected candidate; Delete from Pi removes only the source copy. Ordinary BBFs downloaded by Prusa Connect are never treated as staged updates.</p>
         </div>
     </div>
 </form>

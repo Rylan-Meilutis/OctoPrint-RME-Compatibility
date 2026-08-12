@@ -111,6 +111,7 @@ class RmeCompatibilityPlugin(
         self._suppressed_refresh_transactions = {}
         self._provider_firmware_signature = None
         self._transfer_conflict_cancel = False
+        self._firmware_handoff_started_at = 0
 
     @staticmethod
     def _empty_state():
@@ -210,7 +211,7 @@ class RmeCompatibilityPlugin(
         persisted = self._store.load()
         with self._state_lock:
             for key in (
-                "machine", "toolmap", "workflow", "prompt",
+                "machine", "toolmap",
                 "spoolmanager", "loaded_filaments", "active_tool", "internal_spools",
                 "stats",
             ):
@@ -230,8 +231,9 @@ class RmeCompatibilityPlugin(
                         "the reboot in RME settings. No RME commands will be sent."
                     ),
                 )
-            elif persisted_firmware.get("status") == "staged":
+            elif persisted_firmware.get("status") in ("ready", "staged"):
                 self._state["firmware"].update(persisted_firmware)
+                self._state["firmware"]["status"] = "ready"
                 self._state["firmware"]["error"] = None
             # A one-click flash request is deliberately process-local. Never
             # carry a bootloader handoff intent across an OctoPrint restart.
@@ -397,6 +399,7 @@ class RmeCompatibilityPlugin(
             "set_filament": ["slot", "name", "nozzle", "preheat", "bed", "visible"],
             "stage_firmware": ["filename"],
             "stage_and_flash_firmware": ["filename"],
+            "unstage_firmware": [],
             "cancel_firmware": [],
             "flash_firmware": [],
             "confirm_printer_reboot": [],
@@ -547,6 +550,8 @@ class RmeCompatibilityPlugin(
             self._start_firmware_upload(data["filename"])
         elif command == "stage_and_flash_firmware":
             self._start_firmware_upload(data["filename"], flash_after_stage=True)
+        elif command == "unstage_firmware":
+            self._unstage_firmware()
         elif command == "cancel_firmware":
             if self._uploader:
                 self._uploader.cancel()
@@ -829,6 +834,11 @@ class RmeCompatibilityPlugin(
                 self._state["loaded_filaments"] = []
                 self._state["manufacturers"] = {"profiles": [], "loaded": []}
                 self._state["active_tool"] = self._empty_state()["active_tool"]
+                # Workflow records are connection-local. Replaying a persisted
+                # firmware handoff after reconnect can claim that USB is about
+                # to disappear even though no current M997 is running.
+                self._state["workflow"] = None
+                self._state["prompt"] = None
                 self._suppressed_refresh_transactions.clear()
                 self._provider_firmware_signature = None
                 self._transfer_conflict_cancel = False
@@ -883,6 +893,11 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 transfer_conflict = self._transfer_conflict_cancel
             if transfer_conflict:
+                # The transfer interlock uses a direct OctoPrint job hold,
+                # separate from the tool-map hold tracked above. Release it so
+                # OctoPrint can drain its cancel transition and leave
+                # Cancelling instead of wedging the send loop indefinitely.
+                self._release_transfer_conflict_hold()
                 return
             self._request_priority_control("cancel")
         elif event == Events.PRINT_PAUSED:
@@ -1208,6 +1223,31 @@ class RmeCompatibilityPlugin(
                 lease = record.get("lease", record.get("active"))
                 self._state["session"]["active"] = bool(lease)
                 self._state["session"]["legacy"] = bool(record.get("legacy"))
+                # A fresh session record is authoritative printer state. If
+                # the printer remains connected and IDLE after a claimed
+                # firmware handoff, no bootloader restart is in progress.
+                # Clear that stale handoff before it can cancel a new print.
+                printer_state = str(record.get("printer_state", "")).upper()
+                firmware_status = self._state["firmware"].get("status")
+                workflow = self._state.get("workflow") or {}
+                if (
+                    printer_state == "IDLE"
+                    and (
+                        firmware_status in ("flashing", "restarting")
+                        or (
+                            firmware_status == "flash_queued"
+                            and self._firmware_handoff_started_at
+                            and time.monotonic() - self._firmware_handoff_started_at >= 5
+                        )
+                    )
+                    and not self._state["firmware"].get("recovery_required")
+                ):
+                    self._state["firmware"] = self._empty_state()["firmware"]
+                    if workflow.get("workflow") == "firmware_update":
+                        self._state["workflow"] = None
+                    self._transfer_conflict_cancel = False
+                    self._firmware_handoff_started_at = 0
+                    follow_up.append("release_transfer_conflict")
                 # KEEPALIVE returns the same session record every ten seconds.
                 # Only the inactive -> active transition needs the discovery
                 # snapshot; treating every acknowledgement as a new session
@@ -1307,6 +1347,7 @@ class RmeCompatibilityPlugin(
                     "values": values,
                 }
             elif kind == "firmware_restart":
+                self._firmware_handoff_started_at = time.monotonic()
                 self._state["firmware"].update(
                     status="restarting", error=None,
                     reconnect_expected=bool(record.get("reconnect", 0)),
@@ -1414,6 +1455,8 @@ class RmeCompatibilityPlugin(
                 self._schedule_manufacturer_profile_sync()
             elif item == "probe_stats":
                 self._defer(self._probe_stats)
+            elif item == "release_transfer_conflict":
+                self._defer(self._release_transfer_conflict_hold)
             elif item.startswith("refresh_configuration:"):
                 self._schedule_configuration_refresh(item.split(":", 1)[1])
             else:
@@ -1787,7 +1830,7 @@ class RmeCompatibilityPlugin(
             or (self._file_service and self._file_service.busy)
             or firmware_status in (
                 "queued", "canceling", "starting", "uploading", "verifying",
-                "flashing", "restarting",
+                "flash_queued", "flashing", "restarting",
             )
             or recovery_required
         )
@@ -1811,6 +1854,13 @@ class RmeCompatibilityPlugin(
             self._printer.cancel_print()
         except Exception:
             self._logger.exception("Could not cancel print conflicting with active transfer")
+
+    def _release_transfer_conflict_hold(self):
+        """Release a pre-start hold after firmware proves no handoff exists."""
+        try:
+            self._printer.set_job_on_hold(False, blocking=False)
+        except Exception:
+            self._logger.debug("Could not release stale transfer-conflict hold", exc_info=True)
 
     def _probe_stats(self):
         """Probe statistics support only while the serial job queue is idle."""
@@ -2715,6 +2765,7 @@ class RmeCompatibilityPlugin(
             caps = {key: value for key, value in caps.items() if key != "record"}
             with self._state_lock:
                 self._state["storage"].update(supported=True, caps=caps)
+            self._reconcile_firmware_stage()
             self._refresh_storage("/")
             self._refresh_native_storage_files()
         except Exception as exc:
@@ -3086,7 +3137,7 @@ class RmeCompatibilityPlugin(
                     "Printer did not confirm the protected firmware stage"
                 )
             self._firmware_state_changed(
-                status="staged", offset=metadata["size"], progress=100,
+                status="ready", offset=metadata["size"], progress=100,
                 staged_path="/usb/FWUPD.RME",
             )
         except Exception as exc:
@@ -3120,6 +3171,74 @@ class RmeCompatibilityPlugin(
                 )
                 self._disconnect_for_transport_recovery()
 
+    def _clear_staged_firmware_state(self):
+        """Forget only candidate/handoff state and stale firmware workflow."""
+        with self._state_lock:
+            if self._state["firmware"].get("status") in (
+                "ready", "staged", "flash_queued", "flashing", "restarting"
+            ):
+                self._state["firmware"] = self._empty_state()["firmware"]
+            workflow = self._state.get("workflow") or {}
+            if workflow.get("workflow") == "firmware_update":
+                self._state["workflow"] = None
+                if (self._state.get("prompt") or {}).get("kind") == "firmware":
+                    self._state["prompt"] = None
+
+    def _reconcile_firmware_stage(self):
+        """Validate plugin provenance without inferring stage from a file."""
+        with self._state_lock:
+            claimed_stage = self._state["firmware"].get("status") in ("ready", "staged")
+        if not claimed_stage:
+            # Current firmware has no idle bootloader-stage status record. A
+            # file on USB is therefore insufficient evidence to promote the
+            # UI into staged state.
+            return False
+        try:
+            staged = self._file_service.stat("FWUPD.RME")
+        except FileServiceError as exc:
+            if str(exc).endswith("not_found"):
+                self._clear_staged_firmware_state()
+                self._persist_and_publish()
+                return False
+            raise
+        if staged.get("type") != "file":
+            self._clear_staged_firmware_state()
+            self._persist_and_publish()
+            return False
+        with self._state_lock:
+            self._state["firmware"].update(
+                status="ready",
+                size=max(0, int(staged.get("size", 0))),
+                offset=max(0, int(staged.get("size", 0))), progress=100,
+                error=None, staged_path="/usb/FWUPD.RME",
+                reconnect_expected=False,
+            )
+        self._persist_and_publish()
+        return True
+
+    def _unstage_firmware(self):
+        """Delete the protected candidate and clear its durable UI state."""
+        self._require_print_idle("Firmware actions")
+        self._require_storage()
+        with self._firmware_action_lock:
+            if (self._uploader and self._uploader.busy) or (
+                self._firmware_file_thread and self._firmware_file_thread.is_alive()
+            ):
+                raise UploadError("Cannot unstage firmware during a transfer")
+            try:
+                staged = self._file_service.stat("FWUPD.RME")
+            except FileServiceError as exc:
+                if not str(exc).endswith("not_found"):
+                    raise
+                staged = None
+            if staged is not None:
+                if staged.get("type") != "file":
+                    raise UploadError("Protected firmware stage is not a regular file")
+                self._file_service.mutate("DELETE", "FWUPD.RME")
+            self._clear_staged_firmware_state()
+            self._persist_and_publish()
+            self._defer(self._refresh_storage_after_change, "/")
+
     def _firmware_file_progress(self, offset, size):
         self._firmware_state_changed(
             status="uploading", offset=offset,
@@ -3145,9 +3264,9 @@ class RmeCompatibilityPlugin(
         if status != "uploading" or now - self._last_fw_publish >= 0.25:
             self._last_fw_publish = now
             self._persist_and_publish()
-        if status == "staged" and flash_after_stage:
+        if status == "ready" and flash_after_stage:
             self._defer(self._flash_after_verified_stage)
-        elif status == "staged" or (status == "error" and not recovery_required):
+        elif status == "ready" or (status == "error" and not recovery_required):
             self._defer(self._restore_session_after_upload)
         if error_to_clear and not recovery_required:
             timer = threading.Timer(
@@ -3183,7 +3302,7 @@ class RmeCompatibilityPlugin(
             return
         with self._state_lock:
             requested = bool(self._state["firmware"].get("flash_after_stage"))
-            staged = self._state["firmware"].get("status") == "staged"
+            staged = self._state["firmware"].get("status") == "ready"
             self._state["firmware"]["flash_after_stage"] = False
         if requested and staged:
             self._flash_firmware()
@@ -3206,8 +3325,8 @@ class RmeCompatibilityPlugin(
     def _flash_firmware(self):
         self._require_print_idle("Firmware flashing")
         with self._state_lock:
-            if self._state["firmware"].get("status") != "staged":
-                raise UploadError("Stage and verify firmware on the printer before flashing")
+            if self._state["firmware"].get("status") not in ("ready", "staged"):
+                raise UploadError("Upload and verify firmware on the printer before flashing")
             use_file_service = bool(
                 self._state["storage"].get("supported")
                 and int(self._state["storage"].get("caps", {}).get("flash", 0))
@@ -3218,8 +3337,10 @@ class RmeCompatibilityPlugin(
             self._send_command("M997 /usb/FWUPD.BBF")
         with self._state_lock:
             self._state["firmware"].update(
-                status="flashing", error=None, flash_after_stage=False
+                status="flash_queued", error=None, flash_after_stage=False,
+                reconnect_expected=False,
             )
+            self._firmware_handoff_started_at = time.monotonic()
         self._persist_and_publish()
 
     def _delete_firmware(self, filename):
@@ -3242,13 +3363,13 @@ class RmeCompatibilityPlugin(
         with self._state_lock:
             snapshot = copy.deepcopy(
                 {key: self._state[key] for key in (
-                    "machine", "toolmap", "workflow", "prompt", "spoolmanager",
+                    "machine", "toolmap", "spoolmanager",
                     "loaded_filaments", "active_tool", "internal_spools", "stats",
                 )}
             )
             firmware = copy.deepcopy(self._state["firmware"])
             if (
-                firmware.get("status") != "staged"
+                firmware.get("status") != "ready"
                 and not firmware.get("recovery_required")
             ):
                 firmware = self._empty_state()["firmware"]

@@ -53,14 +53,14 @@ class UploaderTests(unittest.TestCase):
 
         def changed(**update):
             states.append(update)
-            if update.get("status") in ("staged", "error"):
+            if update.get("status") in ("ready", "error"):
                 finished.set()
 
         uploader = FirmwareUploader(simulator.send, changed, response_timeout=1)
         simulator.uploader = uploader
         uploader.start(str(firmware), firmware_metadata(str(firmware)))
         self.assertTrue(finished.wait(3))
-        self.assertEqual(states[-1]["status"], "staged")
+        self.assertEqual(states[-1]["status"], "ready")
         self.assertEqual(bytes(simulator.received), content)
         self.assertTrue(simulator.commands[0].startswith("M998 _ P0"))
         self.assertEqual(simulator.commands[-1], "M998 _ P2")

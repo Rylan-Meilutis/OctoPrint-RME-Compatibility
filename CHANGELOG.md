@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.0b36 — 2026-08-12
+
+- Added an idempotent “Unstage from printer” action that removes only the
+  protected `FWUPD.RME` candidate and preserves firmware files stored on the
+  Pi and ordinary BBFs downloaded by Prusa Connect.
+- Stopped persisting connection-local workflow/prompt records and reconcile a
+  restored protected candidate only when the plugin already has upload
+  provenance; arbitrary USB firmware files are never promoted into update state.
+- Renamed the pre-flash state from “staged” to “ready”: a verified
+  `FWUPD.RME` candidate is not described as bootloader-staged until firmware
+  actually confirms the M997 restart handoff.
+- Distinguished a queued FILE FLASH acknowledgement from the firmware's actual
+  `RME_FIRMWARE_RESTART` confirmation. A later authoritative
+  `RME_SESSION ... printer_state=IDLE` clears a stale handoff instead of
+  canceling a valid print.
+- Released the direct transfer-conflict job hold during cancellation, allowing
+  OctoPrint to leave `Cancelling` after an interlocked print start.
+- Allowed long firmware workflow messages to wrap in the top workflow strip so
+  their status, progress, and elapsed time remain readable on narrow screens.
+- Documented the upstream `RME_FIRMWARE` status/unstage protocol needed for the
+  firmware to distinguish a verified candidate from an armed bootloader update.
+
 ## 0.1.0b35 — 2026-08-12
 
 - Matched the current firmware's durable, cross-transport upload-resume

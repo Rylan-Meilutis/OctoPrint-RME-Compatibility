@@ -138,7 +138,7 @@ class FirmwareUploader(object):
             self.state_changed(status="verifying", offset=size, progress=100)
             self._exchange("M998 _ P2", "upload_complete", timeout=60)
             self.state_changed(
-                status="staged", offset=size, progress=100, staged_path="/usb/FWUPD.BBF"
+                status="ready", offset=size, progress=100, staged_path="/usb/FWUPD.BBF"
             )
         except Exception as exc:
             try:

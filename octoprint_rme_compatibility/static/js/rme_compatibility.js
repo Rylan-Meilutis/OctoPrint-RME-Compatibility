@@ -273,7 +273,7 @@ $(function () {
             var firmware = state.firmware || {};
             var storage = state.storage || {};
             var download = storage.download || {};
-            var firmwareStatuses = ["queued", "canceling", "starting", "uploading", "verifying", "flashing", "restarting"];
+            var firmwareStatuses = ["queued", "canceling", "starting", "uploading", "verifying", "flash_queued", "flashing", "restarting"];
             var progress;
             function numericProgress(value) {
                 if (value === null || value === undefined || value === "") return null;
@@ -293,7 +293,8 @@ $(function () {
                 var firmwareLabels = {
                     queued: "Firmware queued", canceling: "Canceling firmware transfer",
                     starting: "Starting firmware transfer", uploading: "Firmware → printer",
-                    verifying: "Verifying firmware", flashing: "Flashing firmware",
+                    verifying: "Verifying firmware", flash_queued: "Firmware flash queued",
+                    flashing: "Flashing firmware",
                     restarting: "Printer restarting"
                 };
                 var firmwareLabel = firmwareLabels[firmware.status] || "Firmware update";
@@ -493,18 +494,20 @@ $(function () {
         self.firmwareBusy = ko.pureComputed(function () {
             return ["queued", "canceling", "starting", "uploading", "verifying"].indexOf(self.firmware().status) >= 0;
         });
-        self.firmwareActive = ko.pureComputed(function () { return self.firmwareBusy() || self.firmware().status === "staged"; });
+        self.firmwareActive = ko.pureComputed(function () { return self.firmwareBusy() || self.firmware().status === "ready"; });
         self.firmwareError = ko.pureComputed(function () {
             return self.firmware().status === "error" ? (self.firmware().error || "") : "";
         });
         self.firmwareStatus = ko.pureComputed(function () {
             var fw = self.firmware();
             if (fw.recovery_required) return "Communication locked. Power-cycle the printer, then confirm the reboot below. No RME commands or printer file actions will be sent until recovery is confirmed.";
-            if (!fw.status || fw.status === "idle") return "No firmware staged.";
+            if (!fw.status || fw.status === "idle") return "No firmware candidate uploaded.";
             if (fw.status === "queued") return "Waiting for the printer USB queue; no firmware bytes have been sent yet.";
             if (fw.status === "canceling") return "Canceling the queued transfer before any firmware bytes are sent.";
-            if (fw.status === "staged") return "Verified in the printer's protected FWUPD.RME stage. It is intentionally hidden from the printer's BBF picker; use Flash and reboot here.";
+            if (fw.status === "ready") return "Firmware candidate verified as protected FWUPD.RME. It is not armed for the bootloader; use Flash and reboot to request installation.";
+            if (fw.status === "flash_queued") return "Flash command queued; waiting for the printer to confirm the bootloader restart.";
             if (fw.status === "flashing") return "Bootloader handoff requested; the printer should reboot.";
+            if (fw.status === "restarting") return "Printer confirmed the firmware restart; waiting for USB to reconnect.";
             if (fw.status === "uploading") return "Sending " + formatBytes(fw.offset || 0) + " of " + formatBytes(fw.size || 0) +
                 (fw.flash_after_stage ? "; flashing automatically after verification." : ".");
             if (fw.status === "verifying" && fw.flash_after_stage) return "Verifying on printer; flash will start automatically after success.";
@@ -512,9 +515,10 @@ $(function () {
         });
         self.canStage = ko.pureComputed(function () {
             return !!self.selectedFirmware() && self.state().supported &&
-                !self.firmwareBusy() && self.firmware().status !== "flashing";
+                !self.firmwareBusy() && ["flash_queued", "flashing", "restarting"].indexOf(self.firmware().status) < 0;
         });
-        self.canFlash = ko.pureComputed(function () { return self.firmware().status === "staged"; });
+        self.canFlash = ko.pureComputed(function () { return ["ready", "staged"].indexOf(self.firmware().status) >= 0; });
+        self.canUnstage = ko.pureComputed(function () { return ["ready", "staged"].indexOf(self.firmware().status) >= 0; });
 
         self.hasMachine = ko.pureComputed(function () {
             var machine = self.state().machine || {};
@@ -738,6 +742,11 @@ $(function () {
             }
         };
         self.cancelFirmware = function () { self.command("cancel_firmware"); };
+        self.unstageFirmware = function () {
+            if (window.confirm("Remove the staged firmware from the printer? The BBF stored on this Pi will be kept.")) {
+                self.command("unstage_firmware");
+            }
+        };
         self.confirmPrinterReboot = function () {
             if (window.confirm("Confirm that the printer itself was power-cycled or rebooted? RME communication will be unlocked.")) {
                 self.command("confirm_printer_reboot");

@@ -60,6 +60,7 @@ def _install_octoprint_stubs():
 _install_octoprint_stubs()
 
 from octoprint_rme_compatibility.plugin import RmeCompatibilityPlugin
+from octoprint_rme_compatibility.file_service import FileServiceError
 from octoprint_rme_compatibility.protocol import parse_line
 
 
@@ -164,7 +165,7 @@ class ToolmapGateTests(unittest.TestCase):
         plugin.on_event("PrintStarted", {})
         plugin.on_event("PrintCancelling", {})
 
-        self.assertEqual([True], plugin._printer.holds)
+        self.assertEqual([True, False], plugin._printer.holds)
         self.assertEqual(1, len(plugin._printer.cancel_calls))
         self.assertEqual([], plugin._printer.command_batches)
 
@@ -394,10 +395,10 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual([], plugin._printer.command_batches)
 
         plugin._firmware_state_changed(
-            status="staged", progress=100, staged_path="/usb/FWUPD.BBF"
+            status="ready", progress=100, staged_path="/usb/FWUPD.BBF"
         )
         self.assertEqual(["M997 /usb/FWUPD.BBF"], plugin._printer.command_batches)
-        self.assertEqual("flashing", plugin._state["firmware"]["status"])
+        self.assertEqual("flash_queued", plugin._state["firmware"]["status"])
         self.assertFalse(plugin._state["firmware"]["flash_after_stage"])
 
     def test_current_firmware_stages_bbf_through_file_service(self):
@@ -456,7 +457,7 @@ class ToolmapGateTests(unittest.TestCase):
             self.assertEqual((path, "FWUPD.BBF"), plugin._file_service.upload)
             self.assertEqual("FWUPD.RME", plugin._file_service.assert_remote_path)
             self.assertEqual("queued", plugin._file_service.status_before_start)
-            self.assertEqual("staged", plugin._state["firmware"]["status"])
+            self.assertEqual("ready", plugin._state["firmware"]["status"])
             self.assertEqual("/usb/FWUPD.RME", plugin._state["firmware"]["staged_path"])
 
     def test_current_firmware_flashes_through_file_service(self):
@@ -471,7 +472,7 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._printer = _Printer()
         plugin._file_service = FileService()
         plugin._persist_and_publish = lambda: None
-        plugin._state["firmware"]["status"] = "staged"
+        plugin._state["firmware"]["status"] = "ready"
         plugin._state["storage"].update(
             supported=True, caps={"write": 1, "flash": 1}
         )
@@ -480,7 +481,7 @@ class ToolmapGateTests(unittest.TestCase):
 
         self.assertEqual([("FLASH", "FWUPD.RME")], plugin._file_service.mutations)
         self.assertEqual([], plugin._printer.command_batches)
-        self.assertEqual("flashing", plugin._state["firmware"]["status"])
+        self.assertEqual("flash_queued", plugin._state["firmware"]["status"])
 
     def test_sd_upload_hook_uses_verified_rme_file_transfer(self):
         class FileService(object):
@@ -591,6 +592,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("piUploadStatus", settings_template)
         self.assertIn("Theme presets", settings_template)
         self.assertIn("Delete from Pi", settings_template)
+        self.assertIn("Unstage from printer", settings_template)
         self.assertIn("Saved lighting", settings_template)
         self.assertIn("Printer lock", settings_template)
         self.assertIn("Printer USB storage", settings_template)
@@ -613,6 +615,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("formatDistance", javascript)
         self.assertIn("applyPersistentLights", javascript)
         self.assertIn("stageAndFlashFirmware", javascript)
+        self.assertIn("unstageFirmware", javascript)
         self.assertIn("Filament resynchronization required", javascript)
         self.assertIn("MMU · idle", javascript)
         self.assertIn("deleteFirmware", javascript)
@@ -637,6 +640,12 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertNotIn("Firmware update", tab_template)
         self.assertNotIn("RME printer controls", tab_template)
         self.assertIn('"plugin/rme_compatibility/firmware"', javascript)
+        with open(
+            "octoprint_rme_compatibility/static/css/rme_compatibility.css"
+        ) as stylesheet_file:
+            stylesheet = stylesheet_file.read()
+        self.assertIn("overflow-wrap: anywhere", stylesheet)
+        self.assertIn("white-space: normal", stylesheet)
         self.assertNotIn(
             'OctoPrint.postForm(\n                PLUGIN_BASEURL', javascript
         )
@@ -1037,6 +1046,65 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._handle_record(parse_line("RME_FIRMWARE_RESTART reconnect=1"))
         self.assertEqual("restarting", plugin._state["firmware"]["status"])
         self.assertTrue(plugin._state["firmware"]["reconnect_expected"])
+
+        # If USB never leaves and a later authoritative session still says
+        # IDLE, the handoff failed or was stale. It must not cancel a new job.
+        plugin._printer = _Printer()
+        plugin._state["workflow"] = {
+            "workflow": "firmware_update", "state": "restarting",
+            "message": "Firmware staged; USB will reconnect after installation",
+        }
+        plugin._handle_record(dict(session))
+        self.assertEqual("idle", plugin._state["firmware"]["status"])
+        self.assertIsNone(plugin._state["workflow"])
+        self.assertEqual([False], plugin._printer.holds)
+        self.assertFalse(plugin._printer_transfer_active())
+
+    def test_stage_reconciliation_never_promotes_an_unclaimed_usb_file(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._file_service = types.SimpleNamespace(
+            stat=lambda path: {"type": "file", "size": 3921020}
+        )
+        plugin._persist_and_publish = lambda: None
+
+        self.assertFalse(plugin._reconcile_firmware_stage())
+        self.assertEqual("idle", plugin._state["firmware"]["status"])
+
+        plugin._state["firmware"].update(status="ready", size=1)
+        self.assertTrue(plugin._reconcile_firmware_stage())
+        self.assertEqual("ready", plugin._state["firmware"]["status"])
+        self.assertEqual(3921020, plugin._state["firmware"]["size"])
+
+    def test_unstage_deletes_only_the_protected_stage_and_is_idempotent(self):
+        class FileService(object):
+            def __init__(self):
+                self.present = True
+                self.mutations = []
+
+            def stat(self, path):
+                if not self.present:
+                    raise FileServiceError("Printer USB operation failed: not_found")
+                return {"type": "file", "size": 1234}
+
+            def mutate(self, action, path):
+                self.mutations.append((action, path))
+                self.present = False
+
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+        plugin._file_service = FileService()
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["firmware"].update(status="ready", staged_path="/usb/FWUPD.RME")
+        plugin._state["storage"]["supported"] = True
+        plugin._persist_and_publish = lambda: None
+        plugin._defer = lambda callback, *args: None
+
+        plugin._unstage_firmware()
+        self.assertEqual([("DELETE", "FWUPD.RME")], plugin._file_service.mutations)
+        self.assertEqual("idle", plugin._state["firmware"]["status"])
+
+        plugin._unstage_firmware()
+        self.assertEqual([("DELETE", "FWUPD.RME")], plugin._file_service.mutations)
 
     def test_configuration_changes_drive_domain_refresh_without_polling(self):
         plugin = RmeCompatibilityPlugin()
