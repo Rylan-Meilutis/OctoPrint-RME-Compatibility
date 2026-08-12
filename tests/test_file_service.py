@@ -77,9 +77,8 @@ class FileServiceTests(unittest.TestCase):
 
     def test_repeated_binary_nack_reduces_raw_chunk_before_fallback(self):
         service = None
-        # Large enough to prove both directions of adaptation: repeated NACKs
-        # reduce 512-byte frames to 256, then clean windows restore the
-        # negotiated 1024-byte maximum.
+        # Large enough to prove adaptation: start at the negotiated 1024-byte
+        # maximum, then reduce after repeated NACKs on a marginal path.
         source_data = bytes(range(256)) * 512
         committed = bytearray()
         window = []
@@ -140,7 +139,6 @@ class FileServiceTests(unittest.TestCase):
         self.assertEqual(source_data, bytes(committed))
         self.assertIn(1024, payload_sizes)
         self.assertIn(512, payload_sizes)
-        self.assertIn(256, payload_sizes)
 
     def test_binary_upload_uses_crc_frames_and_recovers_from_nack(self):
         service = None
@@ -240,8 +238,6 @@ class FileServiceTests(unittest.TestCase):
                 service.handle_response(parse_line(
                     "RME_FILE_BULK_READY offset=0 chunk=320 window=4"
                 ))
-            elif command == "@RME FILE ABORT":
-                service.handle_response(parse_line("RME_FILE_ABORTED"))
             elif "WRITE_BULK_CHUNK" in command:
                 payload = base64.b64decode(command.split("data=", 1)[1])
                 offset = int(command.split("offset=", 1)[1].split(" ", 1)[0])
@@ -256,7 +252,9 @@ class FileServiceTests(unittest.TestCase):
         def send_binary(frame):
             offset, length, _ = struct.unpack("<IHI", frame[:10])
             if offset == 0xFFFFFFFF and length == 0:
-                service.handle_response(parse_line("RME_FILE_BINARY_ABORTED"))
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_ABORTED offset=0 resumable=1"
+                ))
                 return
             raise IOError("raw failed")
 
@@ -275,14 +273,52 @@ class FileServiceTests(unittest.TestCase):
             os.unlink(source_path)
         self.assertTrue(ended)
         self.assertEqual(1, service._capabilities["binary"])
-        abort_index = commands.index("@RME FILE ABORT")
         bulk_index = next(
             index for index, command in enumerate(commands)
             if "WRITE_BULK_BEGIN" in command
         )
-        self.assertLess(abort_index, bulk_index)
+        self.assertNotIn("@RME FILE ABORT", commands)
         self.assertTrue(any("WRITE_BULK_BEGIN" in command for command in commands))
         self.assertTrue(any("WRITE_BULK_END" in command for command in commands))
+
+    def test_legacy_fallback_resumes_at_ready_offset(self):
+        service = None
+        commands = []
+        source_data = bytes(range(100))
+
+        def send(command):
+            commands.append(command)
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb write=1 bulk=0 binary=0 durable_resume=1"
+                ))
+            elif "WRITE_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_WRITE_READY offset=48 chunk=48 resumed=1"
+                ))
+            elif "WRITE_CHUNK" in command:
+                payload = base64.b64decode(command.split("data=", 1)[1])
+                offset = int(command.split("offset=", 1)[1].split(" ", 1)[0])
+                service.handle_response(parse_line(
+                    "RME_FILE_WRITE_OFFSET offset=%d" % (offset + len(payload))
+                ))
+            elif "WRITE_END" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_WRITE_COMPLETE path=resume.bin"
+                ))
+
+        service = RmeFileService(send, response_timeout=1)
+        with tempfile.NamedTemporaryFile(delete=False) as source:
+            source.write(source_data)
+            source_path = source.name
+        try:
+            service.write_file(source_path, "resume.bin")
+        finally:
+            os.unlink(source_path)
+
+        chunks = [item for item in commands if "WRITE_CHUNK" in item]
+        self.assertEqual(2, len(chunks))
+        self.assertIn("offset=48", chunks[0])
 
     def test_unconfirmed_binary_abort_never_attempts_ascii_fallback(self):
         service = None

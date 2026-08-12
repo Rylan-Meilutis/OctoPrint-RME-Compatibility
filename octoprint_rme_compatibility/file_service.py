@@ -26,6 +26,10 @@ TRANSFER_LATCH_RETRY_SECONDS = 1.0
 class FileServiceError(RuntimeError):
     """A safe, operator-facing USB filesystem failure."""
 
+    def __init__(self, message, record=None):
+        super().__init__(message)
+        self.record = dict(record) if record else None
+
 
 def normalize_remote_path(path):
     """Validate a UI path and encode it for one ``@RME FILE`` command."""
@@ -124,7 +128,7 @@ class RmeFileService(object):
                 self._condition.notify_all()
                 return
             if record["record"] == "file_error":
-                self._error = record.get("code") or record.get("message")
+                self._error = dict(record)
             else:
                 self._records.append(dict(record))
             self._condition.notify_all()
@@ -172,7 +176,14 @@ class RmeFileService(object):
                     for item in self._records
                 ):
                     if self._error:
-                        raise FileServiceError("Printer USB operation failed: %s" % self._error)
+                        error = self._error
+                        if isinstance(error, dict):
+                            code = error.get("code") or error.get("message")
+                            raise FileServiceError(
+                                "Printer USB operation failed: %s" % code,
+                                record=error,
+                            )
+                        raise FileServiceError("Printer USB operation failed: %s" % error)
                     if respect_cancel and self._cancel.is_set():
                         raise FileServiceError("Printer USB operation cancelled")
                     remaining = deadline - time.monotonic()
@@ -336,12 +347,16 @@ class RmeFileService(object):
                     except Exception as exc:
                         if self._cancel.is_set():
                             raise
-                        self._abort_binary_transport()
-                        # The binary ABORTED record proves Buddy restored its
-                        # parser, but OctoPrint's line writer is released only
-                        # afterward. Queue and acknowledge one ordinary abort
-                        # as a mode/state fence before beginning a new upload.
-                        self._reset_line_upload_state()
+                        # Current firmware leaves raw mode before reporting a
+                        # structured FILE error and retains the verified prefix.
+                        # Otherwise suspend with the raw abort frame and wait for
+                        # its confirmation. Do not follow either case with the
+                        # line-mode ABORT command: that command deliberately
+                        # discards durable resume state in the current protocol.
+                        if isinstance(exc, FileServiceError) and exc.record:
+                            self._release_confirmed_line_mode()
+                        else:
+                            self._abort_binary_transport()
                         if self.logger:
                             self.logger.warning(
                                 "RME binary upload failed; retrying with text transport: %s",
@@ -429,12 +444,21 @@ class RmeFileService(object):
                 "printer before retrying"
             ) from failure
 
-    def _reset_line_upload_state(self):
-        """Confirm line mode and an empty firmware upload state."""
-        self._exchange(
-            "@RME FILE ABORT", "file_aborted", timeout=10,
-            respect_cancel=False,
-        )
+    def _release_confirmed_line_mode(self):
+        """Release the raw writer after firmware itself restored line mode."""
+        failure = None
+        try:
+            if self.end_binary:
+                self.end_binary()
+        except Exception as exc:
+            failure = exc
+        self._binary_active = False
+        self._binary_mode_uncertain = failure is not None
+        if failure is not None:
+            raise FileServiceError(
+                "Binary writer could not be released after the printer "
+                "restored line mode; reconnect before retrying"
+            ) from failure
 
     @staticmethod
     def _binary_frame(offset, payload):
@@ -474,11 +498,10 @@ class RmeFileService(object):
             65535,
             max(1, int(ready.get("chunk", self._capabilities.get("binary_chunk", 1024)))),
         )
-        # Current Buddy CDC endpoints are substantially more reliable with
-        # 512-byte atomic writes. Grow back to the advertised maximum after a
-        # sustained clean run instead of making one early NACK penalize the
-        # complete multi-megabyte transfer.
-        chunk_size = min(512, negotiated_chunk_size)
+        # Current firmware advertises the largest frame its CDC receiver and
+        # storage pipeline accept. Start on that fast path and retain the
+        # existing adaptive backoff for a marginal host/USB path.
+        chunk_size = negotiated_chunk_size
         window_size = min(
             64,
             max(1, int(ready.get("window", self._capabilities.get("binary_window", 8)))),
@@ -561,12 +584,16 @@ class RmeFileService(object):
 
     def _write_legacy(self, local_path, encoded, size, digest, progress):
         """Use the original one-ACK-per-48-byte transfer for older firmware."""
-        self._exchange_when_available(
+        records = self._exchange_when_available(
             "@RME FILE WRITE_BEGIN path=%s size=%d sha256=%s" % (encoded, size, digest),
             "file_write_ready",
         )
-        offset = 0
+        ready = self._terminal(records, "file_write_ready")
+        offset = int(ready.get("offset", 0))
+        if not 0 <= offset <= size:
+            raise FileServiceError("Printer returned an invalid resume offset")
         with open(local_path, "rb") as source:
+            source.seek(offset)
             while True:
                 if self._cancel.is_set():
                     raise FileServiceError("Printer USB operation cancelled")

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.0b35 — 2026-08-12
+
+- Matched the current firmware's durable, cross-transport upload-resume
+  contract. A confirmed binary suspension now falls directly into a matching
+  bulk or legacy BEGIN without sending the line-mode ABORT that would discard
+  the verified partial file.
+- Parsed the extended `RME_FILE_BINARY_ABORTED offset=... resumable=1` and
+  structured FILE error records, preventing valid current-firmware responses
+  from being mistaken for teardown timeouts that require a power cycle.
+- Resumed legacy text fallback from the firmware-reported READY offset, so all
+  three upload transports preserve an already committed prefix.
+- Restored the firmware-advertised 1024-byte raw-frame fast path at startup,
+  while retaining adaptive reduction after repeated NACKs.
+- Confirmed that protected `FWUPD.RME` staging, explicit FILE FLASH, the shared
+  RME/Connect/Link transfer latch, and INDX free-air PA capture/pellet wiping
+  match the current on-disk firmware implementation and protocol docs.
+
 ## 0.1.0b34 — 2026-08-11
 
 - Added host-side support for the firmware's shared RME/Prusa Connect/PrusaLink

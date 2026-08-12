@@ -112,6 +112,8 @@ def parse_line(raw_line):
         ("RME_FILE_BINARY_READY ", "file_binary_ready"),
         ("RME_FILE_BINARY_ACK ", "file_binary_ack"),
         ("RME_FILE_BINARY_NACK ", "file_binary_nack"),
+        ("RME_FILE_BINARY_ABORTED ", "file_binary_aborted"),
+        ("RME_FILE_BINARY_CONTROL_NACK ", "file_binary_control_nack"),
         ("RME_FILE_BINARY_READ_READY ", "file_binary_read_ready"),
         ("RME_FILE_BINARY_READ_COMPLETE ", "file_binary_read_complete"),
     ):
@@ -128,6 +130,7 @@ def parse_line(raw_line):
     for text, record in (
         ("RME_FILE_ABORTED", "file_aborted"),
         ("RME_FILE_BINARY_ABORTED", "file_binary_aborted"),
+        ("RME_FILE_BINARY_CONTROL_COMPLETE", "file_binary_control_complete"),
         ("RME_FILE_DELETED", "file_deleted"),
         ("RME_FILE_RENAMED", "file_renamed"),
         ("RME_FILE_DIRECTORY_CREATED", "file_directory_created"),
@@ -136,9 +139,10 @@ def parse_line(raw_line):
     ):
         if line == text:
             return {"record": record}
-    file_error = re.match(r"^echo:RME_ERROR workflow=file code=([^ ]+)$", line)
-    if file_error:
-        return {"record": "file_error", "code": file_error.group(1), "message": line}
+    if line.startswith("echo:RME_ERROR workflow=file "):
+        result = parse_fields(line[len("echo:RME_ERROR workflow=file ") :])
+        result.update(record="file_error", message=line)
+        return result
     if line.startswith("RME_EVENT "):
         result = parse_fields(line[len("RME_EVENT ") :])
         result["record"] = "event"

@@ -140,6 +140,16 @@ class ProtocolTests(unittest.TestCase):
             {"record": "file_binary_aborted"},
         )
         self.assertEqual(parse_line(
+            "RME_FILE_BINARY_ABORTED offset=62464 resumable=1 transport=frame"
+        ), {
+            "record": "file_binary_aborted", "offset": 62464,
+            "resumable": 1, "transport": "frame",
+        })
+        self.assertEqual(parse_line(
+            "echo:RME_ERROR workflow=file code=disk_write_failed "
+            "offset=62464 resumable=1"
+        )["offset"], 62464)
+        self.assertEqual(parse_line(
             "RME_FILE_BINARY_READ_READY path=part.bgcode offset=0 length=1024"
         )["record"], "file_binary_read_ready")
         self.assertEqual(parse_line(

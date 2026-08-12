@@ -1000,9 +1000,8 @@ class RmeCompatibilityPlugin(
                         # Buddy's raw decoder runs outside the USB ISR. A short
                         # frame boundary prevents the host from filling CDC
                         # buffers faster than the application can validate and
-                        # commit them. The conservative 512-byte starting
-                        # frames still target roughly 100 KiB/s and clean ACK
-                        # windows restore the negotiated 1024-byte maximum.
+                        # commit them while preserving its negotiated 1024-byte
+                        # frame and eight-frame cumulative-ACK fast path.
                         time.sleep(0.005)
                     except Exception as exc:
                         pending["error"] = exc
