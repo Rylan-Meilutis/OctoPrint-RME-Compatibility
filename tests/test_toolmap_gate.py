@@ -419,6 +419,13 @@ class ToolmapGateTests(unittest.TestCase):
                 progress(size, size)
                 finalizing()
 
+            def stat(self, remote_path):
+                self.assert_remote_path = remote_path
+                return {
+                    "type": "file",
+                    "size": os.path.getsize(self.upload[0]),
+                }
+
         with tempfile.TemporaryDirectory() as firmware_directory:
             filename = "coreone-rme.bbf"
             path = os.path.join(firmware_directory, filename)
@@ -443,6 +450,7 @@ class ToolmapGateTests(unittest.TestCase):
             plugin._firmware_file_thread.join(timeout=2)
 
             self.assertEqual((path, "FWUPD.BBF"), plugin._file_service.upload)
+            self.assertEqual("FWUPD.RME", plugin._file_service.assert_remote_path)
             self.assertEqual("queued", plugin._file_service.status_before_start)
             self.assertEqual("staged", plugin._state["firmware"]["status"])
             self.assertEqual("/usb/FWUPD.RME", plugin._state["firmware"]["staged_path"])

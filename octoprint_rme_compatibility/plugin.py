@@ -955,9 +955,10 @@ class RmeCompatibilityPlugin(
                         # Buddy's raw decoder runs outside the USB ISR. A short
                         # frame boundary prevents the host from filling CDC
                         # buffers faster than the application can validate and
-                        # commit them, while 1024-byte frames still sustain
-                        # roughly 100 KiB/s.
-                        time.sleep(0.010)
+                        # commit them. The conservative 512-byte starting
+                        # frames still target roughly 100 KiB/s and clean ACK
+                        # windows restore the negotiated 1024-byte maximum.
+                        time.sleep(0.005)
                     except Exception as exc:
                         pending["error"] = exc
                     finally:
@@ -2983,6 +2984,11 @@ class RmeCompatibilityPlugin(
                     status="verifying", offset=metadata["size"], progress=100
                 ),
             )
+            staged = self._file_service.stat("FWUPD.RME")
+            if staged.get("type") != "file" or int(staged.get("size", -1)) != int(metadata["size"]):
+                raise FileServiceError(
+                    "Printer did not confirm the protected firmware stage"
+                )
             self._firmware_state_changed(
                 status="staged", offset=metadata["size"], progress=100,
                 staged_path="/usb/FWUPD.RME",
@@ -2990,6 +2996,25 @@ class RmeCompatibilityPlugin(
         except Exception as exc:
             self._logger.exception("RME FILE firmware transfer failed")
             self._firmware_state_changed(status="error", error=str(exc))
+            if (
+                self._file_service
+                and getattr(self._file_service, "binary_mode_uncertain", False)
+                and self._printer
+            ):
+                # No ASCII command can repair a firmware receiver that did not
+                # acknowledge the raw abort frame. Close OctoPrint's descriptor
+                # so it cannot keep feeding line commands into raw mode. The
+                # operator-facing error retains the required reconnect/power
+                # cycle instruction.
+                self._logger.error(
+                    "Disconnecting after unconfirmed RME binary teardown"
+                )
+                try:
+                    self._printer.disconnect()
+                except Exception:
+                    self._logger.exception(
+                        "Could not disconnect the uncertain binary transport"
+                    )
 
     def _firmware_file_progress(self, offset, size):
         self._firmware_state_changed(

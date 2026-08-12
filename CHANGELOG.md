@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.0b32 — 2026-08-11
+
+- Kept the navbar transfer percentage in a dedicated non-shrinking badge, so
+  narrow headers may shorten the operation label without hiding progress.
+- Started current-firmware binary uploads with reliable 512-byte atomic writes
+  and halved frame pacing to 5 ms. After 16 clean cumulative-ACK windows the
+  uploader restores larger frames up to the firmware's negotiated maximum;
+  repeated NACKs still reduce them for recovery.
+- Verified the firmware's hidden `/usb/FWUPD.RME` stage with a fresh `STAT`
+  and exact byte count before enabling Flash. The UI now states explicitly
+  that protected staged firmware is intentionally absent from the printer's
+  ordinary BBF picker and must be installed with the plugin's FILE FLASH action.
+- Disconnect OctoPrint after an unconfirmed raw abort so normal line traffic
+  cannot continue feeding a firmware receiver that may still be in binary
+  mode. The printer must then be reconnected or power-cycled before retrying.
+
 ## 0.1.0b31 — 2026-08-11
 
 - Increased raw-frame pacing from 1 ms to 10 ms so Buddy's application-level

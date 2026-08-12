@@ -77,6 +77,11 @@ class RmeFileService(object):
         with self._condition:
             return self._active
 
+    @property
+    def binary_mode_uncertain(self):
+        """Whether firmware may still own the raw receiver."""
+        return self._binary_mode_uncertain
+
     def reset(self, reason="Printer disconnected"):
         """Interrupt a waiter when the serial connection disappears."""
         self._capabilities = None
@@ -435,10 +440,15 @@ class RmeFileService(object):
             raise FileServiceError("Printer returned an unsupported binary byte order")
         if str(ready.get("crc", "crc32")) != "crc32":
             raise FileServiceError("Printer returned an unsupported binary checksum")
-        chunk_size = min(
+        negotiated_chunk_size = min(
             65535,
             max(1, int(ready.get("chunk", self._capabilities.get("binary_chunk", 1024)))),
         )
+        # Current Buddy CDC endpoints are substantially more reliable with
+        # 512-byte atomic writes. Grow back to the advertised maximum after a
+        # sustained clean run instead of making one early NACK penalize the
+        # complete multi-megabyte transfer.
+        chunk_size = min(512, negotiated_chunk_size)
         window_size = min(
             64,
             max(1, int(ready.get("window", self._capabilities.get("binary_window", 8)))),
@@ -450,6 +460,7 @@ class RmeFileService(object):
             )
         retries = 0
         rejected_offset = None
+        successful_windows = 0
         with open(local_path, "rb") as source:
             while offset < size:
                 source.seek(offset)
@@ -472,6 +483,7 @@ class RmeFileService(object):
                 if not offset <= acknowledged <= expected_offset:
                     raise FileServiceError("Printer returned an invalid binary upload offset")
                 if response["record"] == "file_binary_nack":
+                    successful_windows = 0
                     retries += 1
                     if acknowledged == rejected_offset and retries >= 2 and chunk_size > 256:
                         # Repeating the identical maximum-size frame cannot
@@ -504,6 +516,15 @@ class RmeFileService(object):
                 retries = 0
                 rejected_offset = None
                 offset = acknowledged
+                successful_windows += 1
+                if chunk_size < negotiated_chunk_size and successful_windows >= 16:
+                    chunk_size = min(negotiated_chunk_size, chunk_size * 2)
+                    successful_windows = 0
+                    if self.logger:
+                        self.logger.info(
+                            "RME binary upload stable; increasing raw chunk to %d bytes",
+                            chunk_size,
+                        )
                 if progress:
                     progress(offset, size)
         return offset

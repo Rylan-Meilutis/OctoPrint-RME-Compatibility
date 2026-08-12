@@ -341,6 +341,10 @@ $(function () {
             var value = self.navbarTransfer().progress;
             return value === null || value === undefined || !isFinite(Number(value));
         });
+        self.navbarTransferPercentText = ko.pureComputed(function () {
+            if (!self.navbarTransferActive() || self.navbarTransferIndeterminate()) return "";
+            return Math.round(Number(self.navbarTransfer().progress)) + "%";
+        });
         self.mmuDetected = ko.pureComputed(function () {
             var machine = self.state().machine || {};
             var workflow = self.workflow();
@@ -385,7 +389,11 @@ $(function () {
             return label;
         });
         self.navbarCompactText = ko.pureComputed(function () {
-            if (self.navbarTransferActive()) return self.navbarTransfer().summary;
+            if (self.navbarTransferActive()) {
+                // Keep the percentage in its own non-shrinking navbar badge.
+                // The descriptive label may ellipsize on narrow windows.
+                return self.navbarTransfer().summary.replace(/\s*·\s*\d+%\s*$/, "");
+            }
             if (!self.state().connected) return "RME · disconnected";
             if (!self.state().supported) return "RME · not detected";
             if (self.navbarMmuActive()) {
@@ -484,7 +492,7 @@ $(function () {
             if (!fw.status || fw.status === "idle") return "No firmware staged.";
             if (fw.status === "queued") return "Waiting for the printer USB queue; no firmware bytes have been sent yet.";
             if (fw.status === "canceling") return "Canceling the queued transfer before any firmware bytes are sent.";
-            if (fw.status === "staged") return "Verified in the printer's protected FWUPD.RME stage. Ready for explicit flash.";
+            if (fw.status === "staged") return "Verified in the printer's protected FWUPD.RME stage. It is intentionally hidden from the printer's BBF picker; use Flash and reboot here.";
             if (fw.status === "flashing") return "Bootloader handoff requested; the printer should reboot.";
             if (fw.status === "uploading") return "Sending " + formatBytes(fw.offset || 0) + " of " + formatBytes(fw.size || 0) +
                 (fw.flash_after_stage ? "; flashing automatically after verification." : ".");

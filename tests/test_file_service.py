@@ -17,7 +17,10 @@ from octoprint_rme_compatibility.protocol import parse_line
 class FileServiceTests(unittest.TestCase):
     def test_repeated_binary_nack_reduces_raw_chunk_before_fallback(self):
         service = None
-        source_data = bytes(range(256)) * 32
+        # Large enough to prove both directions of adaptation: repeated NACKs
+        # reduce 512-byte frames to 256, then clean windows restore the
+        # negotiated 1024-byte maximum.
+        source_data = bytes(range(256)) * 512
         committed = bytearray()
         window = []
         nacks = [0]
@@ -77,6 +80,7 @@ class FileServiceTests(unittest.TestCase):
         self.assertEqual(source_data, bytes(committed))
         self.assertIn(1024, payload_sizes)
         self.assertIn(512, payload_sizes)
+        self.assertIn(256, payload_sizes)
 
     def test_binary_upload_uses_crc_frames_and_recovers_from_nack(self):
         service = None

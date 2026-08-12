@@ -269,7 +269,7 @@
             </div>
             <p data-bind="text: firmwareStatus"></p>
             <div class="alert alert-error" data-bind="visible: firmwareError, text: firmwareError"></div>
-            <p class="help-block">Choose the BBF in the “Firmware on Pi” list, then use Stage or Stage and flash. Current firmware protects a verified stage as hidden <code>/usb/FWUPD.RME</code>, so it will not appear as a selectable BBF in the printer USB browser. Delete from Pi only removes the source copy.</p>
+            <p class="help-block">Choose the BBF in the “Firmware on Pi” list, then use Stage or Stage and flash. Current firmware protects and verifies the upload as hidden <code>/usb/FWUPD.RME</code>; it deliberately will not appear in the printer's BBF picker. After Stage, use “Flash and reboot” here to send the required FILE FLASH command. Delete from Pi only removes the source copy.</p>
         </div>
     </div>
 </form>

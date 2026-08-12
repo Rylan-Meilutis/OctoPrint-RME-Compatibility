@@ -35,9 +35,19 @@
 #navbar_plugin_rme_compatibility .rme-navbar-label {
     display: inline-block;
     max-width: 155px;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     vertical-align: bottom;
+    white-space: nowrap;
+}
+
+#navbar_plugin_rme_compatibility .rme-navbar-percent {
+    flex: 0 0 auto;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    min-width: 30px;
+    text-align: right;
     white-space: nowrap;
 }
 
