@@ -952,7 +952,12 @@ class RmeCompatibilityPlugin(
                         flush = getattr(serial_port, "flush", None)
                         if callable(flush):
                             flush()
-                        time.sleep(0.001)
+                        # Buddy's raw decoder runs outside the USB ISR. A short
+                        # frame boundary prevents the host from filling CDC
+                        # buffers faster than the application can validate and
+                        # commit them, while 1024-byte frames still sustain
+                        # roughly 100 KiB/s.
+                        time.sleep(0.010)
                     except Exception as exc:
                         pending["error"] = exc
                     finally:
@@ -966,6 +971,9 @@ class RmeCompatibilityPlugin(
                 with self._binary_frame_lock:
                     if self._binary_session is session:
                         self._binary_session = None
+                done = session.get("done")
+                if done is not None:
+                    done.set()
             return
         if "\r" in parameters or "\n" in parameters:
             self._logger.warning("Refusing multiline @RME command")
@@ -986,7 +994,11 @@ class RmeCompatibilityPlugin(
         with self._binary_frame_lock:
             if self._binary_session is not None:
                 raise FileServiceError("A raw printer transfer is already active")
-            self._binary_session = {"token": token, "queue": queue.Queue()}
+            self._binary_session = {
+                "token": token,
+                "queue": queue.Queue(),
+                "done": threading.Event(),
+            }
         return "@RME FILE RAW_SESSION token=%s" % token
 
     def _send_binary_frame(self, frame):
@@ -1012,6 +1024,11 @@ class RmeCompatibilityPlugin(
             session = self._binary_session
         if session is not None:
             session["queue"].put(None)
+            done = session.get("done")
+            if done is not None and not done.wait(10):
+                raise FileServiceError(
+                    "Timed out releasing OctoPrint's raw serial writer"
+                )
 
     def _consume_firmware_completed_control(self, action):
         with self._state_lock:

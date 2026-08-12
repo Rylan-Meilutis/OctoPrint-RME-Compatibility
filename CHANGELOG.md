@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.0b31 — 2026-08-11
+
+- Increased raw-frame pacing from 1 ms to 10 ms so Buddy's application-level
+  binary decoder can drain CDC buffers without the NACK storms that reduced
+  effective upload throughput. Negotiated 1024-byte frames still target about
+  100 KiB/s, or roughly 40 seconds for a 4 MiB firmware image.
+- Made `RME_FILE_BINARY_ABORTED` mandatory before returning to line mode. If
+  raw abort cannot be confirmed, the upload stops with explicit recovery
+  guidance and sends no ASCII abort or fallback command into an uncertain raw
+  parser state. Disconnecting or power-cycling clears that safety latch.
+- Made release of OctoPrint's reserved raw writer synchronous. After binary
+  completion or abort, the plugin now waits for the sending hook to consume its
+  sentinel and exit before queuing the acknowledged line-mode fence, removing
+  the race that caused that fence itself to time out.
+
 ## 0.1.0b30 — 2026-08-11
 
 - Added an acknowledged line-mode abort fence between a failed raw-binary

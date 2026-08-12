@@ -67,6 +67,7 @@ class RmeFileService(object):
         self._cancel = threading.Event()
         self._capabilities = None
         self._binary_active = False
+        self._binary_mode_uncertain = False
         self._last_binary_response = 0.0
 
     @property
@@ -82,6 +83,7 @@ class RmeFileService(object):
         if self.end_binary:
             self.end_binary()
         self._binary_active = False
+        self._binary_mode_uncertain = False
         with self._condition:
             if self._active:
                 self._error = reason
@@ -340,6 +342,7 @@ class RmeFileService(object):
                     # line mode; normal OctoPrint traffic may now resume.
                     self.end_binary()
                     self._binary_active = False
+                    self._binary_mode_uncertain = False
                 elif bool(int(self._capabilities.get("bulk", 0))):
                     self._exchange(
                         "@RME FILE WRITE_BULK_END path=%s" % encoded,
@@ -354,7 +357,7 @@ class RmeFileService(object):
                 try:
                     if self._binary_active and self.send_binary:
                         self._abort_binary_transport()
-                    else:
+                    elif not self._binary_mode_uncertain:
                         self.send_command("@RME FILE ABORT")
                 except Exception:
                     pass
@@ -362,6 +365,8 @@ class RmeFileService(object):
 
     def _abort_binary_transport(self):
         """Return firmware and OctoPrint to line mode after a raw failure."""
+        failure = None
+        confirmed = False
         try:
             if self._binary_active and self.send_binary:
                 self._exchange(
@@ -370,13 +375,26 @@ class RmeFileService(object):
                     timeout=10,
                     respect_cancel=False,
                 )
+                confirmed = True
         except Exception as exc:
+            failure = exc
             if self.logger:
                 self.logger.warning("Could not transmit binary abort frame: %s", exc)
         finally:
-            if self.end_binary:
-                self.end_binary()
+            try:
+                if self.end_binary:
+                    self.end_binary()
+            except Exception as exc:
+                failure = failure or exc
+                if self.logger:
+                    self.logger.warning("Could not release binary writer: %s", exc)
             self._binary_active = False
+            self._binary_mode_uncertain = not (confirmed and failure is None)
+        if failure is not None:
+            raise FileServiceError(
+                "Binary abort was not confirmed; power-cycle or reconnect the "
+                "printer before retrying"
+            ) from failure
 
     def _reset_line_upload_state(self):
         """Confirm line mode and an empty firmware upload state."""
@@ -410,6 +428,7 @@ class RmeFileService(object):
             raise
         ready = self._terminal(records, "file_binary_ready")
         self._binary_active = True
+        self._binary_mode_uncertain = True
         if int(ready.get("header", 10)) != 10:
             raise FileServiceError("Printer returned an unsupported binary header")
         if str(ready.get("endian", "little")) != "little":

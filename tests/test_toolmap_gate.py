@@ -698,9 +698,12 @@ class ToolmapGateTests(unittest.TestCase):
             "error": None,
         }
         session_queue = queue.Queue()
+        session_done = threading.Event()
         session_queue.put(pending_data)
         session_queue.put(pending_end)
-        plugin._binary_session = {"token": token, "queue": session_queue}
+        plugin._binary_session = {
+            "token": token, "queue": session_queue, "done": session_done,
+        }
         serial = RawSerial()
         comm = types.SimpleNamespace(_serial=serial)
 
@@ -722,7 +725,27 @@ class ToolmapGateTests(unittest.TestCase):
             pending_data["frame"] + pending_end["frame"], bytes(serial.data)
         )
         self.assertFalse(worker.is_alive())
+        self.assertTrue(session_done.is_set())
         self.assertIsNone(plugin._binary_session)
+
+    def test_end_binary_transport_waits_for_writer_release(self):
+        plugin = RmeCompatibilityPlugin()
+        session_queue = queue.Queue()
+        done = threading.Event()
+        plugin._binary_session = {
+            "token": "4" * 32, "queue": session_queue, "done": done,
+        }
+
+        def release():
+            self.assertIsNone(session_queue.get(timeout=1))
+            done.set()
+
+        worker = threading.Thread(target=release)
+        worker.start()
+        plugin._end_binary_transport()
+        worker.join(1)
+
+        self.assertTrue(done.is_set())
 
     def test_prestart_hold_pauses_timeout_then_configures_validator_before_release(self):
         plugin = RmeCompatibilityPlugin()

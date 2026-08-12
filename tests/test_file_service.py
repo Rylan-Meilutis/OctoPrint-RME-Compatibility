@@ -189,9 +189,16 @@ class FileServiceTests(unittest.TestCase):
                     "RME_FILE_BULK_COMPLETE path=FWUPD.BBF"
                 ))
 
+        def send_binary(frame):
+            offset, length, _ = struct.unpack("<IHI", frame[:10])
+            if offset == 0xFFFFFFFF and length == 0:
+                service.handle_response(parse_line("RME_FILE_BINARY_ABORTED"))
+                return
+            raise IOError("raw failed")
+
         service = RmeFileService(
             send, response_timeout=1,
-            send_binary=lambda frame: (_ for _ in ()).throw(IOError("raw failed")),
+            send_binary=send_binary,
             begin_binary=lambda: "@RME FILE RAW_SESSION token=" + "2" * 32,
             end_binary=lambda: ended.append(True),
         )
@@ -212,6 +219,42 @@ class FileServiceTests(unittest.TestCase):
         self.assertLess(abort_index, bulk_index)
         self.assertTrue(any("WRITE_BULK_BEGIN" in command for command in commands))
         self.assertTrue(any("WRITE_BULK_END" in command for command in commands))
+
+    def test_unconfirmed_binary_abort_never_attempts_ascii_fallback(self):
+        service = None
+        commands = []
+
+        def send(command):
+            commands.append(command)
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb write=1 bulk=1 binary=1 "
+                    "binary_chunk=1024 binary_window=8"
+                ))
+            elif "WRITE_BINARY_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_READY offset=0 chunk=1024 window=8 "
+                    "header=10 endian=little crc=crc32"
+                ))
+
+        service = RmeFileService(
+            send, response_timeout=1,
+            send_binary=lambda frame: (_ for _ in ()).throw(IOError("raw failed")),
+            begin_binary=lambda: "@RME FILE RAW_SESSION token=" + "3" * 32,
+            end_binary=lambda: None,
+        )
+        with tempfile.NamedTemporaryFile(delete=False) as source:
+            source.write(b"signed-firmware")
+            source_path = source.name
+        try:
+            with self.assertRaisesRegex(FileServiceError, "power-cycle or reconnect"):
+                service.write_file(source_path, "FWUPD.BBF")
+        finally:
+            os.unlink(source_path)
+
+        self.assertFalse(any("WRITE_BULK_BEGIN" in command for command in commands))
+        self.assertNotIn("@RME FILE ABORT", commands)
+        self.assertTrue(service._binary_mode_uncertain)
 
     def test_lists_and_downloads_space_containing_binary_file(self):
         service = None
