@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.0b33 — 2026-08-11
+
+- Turned an unconfirmed binary teardown into a durable printer-reboot safety
+  latch. The navbar and firmware settings show a persistent reboot warning,
+  and the state survives OctoPrint restarts.
+- Blocked RME commands, batches, keepalives, priority controls, file/firmware
+  actions, session restoration, configuration discovery, and print starts
+  while recovery is required. A connection attempted while latched is closed
+  immediately so OctoPrint cannot continue normal serial traffic.
+- Clear the latch automatically only when a firmware `start` banner proves a
+  reboot. If that banner occurred while disconnected, settings provide an
+  explicit “I rebooted the printer” confirmation before reconnecting.
+
 ## 0.1.0b32 — 2026-08-11
 
 - Kept the navbar transfer percentage in a dedicated non-shrinking badge, so

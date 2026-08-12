@@ -168,6 +168,7 @@ class RmeCompatibilityPlugin(
                 "staged_path": None,
                 "flash_after_stage": False,
                 "reconnect_expected": False,
+                "recovery_required": False,
             },
             "storage": {
                 "supported": False, "caps": {}, "path": "/", "entries": [],
@@ -215,11 +216,21 @@ class RmeCompatibilityPlugin(
             ):
                 if key in persisted:
                     self._state[key] = persisted[key]
-            # Transfer failures are process-local diagnostics. Only a verified
-            # staged image is meaningful after restart; old errors and partial
-            # progress must never reappear as if they belonged to a new action.
+            # An uncertain raw receiver is a durable safety condition. An
+            # OctoPrint restart is not evidence that the printer left binary
+            # mode, so retain the lock and warning until printer reboot proof.
             persisted_firmware = persisted.get("firmware") or {}
-            if persisted_firmware.get("status") == "staged":
+            if persisted_firmware.get("recovery_required"):
+                self._state["firmware"].update(persisted_firmware)
+                self._state["firmware"].update(
+                    status="error", recovery_required=True,
+                    error=(
+                        "Printer communication is locked after an unconfirmed "
+                        "binary transfer. Power-cycle the printer, then confirm "
+                        "the reboot in RME settings. No RME commands will be sent."
+                    ),
+                )
+            elif persisted_firmware.get("status") == "staged":
                 self._state["firmware"].update(persisted_firmware)
                 self._state["firmware"]["error"] = None
             # A one-click flash request is deliberately process-local. Never
@@ -388,6 +399,7 @@ class RmeCompatibilityPlugin(
             "stage_and_flash_firmware": ["filename"],
             "cancel_firmware": [],
             "flash_firmware": [],
+            "confirm_printer_reboot": [],
             "delete_firmware": ["filename"],
             "sync_spoolmanager": [],
             "sync_filaments_from_printer": [],
@@ -553,6 +565,14 @@ class RmeCompatibilityPlugin(
                 self._file_service.cancel()
         elif command == "flash_firmware":
             self._flash_firmware()
+        elif command == "confirm_printer_reboot":
+            if self._clear_transport_recovery("user confirmed printer reboot"):
+                try:
+                    operational = bool(self._printer and self._printer.is_operational())
+                except Exception:
+                    operational = False
+                if operational:
+                    self._defer(self._send_command, "@RME MACHINE QUERY")
         elif command == "delete_firmware":
             self._delete_firmware(data["filename"])
         elif command == "sync_spoolmanager":
@@ -790,6 +810,9 @@ class RmeCompatibilityPlugin(
             return
         if event == Events.CONNECTED:
             with self._state_lock:
+                recovery_required = bool(
+                    self._state["firmware"].get("recovery_required")
+                )
                 self._state["connected"] = True
                 self._state["supported"] = False
                 self._state["session"] = {
@@ -810,10 +833,20 @@ class RmeCompatibilityPlugin(
                 self._provider_firmware_signature = None
                 self._transfer_conflict_cancel = False
             self._publish()
-            self._send_command("@RME MACHINE QUERY")
-            self._defer(self._sync_spoolmanager, True)
+            if recovery_required:
+                self._logger.warning(
+                    "RME transport remains locked pending a confirmed printer reboot"
+                )
+                self._defer(self._disconnect_for_transport_recovery)
+            else:
+                self._send_command("@RME MACHINE QUERY")
+                self._defer(self._sync_spoolmanager, True)
         elif event in (Events.DISCONNECTING, Events.DISCONNECTED):
-            if event == Events.DISCONNECTING and self._state.get("supported"):
+            if (
+                event == Events.DISCONNECTING
+                and self._state.get("supported")
+                and not self._transport_recovery_required()
+            ):
                 try:
                     self._send_command("@RME SESSION CLOSE")
                 except Exception:
@@ -870,6 +903,12 @@ class RmeCompatibilityPlugin(
 
     def gcode_received_hook(self, comm_instance, line, *args, **kwargs):
         """Observe RME records without blocking or bypassing OctoPrint's queue."""
+        if (
+            str(line or "").strip().lower() == "start"
+            and self._transport_recovery_required()
+        ):
+            self._clear_transport_recovery("printer startup banner observed")
+            self._defer(self._send_command, "@RME MACHINE QUERY")
         record = parse_line(line)
         if self._uploader:
             self._uploader.handle_response(line, record)
@@ -913,6 +952,12 @@ class RmeCompatibilityPlugin(
         if phase != "sending" or str(command).upper() != "RME":
             return
         parameters = str(parameters or "").strip()
+        if self._transport_recovery_required():
+            self._logger.warning(
+                "Blocked @RME %s while printer reboot recovery is required",
+                parameters,
+            )
+            return
         raw_match = re.match(r"^FILE RAW_SESSION token=([0-9a-f]{32})$", parameters)
         if raw_match:
             token = raw_match.group(1)
@@ -1379,12 +1424,55 @@ class RmeCompatibilityPlugin(
 
     # -- Protocol actions ---------------------------------------------------
 
+    def _transport_recovery_required(self):
+        with self._state_lock:
+            return bool(self._state["firmware"].get("recovery_required"))
+
+    def _clear_transport_recovery(self, evidence):
+        """Unlock RME traffic only after observed or user-confirmed reboot."""
+        with self._state_lock:
+            if not self._state["firmware"].get("recovery_required"):
+                return False
+            self._state["firmware"].update(
+                status="idle", error=None, recovery_required=False,
+                progress=0, offset=0, staged_path=None,
+                flash_after_stage=False, reconnect_expected=False,
+            )
+        if self._file_service:
+            self._file_service.reset("Printer reboot confirmed")
+        self._logger.warning("Released RME transport lock: %s", evidence)
+        self._persist_and_publish()
+        return True
+
+    def _disconnect_for_transport_recovery(self):
+        """Keep OctoPrint offline while firmware raw mode is uncertain."""
+        disconnect = getattr(self._printer, "disconnect", None)
+        if not callable(disconnect):
+            self._logger.error(
+                "OctoPrint cannot disconnect the uncertain RME transport"
+            )
+            return
+        try:
+            disconnect()
+        except Exception:
+            self._logger.exception(
+                "Could not disconnect the uncertain RME transport"
+            )
+
     def _send_command(self, command):
+        if self._transport_recovery_required():
+            raise RuntimeError(
+                "Printer reboot required; RME command transmission is locked"
+            )
         if not self._printer.is_operational():
             raise RuntimeError("Printer is not connected")
         self._printer.commands(command, tags={"plugin:rme_compatibility"})
 
     def _send_commands(self, commands):
+        if self._transport_recovery_required():
+            raise RuntimeError(
+                "Printer reboot required; RME command transmission is locked"
+            )
         if not self._printer.is_operational():
             raise RuntimeError("Printer is not connected")
         self._printer.commands(commands, tags={"plugin:rme_compatibility"})
@@ -1472,6 +1560,8 @@ class RmeCompatibilityPlugin(
             raise ValueError("Unknown priority control action: %s" % action)
         with self._state_lock:
             if not (self._state.get("connected") and self._state.get("supported")):
+                return False
+            if self._state["firmware"].get("recovery_required"):
                 return False
             # Each resume permits a later pause and vice versa. Cancel remains
             # latched until the job ends so duplicate API/events are harmless.
@@ -1656,18 +1746,21 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 active = self._state["session"].get("active")
                 connected = self._state["connected"]
+                recovery_required = bool(
+                    self._state["firmware"].get("recovery_required")
+                )
             # Acknowledged M998 and FILE transactions must not be interleaved
             # with periodic session, statistics, or filament requests.
             transfer_busy = bool(
                 (self._uploader and self._uploader.busy)
                 or (self._file_service and self._file_service.busy)
             )
-            if active and connected and not transfer_busy:
+            if active and connected and not transfer_busy and not recovery_required:
                 try:
                     self._send_command("@RME SESSION KEEPALIVE")
                 except Exception:
                     self._logger.debug("RME keepalive could not be queued", exc_info=True)
-            if not transfer_busy:
+            if not transfer_busy and not recovery_required:
                 if self._stats_supported is None:
                     self._defer(self._probe_stats)
 
@@ -1687,6 +1780,9 @@ class RmeCompatibilityPlugin(
         """Return whether a new print must yield to transfer/flash ownership."""
         with self._state_lock:
             firmware_status = self._state["firmware"].get("status")
+            recovery_required = bool(
+                self._state["firmware"].get("recovery_required")
+            )
         return bool(
             (self._uploader and self._uploader.busy)
             or (self._file_service and self._file_service.busy)
@@ -1694,6 +1790,7 @@ class RmeCompatibilityPlugin(
                 "queued", "canceling", "starting", "uploading", "verifying",
                 "flashing", "restarting",
             )
+            or recovery_required
         )
 
     def _stop_print_started_during_transfer(self):
@@ -2995,10 +3092,23 @@ class RmeCompatibilityPlugin(
             )
         except Exception as exc:
             self._logger.exception("RME FILE firmware transfer failed")
-            self._firmware_state_changed(status="error", error=str(exc))
-            if (
+            recovery_required = bool(
                 self._file_service
                 and getattr(self._file_service, "binary_mode_uncertain", False)
+            )
+            error = str(exc)
+            if recovery_required:
+                error = (
+                    "Printer communication is locked because binary teardown "
+                    "was not confirmed. Power-cycle the printer, then confirm "
+                    "the reboot in RME settings. No further RME commands will be sent."
+                )
+            self._firmware_state_changed(
+                status="error", error=error,
+                recovery_required=recovery_required,
+            )
+            if (
+                recovery_required
                 and self._printer
             ):
                 # No ASCII command can repair a firmware receiver that did not
@@ -3009,12 +3119,7 @@ class RmeCompatibilityPlugin(
                 self._logger.error(
                     "Disconnecting after unconfirmed RME binary teardown"
                 )
-                try:
-                    self._printer.disconnect()
-                except Exception:
-                    self._logger.exception(
-                        "Could not disconnect the uncertain binary transport"
-                    )
+                self._disconnect_for_transport_recovery()
 
     def _firmware_file_progress(self, offset, size):
         self._firmware_state_changed(
@@ -3026,6 +3131,9 @@ class RmeCompatibilityPlugin(
         status = changes.get("status")
         with self._state_lock:
             self._state["firmware"].update(changes)
+            recovery_required = bool(
+                self._state["firmware"].get("recovery_required")
+            )
             flash_after_stage = bool(
                 self._state["firmware"].get("flash_after_stage")
             )
@@ -3040,9 +3148,9 @@ class RmeCompatibilityPlugin(
             self._persist_and_publish()
         if status == "staged" and flash_after_stage:
             self._defer(self._flash_after_verified_stage)
-        elif status in ("staged", "error"):
+        elif status == "staged" or (status == "error" and not recovery_required):
             self._defer(self._restore_session_after_upload)
-        if error_to_clear:
+        if error_to_clear and not recovery_required:
             timer = threading.Timer(
                 30, self._clear_firmware_error, args=(error_to_clear,)
             )
@@ -3140,9 +3248,13 @@ class RmeCompatibilityPlugin(
                 )}
             )
             firmware = copy.deepcopy(self._state["firmware"])
-            if firmware.get("status") != "staged":
+            if (
+                firmware.get("status") != "staged"
+                and not firmware.get("recovery_required")
+            ):
                 firmware = self._empty_state()["firmware"]
-            firmware["error"] = None
+            if not firmware.get("recovery_required"):
+                firmware["error"] = None
             firmware["flash_after_stage"] = False
             snapshot["firmware"] = firmware
             return snapshot

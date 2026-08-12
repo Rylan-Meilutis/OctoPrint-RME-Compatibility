@@ -102,6 +102,7 @@ class _Printer(object):
         self.command_batches = []
         self.forced_commands = []
         self.cancel_calls = []
+        self.disconnect_calls = 0
 
     def set_job_on_hold(self, value, blocking=True):
         self.holds.append(value)
@@ -123,6 +124,9 @@ class _Printer(object):
 
     def cancel_print(self, tags=None):
         self.cancel_calls.append(tags)
+
+    def disconnect(self):
+        self.disconnect_calls += 1
 
 
 class _Validator(object):
@@ -529,6 +533,33 @@ class ToolmapGateTests(unittest.TestCase):
 
         self.assertEqual("idle", persisted["status"])
         self.assertIsNone(persisted["error"])
+
+    def test_uncertain_binary_transport_locks_commands_until_printer_reboot(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+        plugin._logger = logging.getLogger("rme-reboot-lock-test")
+        plugin._publish = lambda: None
+        plugin._persist_and_publish = lambda: None
+        plugin._defer = lambda callback, *args: callback(*args)
+        plugin._state["firmware"].update(
+            status="error", recovery_required=True,
+            error="Printer reboot required",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "Printer reboot required"):
+            plugin._send_command("@RME MACHINE QUERY")
+        plugin.on_event("Connected", {})
+        self.assertEqual([], plugin._printer.command_batches)
+        self.assertEqual(1, plugin._printer.disconnect_calls)
+        self.assertTrue(
+            plugin._persistent_snapshot()["firmware"]["recovery_required"]
+        )
+        self.assertTrue(plugin._printer_transfer_active())
+
+        plugin.gcode_received_hook(None, "start")
+
+        self.assertFalse(plugin._state["firmware"]["recovery_required"])
+        self.assertEqual(["@RME MACHINE QUERY"], plugin._printer.command_batches)
 
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()

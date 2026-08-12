@@ -18,6 +18,9 @@ $(function () {
             spoolmanager: {},
             firmware_files: []
         });
+        self.transportRecoveryRequired = ko.pureComputed(function () {
+            return !!((self.state().firmware || {}).recovery_required);
+        });
         self.tick = ko.observable(Date.now());
         self.coreTiming = null;
         self.pendingUpload = ko.observable(null);
@@ -374,12 +377,14 @@ $(function () {
             return self.navbarMmuActive() && self.hasFirmwarePrompt();
         });
         self.navbarModeText = ko.pureComputed(function () {
+            if (self.transportRecoveryRequired()) return "Printer reboot required";
             if (self.navbarTransferActive()) return self.navbarTransfer().title;
             if (!self.state().supported) return "RME Compatibility";
             return self.mmuDetected() ? "RME MMU" : "RME multi-tool";
         });
         self.navbarMmuText = ko.pureComputed(function () {
             var workflow = self.workflow();
+            if (self.transportRecoveryRequired()) return "RME transmission locked for safety";
             if (self.navbarTransferActive()) return self.navbarTransfer().detail;
             if (!self.state().supported) return self.connectionText();
             if (!self.navbarMmuActive()) return self.mmuDetected() ? "MMU idle" : "Multi-tool ready";
@@ -389,6 +394,7 @@ $(function () {
             return label;
         });
         self.navbarCompactText = ko.pureComputed(function () {
+            if (self.transportRecoveryRequired()) return "Reboot printer";
             if (self.navbarTransferActive()) {
                 // Keep the percentage in its own non-shrinking navbar badge.
                 // The descriptive label may ellipsize on narrow windows.
@@ -410,6 +416,9 @@ $(function () {
             return label;
         });
         self.navbarTitle = ko.pureComputed(function () {
+            if (self.transportRecoveryRequired()) {
+                return "Printer reboot required; no RME commands will be sent";
+            }
             if (self.navbarTransferActive()) {
                 return self.navbarTransfer().summary + " · " + self.navbarTransfer().detail;
             }
@@ -418,6 +427,7 @@ $(function () {
             return self.navbarMmuActive() ? details + " · " + self.navbarMmuText() : details;
         });
         self.navbarIconClass = ko.pureComputed(function () {
+            if (self.transportRecoveryRequired()) return "fa-exclamation-triangle";
             if (self.navbarTransferActive()) return self.navbarTransfer().icon;
             return self.mmuDetected() ? "fa-random" : "fa-tools";
         });
@@ -489,6 +499,7 @@ $(function () {
         });
         self.firmwareStatus = ko.pureComputed(function () {
             var fw = self.firmware();
+            if (fw.recovery_required) return "Communication locked. Power-cycle the printer, then confirm the reboot below. No RME commands or printer file actions will be sent until recovery is confirmed.";
             if (!fw.status || fw.status === "idle") return "No firmware staged.";
             if (fw.status === "queued") return "Waiting for the printer USB queue; no firmware bytes have been sent yet.";
             if (fw.status === "canceling") return "Canceling the queued transfer before any firmware bytes are sent.";
@@ -727,6 +738,11 @@ $(function () {
             }
         };
         self.cancelFirmware = function () { self.command("cancel_firmware"); };
+        self.confirmPrinterReboot = function () {
+            if (window.confirm("Confirm that the printer itself was power-cycled or rebooted? RME communication will be unlocked.")) {
+                self.command("confirm_printer_reboot");
+            }
+        };
         self.deleteFirmware = function () {
             var filename = self.selectedFirmware();
             if (!filename || !window.confirm("Delete " + filename + " from this Pi?")) return;

@@ -269,6 +269,11 @@
             </div>
             <p data-bind="text: firmwareStatus"></p>
             <div class="alert alert-error" data-bind="visible: firmwareError, text: firmwareError"></div>
+            <div class="alert alert-warning" data-bind="visible: transportRecoveryRequired">
+                <strong>Printer reboot required.</strong>
+                Power-cycle the printer. RME command, file, and firmware traffic is locked until reboot recovery is confirmed.
+                <button type="button" class="btn btn-warning" data-bind="click: confirmPrinterReboot">I rebooted the printer</button>
+            </div>
             <p class="help-block">Choose the BBF in the “Firmware on Pi” list, then use Stage or Stage and flash. Current firmware protects and verifies the upload as hidden <code>/usb/FWUPD.RME</code>; it deliberately will not appear in the printer's BBF picker. After Stage, use “Flash and reboot” here to send the required FILE FLASH command. Delete from Pi only removes the source copy.</p>
         </div>
     </div>
