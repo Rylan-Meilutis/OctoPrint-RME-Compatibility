@@ -302,6 +302,11 @@ class RmeFileService(object):
                         if self._cancel.is_set():
                             raise
                         self._abort_binary_transport()
+                        # The binary ABORTED record proves Buddy restored its
+                        # parser, but OctoPrint's line writer is released only
+                        # afterward. Queue and acknowledge one ordinary abort
+                        # as a mode/state fence before beginning a new upload.
+                        self._reset_line_upload_state()
                         if self.logger:
                             self.logger.warning(
                                 "RME binary upload failed; retrying with text transport: %s",
@@ -373,6 +378,13 @@ class RmeFileService(object):
                 self.end_binary()
             self._binary_active = False
 
+    def _reset_line_upload_state(self):
+        """Confirm line mode and an empty firmware upload state."""
+        self._exchange(
+            "@RME FILE ABORT", "file_aborted", timeout=10,
+            respect_cancel=False,
+        )
+
     @staticmethod
     def _binary_frame(offset, payload):
         """Build one firmware raw frame with a CRC32-protected payload."""
@@ -418,6 +430,7 @@ class RmeFileService(object):
                 "Using RME binary upload: chunk=%d window=%d", chunk_size, window_size
             )
         retries = 0
+        rejected_offset = None
         with open(local_path, "rb") as source:
             while offset < size:
                 source.seek(offset)
@@ -441,7 +454,20 @@ class RmeFileService(object):
                     raise FileServiceError("Printer returned an invalid binary upload offset")
                 if response["record"] == "file_binary_nack":
                     retries += 1
-                    if retries > 3:
+                    if acknowledged == rejected_offset and retries >= 2 and chunk_size > 256:
+                        # Repeating the identical maximum-size frame cannot
+                        # recover from a marginal CDC packet boundary. Smaller
+                        # raw frames retain the firmware-advertised cumulative
+                        # window while reducing each USB write atomically.
+                        chunk_size = max(256, chunk_size // 2)
+                        if self.logger:
+                            self.logger.warning(
+                                "RME binary upload NACK repeated at offset %d; "
+                                "reducing raw chunk to %d bytes",
+                                acknowledged, chunk_size,
+                            )
+                    rejected_offset = acknowledged
+                    if retries > 6:
                         raise FileServiceError(
                             "Printer repeatedly rejected binary data at offset %d"
                             % acknowledged
@@ -457,6 +483,7 @@ class RmeFileService(object):
                 if acknowledged != expected_offset:
                     raise FileServiceError("Printer returned an incomplete binary upload ACK")
                 retries = 0
+                rejected_offset = None
                 offset = acknowledged
                 if progress:
                     progress(offset, size)

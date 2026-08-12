@@ -15,6 +15,69 @@ from octoprint_rme_compatibility.protocol import parse_line
 
 
 class FileServiceTests(unittest.TestCase):
+    def test_repeated_binary_nack_reduces_raw_chunk_before_fallback(self):
+        service = None
+        source_data = bytes(range(256)) * 32
+        committed = bytearray()
+        window = []
+        nacks = [0]
+        payload_sizes = []
+
+        def send(command):
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb write=1 bulk=1 binary=1 "
+                    "binary_chunk=1024 binary_window=8"
+                ))
+            elif "WRITE_BINARY_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_READY offset=0 chunk=1024 window=8 "
+                    "header=10 endian=little crc=crc32"
+                ))
+
+        def send_binary(frame):
+            offset, length, _ = struct.unpack("<IHI", frame[:10])
+            payload = frame[10:]
+            if not payload:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_COMPLETE path=FWUPD.BBF"
+                ))
+                return
+            payload_sizes.append(length)
+            window.append((offset, payload))
+            if len(window) == 8 or offset + length == len(source_data):
+                if nacks[0] < 2:
+                    nacks[0] += 1
+                    service.handle_response(parse_line(
+                        "RME_FILE_BINARY_NACK offset=%d" % len(committed)
+                    ))
+                else:
+                    for frame_offset, frame_payload in window:
+                        self.assertEqual(len(committed), frame_offset)
+                        committed.extend(frame_payload)
+                    service.handle_response(parse_line(
+                        "RME_FILE_BINARY_ACK offset=%d" % len(committed)
+                    ))
+                window[:] = []
+
+        service = RmeFileService(
+            send, response_timeout=1, send_binary=send_binary,
+            begin_binary=lambda: "@RME FILE RAW_SESSION token=" + "0" * 32,
+            end_binary=lambda: None,
+        )
+        service._wait_for_binary_quiet = lambda: None
+        with tempfile.NamedTemporaryFile(delete=False) as source:
+            source.write(source_data)
+            source_path = source.name
+        try:
+            service.write_file(source_path, "FWUPD.BBF")
+        finally:
+            os.unlink(source_path)
+
+        self.assertEqual(source_data, bytes(committed))
+        self.assertIn(1024, payload_sizes)
+        self.assertIn(512, payload_sizes)
+
     def test_binary_upload_uses_crc_frames_and_recovers_from_nack(self):
         service = None
         source_data = bytes(range(256)) * 36
@@ -113,6 +176,8 @@ class FileServiceTests(unittest.TestCase):
                 service.handle_response(parse_line(
                     "RME_FILE_BULK_READY offset=0 chunk=320 window=4"
                 ))
+            elif command == "@RME FILE ABORT":
+                service.handle_response(parse_line("RME_FILE_ABORTED"))
             elif "WRITE_BULK_CHUNK" in command:
                 payload = base64.b64decode(command.split("data=", 1)[1])
                 offset = int(command.split("offset=", 1)[1].split(" ", 1)[0])
@@ -139,6 +204,12 @@ class FileServiceTests(unittest.TestCase):
             os.unlink(source_path)
         self.assertTrue(ended)
         self.assertEqual(1, service._capabilities["binary"])
+        abort_index = commands.index("@RME FILE ABORT")
+        bulk_index = next(
+            index for index, command in enumerate(commands)
+            if "WRITE_BULK_BEGIN" in command
+        )
+        self.assertLess(abort_index, bulk_index)
         self.assertTrue(any("WRITE_BULK_BEGIN" in command for command in commands))
         self.assertTrue(any("WRITE_BULK_END" in command for command in commands))
 

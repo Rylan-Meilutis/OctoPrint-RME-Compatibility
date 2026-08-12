@@ -7,7 +7,7 @@ plugin_package = "octoprint_rme_compatibility"
 
 setup(
     name="OctoPrint-RMECompatibility",
-    version="0.1.0b29",
+    version="0.1.0b30",
     description="OctoPrint support for Prusa RME firmware",
     author="Rylan Meilutis and RME contributors",
     author_email="rylan.meilutis@gmail.com",

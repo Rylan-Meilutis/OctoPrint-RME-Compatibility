@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0b30 — 2026-08-11
+
+- Added an acknowledged line-mode abort fence between a failed raw-binary
+  upload and its text fallback. Bulk mode now starts only after the firmware
+  confirms that binary parsing has ended and its upload state is empty,
+  preventing immediate `upload_state` failures during fallback.
+- Repeated binary NACKs at one offset now progressively reduce the raw frame
+  size from the negotiated maximum before abandoning the fast transport. This
+  improves recovery from marginal USB/CDC packet boundaries while retaining
+  the firmware-advertised cumulative ACK window.
+
 ## 0.1.0b29 — 2026-08-11
 
 - Stopped periodic session keepalive acknowledgements from being interpreted
