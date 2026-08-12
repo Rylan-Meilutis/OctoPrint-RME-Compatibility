@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 import zlib
+from unittest import mock
 
 from octoprint_rme_compatibility.file_service import (
     FileServiceError,
@@ -15,6 +16,65 @@ from octoprint_rme_compatibility.protocol import parse_line
 
 
 class FileServiceTests(unittest.TestCase):
+    def test_transfer_latch_waits_without_arming_raw_writer(self):
+        service = None
+        commands = []
+        armed = []
+
+        def send(command):
+            commands.append(command)
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb write=1 binary=1 "
+                    "binary_chunk=1024 binary_window=8"
+                ))
+            elif "WRITE_BINARY_BEGIN" in command:
+                attempts = sum("WRITE_BINARY_BEGIN" in item for item in commands)
+                if attempts < 3:
+                    service.handle_response(parse_line(
+                        "echo:RME_ERROR workflow=file code=transfer_busy"
+                    ))
+                else:
+                    service.handle_response(parse_line(
+                        "RME_FILE_BINARY_READY offset=0 chunk=1024 window=8 "
+                        "header=10 endian=little crc=crc32"
+                    ))
+
+        def begin_binary():
+            armed.append(len(commands))
+            return "@RME FILE RAW_SESSION token=" + "a" * 32
+
+        def send_binary(frame):
+            offset, length, _ = struct.unpack("<IHI", frame[:10])
+            if length:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_ACK offset=%d" % (offset + length)
+                ))
+            else:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_COMPLETE path=test.bin"
+                ))
+
+        service = RmeFileService(
+            send, response_timeout=1, send_binary=send_binary,
+            begin_binary=begin_binary, end_binary=lambda: None,
+        )
+        with tempfile.NamedTemporaryFile(delete=False) as source:
+            source.write(b"latched transfer")
+            source_path = source.name
+        try:
+            with mock.patch(
+                "octoprint_rme_compatibility.file_service.TRANSFER_LATCH_RETRY_SECONDS",
+                0.001,
+            ):
+                service.write_file(source_path, "test.bin")
+        finally:
+            os.unlink(source_path)
+
+        self.assertEqual(3, sum("WRITE_BINARY_BEGIN" in item for item in commands))
+        self.assertEqual(1, len(armed))
+        self.assertGreaterEqual(armed[0], 4)
+
     def test_repeated_binary_nack_reduces_raw_chunk_before_fallback(self):
         service = None
         # Large enough to prove both directions of adaptation: repeated NACKs

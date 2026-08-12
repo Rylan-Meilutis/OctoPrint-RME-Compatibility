@@ -20,6 +20,7 @@ BULK_WINDOW_SIZE = 4
 # pace submission; the raw binary transport remains the preferred fast path.
 OCTOPRINT_SAFE_BULK_CHUNK_SIZE = 192
 BULK_COMMAND_PACING_SECONDS = 0.01
+TRANSFER_LATCH_RETRY_SECONDS = 1.0
 
 
 class FileServiceError(RuntimeError):
@@ -185,6 +186,33 @@ class RmeFileService(object):
                 self._expected.clear()
                 self._condition.notify_all()
 
+    def _exchange_when_available(self, command, expected, **kwargs):
+        """Wait behind a firmware-owned print or Connect/Link transfer.
+
+        Buddy's shared transfer monitor reports ``transfer_busy`` while
+        another producer owns USB storage.  Treat that response, and a remote
+        print that OctoPrint did not start, as a held latch rather than a
+        failed upload.  The operation lock remains held, so another local RME
+        operation cannot overtake this waiter.
+        """
+        while True:
+            try:
+                return self._exchange(command, expected, **kwargs)
+            except FileServiceError as exc:
+                message = str(exc)
+                if not (
+                    message.endswith("transfer_busy")
+                    or message.endswith("printer_busy")
+                ):
+                    raise
+                if self._cancel.is_set():
+                    raise FileServiceError("Printer USB operation cancelled")
+                if self.logger:
+                    self.logger.info(
+                        "RME operation paused behind printer activity: %s", message
+                    )
+                self._cancel.wait(TRANSFER_LATCH_RETRY_SECONDS)
+
     @staticmethod
     def _terminal(records, record_name):
         return next(item for item in reversed(records) if item.get("record") == record_name)
@@ -220,7 +248,7 @@ class RmeFileService(object):
             self._cancel.clear()
             offset = 0
             while True:
-                records = self._exchange(
+                records = self._exchange_when_available(
                     "@RME FILE READ path=%s offset=%d length=%d"
                     % (encoded, offset, FILE_CHUNK_SIZE),
                     "file_data",
@@ -418,16 +446,18 @@ class RmeFileService(object):
 
     def _write_binary(self, local_path, encoded, size, digest, progress):
         """Use negotiated raw frames with cumulative ACK recovery."""
-        marker = self.begin_binary()
+        # Do not reserve/block OctoPrint's writer until firmware has granted
+        # the shared transfer latch. A Connect/Link owner may keep BEGIN in a
+        # retry loop for minutes; arming RAW_SESSION before READY would wedge
+        # all ordinary line traffic for that entire wait.
         try:
-            records = self._exchange(
-                [
-                    "@RME FILE WRITE_BINARY_BEGIN path=%s size=%d sha256=%s"
-                    % (encoded, size, digest),
-                    marker,
-                ],
+            records = self._exchange_when_available(
+                "@RME FILE WRITE_BINARY_BEGIN path=%s size=%d sha256=%s"
+                % (encoded, size, digest),
                 "file_binary_ready",
             )
+            marker = self.begin_binary()
+            self.send_command(marker)
         except Exception:
             self.end_binary()
             raise
@@ -531,7 +561,7 @@ class RmeFileService(object):
 
     def _write_legacy(self, local_path, encoded, size, digest, progress):
         """Use the original one-ACK-per-48-byte transfer for older firmware."""
-        self._exchange(
+        self._exchange_when_available(
             "@RME FILE WRITE_BEGIN path=%s size=%d sha256=%s" % (encoded, size, digest),
             "file_write_ready",
         )
@@ -563,7 +593,7 @@ class RmeFileService(object):
         retains the single OctoPrint serial owner while reducing ACK round trips
         by roughly 32x compared with the legacy transport.
         """
-        records = self._exchange(
+        records = self._exchange_when_available(
             "@RME FILE WRITE_BULK_BEGIN path=%s size=%d sha256=%s"
             % (encoded, size, digest), "file_bulk_ready",
         )
@@ -624,7 +654,7 @@ class RmeFileService(object):
             command += " dest=%s" % normalize_remote_path(destination)
         with self._operation_lock:
             self._cancel.clear()
-            self._exchange(command, replies[action])
+            self._exchange_when_available(command, replies[action])
 
     @staticmethod
     def _hash_file(path):

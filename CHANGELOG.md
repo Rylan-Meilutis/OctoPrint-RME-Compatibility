@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.0b34 — 2026-08-11
+
+- Added host-side support for the firmware's shared RME/Prusa Connect/PrusaLink
+  activity latch. `transfer_busy` and remote `printer_busy` responses now pause
+  and retry the queued RME operation instead of turning ordinary contention
+  into an upload failure.
+- Kept OctoPrint's local RME operation lock held while waiting so file,
+  firmware, and print actions cannot overtake one another.
+- Delayed reservation of OctoPrint's raw writer until firmware has granted the
+  binary upload and returned `RME_FILE_BINARY_READY`; a long Connect transfer
+  can no longer wedge normal line traffic while an RME upload waits.
+- Added `FIRMWARE_UPSTREAM_TRANSFER_LATCH.md`, a clean upstream-firmware
+  handoff for the shared storage/print latch and INDX PA free-air pellet cycle.
+
 ## 0.1.0b33 — 2026-08-11
 
 - Turned an unconfirmed binary teardown into a durable printer-reboot safety
