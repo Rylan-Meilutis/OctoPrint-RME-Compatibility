@@ -13,13 +13,6 @@ from urllib.parse import quote
 FILE_CHUNK_SIZE = 48
 BULK_CHUNK_SIZE = 384
 BULK_WINDOW_SIZE = 4
-# Firmware accepts a 384-byte decoded Base64 chunk, but OctoPrint can pipeline
-# four long commands before their ``ok`` replies. Some CDC/Marlin paths have
-# duplicated or truncated those bursts even when each individual command was
-# just below 512 characters. Keep each fallback line near 300 characters and
-# pace submission; the raw binary transport remains the preferred fast path.
-OCTOPRINT_SAFE_BULK_CHUNK_SIZE = 192
-BULK_COMMAND_PACING_SECONDS = 0.01
 TRANSFER_LATCH_RETRY_SECONDS = 1.0
 
 
@@ -348,25 +341,7 @@ class RmeFileService(object):
                 use_binary = bool(
                     self.send_binary and self.begin_binary and self.end_binary
                     and int(self._capabilities.get("binary", 0))
-                    # Buddy protocol generations through 0702267843 can enter
-                    # an unbounded corrupt-length discard state in raw mode,
-                    # after which even the abort frame is ignored. Do not risk
-                    # that transport until firmware explicitly promises bounded
-                    # resynchronization and out-of-band abort recognition.
-                    and (
-                        int(self._capabilities.get("binary_resync", 0))
-                        or int(self._capabilities.get("binary_timeout_ms", 0)) > 0
-                    )
                 )
-                if (
-                    not use_binary
-                    and int(self._capabilities.get("binary", 0))
-                    and self.logger
-                ):
-                    self.logger.info(
-                        "RME binary upload disabled: firmware does not advertise "
-                        "bounded raw recovery; using acknowledged bulk transport"
-                    )
                 if use_binary:
                     try:
                         offset = self._write_binary(
@@ -448,14 +423,29 @@ class RmeFileService(object):
                 self._exchange(
                     self._binary_frame(0xFFFFFFFF, b""),
                     "file_binary_aborted",
-                    timeout=10,
+                    timeout=max(
+                        12,
+                        int(self._capabilities.get("binary_timeout_ms", 10000))
+                        / 1000.0 + 2,
+                    ),
                     respect_cancel=False,
                 )
                 confirmed = True
         except Exception as exc:
-            failure = exc
-            if self.logger:
-                self.logger.warning("Could not transmit binary abort frame: %s", exc)
+            # Current Buddy restores the line parser and preserves the durable
+            # prefix when its binary inactivity timer expires. That SUSPENDED
+            # record is just as authoritative as an explicit ABORTED reply and
+            # must not leave OctoPrint permanently recovery-locked.
+            if (
+                isinstance(exc, FileServiceError)
+                and exc.record
+                and exc.record.get("record") == "file_binary_suspended"
+            ):
+                confirmed = True
+            else:
+                failure = exc
+                if self.logger:
+                    self.logger.warning("Could not transmit binary abort frame: %s", exc)
         finally:
             try:
                 if self.end_binary:
@@ -522,18 +512,10 @@ class RmeFileService(object):
             raise FileServiceError("Printer returned an unsupported binary byte order")
         if str(ready.get("crc", "crc32")) != "crc32":
             raise FileServiceError("Printer returned an unsupported binary checksum")
-        negotiated_chunk_size = min(
+        chunk_size = min(
             65535,
             max(1, int(ready.get("chunk", self._capabilities.get("binary_chunk", 1024)))),
         )
-        # The current Buddy endpoint advertises 1024 bytes, but field traces
-        # show occasional header/CRC loss at that exact boundary followed by a
-        # bogus oversized-length discard. 512-byte payloads retain the raw
-        # protocol's throughput advantage while fitting safely inside common
-        # CDC packet/FIFO boundaries. Never climb back above a size that has
-        # produced a reasoned NACK during this upload.
-        chunk_size = min(512, negotiated_chunk_size)
-        adaptive_ceiling = chunk_size
         window_size = min(
             64,
             max(1, int(ready.get("window", self._capabilities.get("binary_window", 8)))),
@@ -544,8 +526,6 @@ class RmeFileService(object):
                 "Using RME binary upload: chunk=%d window=%d", chunk_size, window_size
             )
         retries = 0
-        rejected_offset = None
-        successful_windows = 0
         with open(local_path, "rb") as source:
             while offset < size:
                 source.seek(offset)
@@ -572,39 +552,13 @@ class RmeFileService(object):
                 if nacks:
                     response = nacks[0]
                     acknowledged = min(int(item.get("offset", -1)) for item in nacks)
-                    reasons = {
-                        str(item.get("reason") or "").lower() for item in nacks
-                    }
                 else:
                     response = responses[-1]
                     acknowledged = int(response.get("offset", -1))
-                    reasons = set()
                 if not offset <= acknowledged <= expected_offset:
                     raise FileServiceError("Printer returned an invalid binary upload offset")
                 if nacks:
-                    successful_windows = 0
                     retries += 1
-                    reasoned_failure = bool(
-                        reasons.intersection(("crc_mismatch", "chunk_too_large"))
-                    )
-                    repeated_failure = acknowledged == rejected_offset and retries >= 2
-                    if (reasoned_failure or repeated_failure) and chunk_size > 256:
-                        # Repeating the identical maximum-size frame cannot
-                        # recover from a marginal CDC packet boundary. Smaller
-                        # raw frames retain the firmware-advertised cumulative
-                        # window while reducing each USB write atomically.
-                        chunk_size = max(256, chunk_size // 2)
-                        adaptive_ceiling = min(adaptive_ceiling, chunk_size)
-                        if self.logger:
-                            self.logger.warning(
-                                "RME binary upload NACK at offset %d (%s); "
-                                "reducing and capping raw chunk at %d bytes",
-                                acknowledged,
-                                ",".join(sorted(reason for reason in reasons if reason))
-                                or "unreported",
-                                chunk_size,
-                            )
-                    rejected_offset = acknowledged
                     if retries > 6:
                         raise FileServiceError(
                             "Printer repeatedly rejected binary data at offset %d"
@@ -621,17 +575,7 @@ class RmeFileService(object):
                 if acknowledged != expected_offset:
                     raise FileServiceError("Printer returned an incomplete binary upload ACK")
                 retries = 0
-                rejected_offset = None
                 offset = acknowledged
-                successful_windows += 1
-                if chunk_size < adaptive_ceiling and successful_windows >= 16:
-                    chunk_size = min(adaptive_ceiling, chunk_size * 2)
-                    successful_windows = 0
-                    if self.logger:
-                        self.logger.info(
-                            "RME binary upload stable; increasing raw chunk to %d bytes",
-                            chunk_size,
-                        )
                 if progress:
                     progress(offset, size)
         return offset
@@ -683,7 +627,7 @@ class RmeFileService(object):
         # firmware release's defaults. Defensive ceilings bound memory and
         # command length if a malformed capability response is received.
         chunk_size = min(
-            OCTOPRINT_SAFE_BULK_CHUNK_SIZE,
+            65535,
             max(1, int(ready.get("chunk", self._capabilities.get("bulk_chunk", BULK_CHUNK_SIZE)))),
         )
         window_size = min(
@@ -710,7 +654,6 @@ class RmeFileService(object):
                 records = self._exchange(
                     commands, "file_bulk_ack",
                     terminal=lambda item, target=expected_offset: int(item.get("offset", -1)) >= target,
-                    send_delay=BULK_COMMAND_PACING_SECONDS,
                 )
                 acknowledged = int(self._terminal(records, "file_bulk_ack")["offset"])
                 if acknowledged != expected_offset:

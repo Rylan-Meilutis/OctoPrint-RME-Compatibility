@@ -89,7 +89,7 @@ class FileServiceTests(unittest.TestCase):
             "@RME FIRMWARE QUERY", "@RME FIRMWARE UNSTAGE",
         ], commands)
 
-    def test_binary_without_resync_capability_uses_safe_bulk_transport(self):
+    def test_current_binary_capability_uses_fast_transport_without_old_resync_flag(self):
         service = None
         commands = []
         raw_frames = []
@@ -102,24 +102,27 @@ class FileServiceTests(unittest.TestCase):
                     "bulk_window=4 binary=1 binary_chunk=1024 binary_window=8 "
                     "binary_control=1 resumable_abort=1 durable_resume=1"
                 ))
-            elif "WRITE_BULK_BEGIN" in command:
+            elif "WRITE_BINARY_BEGIN" in command:
                 service.handle_response(parse_line(
-                    "RME_FILE_BULK_READY offset=0 chunk=384 window=4"
+                    "RME_FILE_BINARY_READY offset=0 chunk=1024 window=8 "
+                    "header=10 endian=little crc=crc32"
                 ))
-            elif "WRITE_BULK_CHUNK" in command:
-                offset = int(command.split("offset=", 1)[1].split(" ", 1)[0])
-                payload = base64.b64decode(command.split("data=", 1)[1])
+
+        def send_binary(frame):
+            raw_frames.append(frame)
+            offset, length, _ = struct.unpack("<IHI", frame[:10])
+            if length:
                 service.handle_response(parse_line(
-                    "RME_FILE_BULK_ACK offset=%d" % (offset + len(payload))
+                    "RME_FILE_BINARY_ACK offset=%d" % (offset + length)
                 ))
-            elif "WRITE_BULK_END" in command:
+            else:
                 service.handle_response(parse_line(
-                    "RME_FILE_BULK_COMPLETE path=FWUPD.BBF"
+                    "RME_FILE_BINARY_COMPLETE path=FWUPD.BBF"
                 ))
 
         service = RmeFileService(
             send, response_timeout=1,
-            send_binary=raw_frames.append,
+            send_binary=send_binary,
             begin_binary=lambda: "@RME FILE RAW_SESSION token=" + "f" * 32,
             end_binary=lambda: None,
         )
@@ -131,10 +134,9 @@ class FileServiceTests(unittest.TestCase):
         finally:
             os.unlink(source_path)
 
-        self.assertFalse(raw_frames)
-        self.assertFalse(any("WRITE_BINARY_BEGIN" in item for item in commands))
-        self.assertTrue(any("WRITE_BULK_BEGIN" in item for item in commands))
-        self.assertTrue(any("WRITE_BULK_END" in item for item in commands))
+        self.assertTrue(raw_frames)
+        self.assertTrue(any("WRITE_BINARY_BEGIN" in item for item in commands))
+        self.assertFalse(any("WRITE_BULK_BEGIN" in item for item in commands))
 
     def test_transfer_latch_waits_without_arming_raw_writer(self):
         service = None
@@ -195,10 +197,10 @@ class FileServiceTests(unittest.TestCase):
         self.assertEqual(1, len(armed))
         self.assertGreaterEqual(armed[0], 4)
 
-    def test_repeated_binary_nack_reduces_raw_chunk_before_fallback(self):
+    def test_repeated_binary_nack_retries_negotiated_raw_chunk(self):
         service = None
-        # Large enough to prove adaptation: start at the safe 512-byte CDC
-        # boundary, then reduce after repeated NACKs on a marginal path.
+        # Current firmware snapshots and bounds its parser, so retransmission
+        # keeps the negotiated 1024-byte frame size.
         source_data = bytes(range(256)) * 512
         committed = bytearray()
         window = []
@@ -257,10 +259,10 @@ class FileServiceTests(unittest.TestCase):
             os.unlink(source_path)
 
         self.assertEqual(source_data, bytes(committed))
-        self.assertIn(512, payload_sizes)
-        self.assertIn(256, payload_sizes)
+        self.assertTrue(payload_sizes)
+        self.assertEqual({1024}, set(payload_sizes))
 
-    def test_reasoned_crc_nack_reduces_chunk_immediately_and_stays_reduced(self):
+    def test_reasoned_crc_nack_restarts_without_throttling(self):
         service = None
         source_data = bytes(range(256)) * 96
         committed = bytearray()
@@ -323,9 +325,8 @@ class FileServiceTests(unittest.TestCase):
             os.unlink(source_path)
 
         self.assertEqual(source_data, bytes(committed))
-        self.assertEqual(512, payload_sizes[0])
-        self.assertIn(256, payload_sizes)
-        self.assertEqual(256, payload_sizes[-1])
+        self.assertEqual(1024, payload_sizes[0])
+        self.assertEqual({1024}, set(payload_sizes))
 
     def test_binary_upload_uses_crc_frames_and_recovers_from_nack(self):
         service = None
@@ -543,6 +544,35 @@ class FileServiceTests(unittest.TestCase):
         self.assertNotIn("@RME FILE ABORT", commands)
         self.assertTrue(service._binary_mode_uncertain)
 
+    def test_binary_inactivity_suspension_confirms_line_mode_recovery(self):
+        ended = []
+        service = None
+
+        def send_binary(frame):
+            offset, length, _ = struct.unpack("<IHI", frame[:10])
+            self.assertEqual(0xFFFFFFFF, offset)
+            self.assertEqual(0, length)
+            service.handle_response(parse_line(
+                "RME_FILE_BINARY_SUSPENDED offset=8192 resumable=1 "
+                "reason=inactivity_timeout"
+            ))
+
+        service = RmeFileService(
+            lambda command: None,
+            response_timeout=1,
+            send_binary=send_binary,
+            begin_binary=lambda: "@RME FILE RAW_SESSION token=" + "a" * 32,
+            end_binary=lambda: ended.append(True),
+        )
+        service._capabilities = {"binary_timeout_ms": 1}
+        service._binary_active = True
+        service._binary_mode_uncertain = True
+
+        service._abort_binary_transport()
+
+        self.assertEqual([True], ended)
+        self.assertFalse(service.binary_mode_uncertain)
+
     def test_lists_and_downloads_space_containing_binary_file(self):
         service = None
 
@@ -660,12 +690,12 @@ class FileServiceTests(unittest.TestCase):
         finally:
             os.unlink(source_path)
         chunks = [command for command in commands if "WRITE_BULK_CHUNK" in command]
-        self.assertEqual(9, len(chunks))
-        self.assertLessEqual(max(
+        self.assertEqual(5, len(chunks))
+        self.assertEqual(384, max(
             len(base64.b64decode(command.split("data=", 1)[1]))
             for command in chunks
-        ), 192)
-        self.assertLess(max(map(len, chunks)), 320)
+        ))
+        self.assertLess(max(map(len, chunks)), 600)
         self.assertTrue(any("WRITE_BULK_END" in command for command in commands))
 
     def test_paths_cannot_escape_usb_root(self):

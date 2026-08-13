@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import logging
 import os
 import queue
@@ -383,10 +384,14 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIsNone(plugin._state["prompt"])
 
     def test_one_click_firmware_flash_waits_for_verified_staged_state(self):
+        mutations = []
         plugin = RmeCompatibilityPlugin()
         plugin._printer = _Printer()
         plugin._logger = logging.getLogger("rme-one-click-flash-test")
         plugin._uploader = types.SimpleNamespace(busy=False)
+        plugin._file_service = types.SimpleNamespace(
+            mutate=lambda action, path: mutations.append((action, path))
+        )
         plugin._defer = lambda callback, *args: callback(*args)
         plugin._state.update(connected=True, supported=True)
         plugin._state["firmware"]["flash_after_stage"] = True
@@ -397,7 +402,8 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._firmware_state_changed(
             status="ready", progress=100, staged_path="/usb/FWUPD.BBF"
         )
-        self.assertEqual(["M997 /usb/FWUPD.BBF"], plugin._printer.command_batches)
+        self.assertEqual([("FLASH", "FWUPD.RME")], mutations)
+        self.assertEqual([], plugin._printer.command_batches)
         self.assertEqual("flash_queued", plugin._state["firmware"]["status"])
         self.assertFalse(plugin._state["firmware"]["flash_after_stage"])
 
@@ -424,11 +430,14 @@ class ToolmapGateTests(unittest.TestCase):
                 progress(size, size)
                 finalizing()
 
-            def stat(self, remote_path):
-                self.assert_remote_path = remote_path
+            def firmware_status(self):
                 return {
-                    "type": "file",
+                    "candidate": 1,
+                    "armed": 0,
+                    "state": "ready",
+                    "path": "FWUPD.RME",
                     "size": os.path.getsize(self.upload[0]),
+                    "sha256": hashlib.sha256(b"signed-rme-bbf").hexdigest(),
                 }
 
         with tempfile.TemporaryDirectory() as firmware_directory:
@@ -455,7 +464,6 @@ class ToolmapGateTests(unittest.TestCase):
             plugin._firmware_file_thread.join(timeout=2)
 
             self.assertEqual((path, "FWUPD.BBF"), plugin._file_service.upload)
-            self.assertEqual("FWUPD.RME", plugin._file_service.assert_remote_path)
             self.assertEqual("queued", plugin._file_service.status_before_start)
             self.assertEqual("ready", plugin._state["firmware"]["status"])
             self.assertEqual("/usb/FWUPD.RME", plugin._state["firmware"]["staged_path"])
@@ -1086,9 +1094,16 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertFalse(plugin._printer_transfer_active())
 
     def test_stage_reconciliation_never_promotes_an_unclaimed_usb_file(self):
+        records = [
+            {"candidate": 0, "armed": 0, "state": "idle"},
+            {
+                "candidate": 1, "armed": 0, "state": "ready",
+                "path": "FWUPD.RME", "size": 3921020, "sha256": "a" * 64,
+            },
+        ]
         plugin = RmeCompatibilityPlugin()
         plugin._file_service = types.SimpleNamespace(
-            stat=lambda path: {"type": "file", "size": 3921020}
+            firmware_status=lambda: records.pop(0)
         )
         plugin._persist_and_publish = lambda: None
 
@@ -1156,13 +1171,8 @@ class ToolmapGateTests(unittest.TestCase):
                 self.present = True
                 self.mutations = []
 
-            def stat(self, path):
-                if not self.present:
-                    raise FileServiceError("Printer USB operation failed: not_found")
-                return {"type": "file", "size": 1234}
-
-            def mutate(self, action, path):
-                self.mutations.append((action, path))
+            def unstage_firmware(self):
+                self.mutations.append("unstage")
                 self.present = False
 
         plugin = RmeCompatibilityPlugin()
@@ -1175,11 +1185,11 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._defer = lambda callback, *args: None
 
         plugin._unstage_firmware()
-        self.assertEqual([("DELETE", "FWUPD.RME")], plugin._file_service.mutations)
+        self.assertEqual(["unstage"], plugin._file_service.mutations)
         self.assertEqual("idle", plugin._state["firmware"]["status"])
 
         plugin._unstage_firmware()
-        self.assertEqual([("DELETE", "FWUPD.RME")], plugin._file_service.mutations)
+        self.assertEqual(["unstage", "unstage"], plugin._file_service.mutations)
 
     def test_schema_two_lighting_snapshot_is_aggregated_without_polling(self):
         plugin = RmeCompatibilityPlugin()

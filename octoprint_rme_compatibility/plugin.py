@@ -1017,18 +1017,12 @@ class RmeCompatibilityPlugin(
                                     "OctoPrint raw serial transport made no progress"
                                 )
                             written += count
-                        # Drain each CDC frame boundary and give Buddy's raw
-                        # decoder a small turn without reducing its negotiated
-                        # eight-frame cumulative-ACK window.
+                        # Drain each complete frame to the CDC endpoint. Current
+                        # Buddy bounds and snapshots its parser, so no host-side
+                        # delay is needed between its negotiated window frames.
                         flush = getattr(serial_port, "flush", None)
                         if callable(flush):
                             flush()
-                        # Buddy's raw decoder runs outside the USB ISR. A short
-                        # frame boundary prevents the host from filling CDC
-                        # buffers faster than the application can validate and
-                        # commit them while preserving its negotiated 1024-byte
-                        # frame and eight-frame cumulative-ACK fast path.
-                        time.sleep(0.005)
                     except Exception as exc:
                         pending["error"] = exc
                     finally:
@@ -3150,9 +3144,9 @@ class RmeCompatibilityPlugin(
                 file_supported = bool(
                     self._state["storage"].get("supported") and int(caps.get("write", 0))
                 )
-            # Current RME firmware advertises FILE WRITE and should use it. Its
-            # M998 handler relies on Marlin string_arg and can reject otherwise
-            # valid numeric P phases as FW_UPLOAD PHASE.
+            # The current firmware contract requires FILE WRITE. Probe once if
+            # the UI has not yet cached CAPS, then fail clearly instead of
+            # silently dropping to the obsolete M998 upload protocol.
             if self._file_service and not file_supported:
                 try:
                     probed = self._file_service.capabilities()
@@ -3163,35 +3157,33 @@ class RmeCompatibilityPlugin(
                             supported=file_supported, caps=caps,
                             status="ready" if file_supported else "unsupported", error=None,
                         )
-                except Exception:
-                    file_supported = False
+                except Exception as exc:
+                    raise UploadError(
+                        "The printer did not expose the current RME FILE protocol"
+                    ) from exc
+            if not file_supported:
+                raise UploadError(
+                    "The printer does not expose the current RME FILE write protocol"
+                )
             with self._state_lock:
                 self._state["firmware"]["flash_after_stage"] = bool(flash_after_stage)
-            if file_supported:
-                # ``write_file`` owns the same serialized operation lock as
-                # directory listing and capability probes. Starting the worker
-                # here lets a short UI refresh finish first instead of exposing
-                # a transient HTTP 409 to the user.
-                self._firmware_file_cancel.clear()
-                self._firmware_state_changed(
-                    status="queued", filename=metadata["name"], size=metadata["size"],
-                    sha256=metadata["sha256"], offset=0, progress=0, error=None,
-                    staged_path=None,
-                )
-                self._firmware_file_thread = threading.Thread(
-                    target=self._run_file_firmware_upload,
-                    args=(path, metadata),
-                    name="rme-file-firmware-upload",
-                    daemon=True,
-                )
-                self._firmware_file_thread.start()
-                return
-            try:
-                self._uploader.start(path, metadata)
-            except Exception:
-                with self._state_lock:
-                    self._state["firmware"]["flash_after_stage"] = False
-                raise
+            # ``write_file`` owns the same serialized operation lock as
+            # directory listing and capability probes. Starting the worker
+            # here lets a short UI refresh finish first instead of exposing
+            # a transient HTTP 409 to the user.
+            self._firmware_file_cancel.clear()
+            self._firmware_state_changed(
+                status="queued", filename=metadata["name"], size=metadata["size"],
+                sha256=metadata["sha256"], offset=0, progress=0, error=None,
+                staged_path=None,
+            )
+            self._firmware_file_thread = threading.Thread(
+                target=self._run_file_firmware_upload,
+                args=(path, metadata),
+                name="rme-file-firmware-upload",
+                daemon=True,
+            )
+            self._firmware_file_thread.start()
 
     def _run_file_firmware_upload(self, path, metadata):
         """Stage and verify ``FWUPD.BBF`` through the current FILE service."""
@@ -3206,37 +3198,21 @@ class RmeCompatibilityPlugin(
                     status="verifying", offset=metadata["size"], progress=100
                 ),
             )
-            with self._state_lock:
-                authoritative = bool(int(
-                    self._state.get("storage", {}).get("caps", {}).get(
-                        "firmware_status", 0
-                    )
-                ))
-            if authoritative:
-                staged = self._file_service.firmware_status()
-                if (
-                    not int(staged.get("candidate", 0))
-                    or int(staged.get("armed", 0))
-                    or str(staged.get("state", "")).lower() != "ready"
-                    or int(staged.get("size", -1)) != int(metadata["size"])
-                    or str(staged.get("sha256", "")).lower()
-                    != str(metadata["sha256"]).lower()
-                ):
-                    raise FileServiceError(
-                        "Printer did not confirm the verified firmware candidate"
-                    )
-            else:
-                staged = self._file_service.stat("FWUPD.RME")
-                if (
-                    staged.get("type") != "file"
-                    or int(staged.get("size", -1)) != int(metadata["size"])
-                ):
-                    raise FileServiceError(
-                        "Printer did not confirm the protected firmware stage"
-                    )
+            staged = self._file_service.firmware_status()
+            if (
+                not int(staged.get("candidate", 0))
+                or int(staged.get("armed", 0))
+                or str(staged.get("state", "")).lower() != "ready"
+                or int(staged.get("size", -1)) != int(metadata["size"])
+                or str(staged.get("sha256", "")).lower()
+                != str(metadata["sha256"]).lower()
+            ):
+                raise FileServiceError(
+                    "Printer did not confirm the verified firmware candidate"
+                )
             self._firmware_state_changed(
                 status="ready", offset=metadata["size"], progress=100,
-                staged_path="/usb/FWUPD.RME",
+                staged_path="/usb/" + str(staged.get("path", "FWUPD.RME")).lstrip("/"),
             )
         except Exception as exc:
             self._logger.exception("RME FILE firmware transfer failed")
@@ -3322,51 +3298,15 @@ class RmeCompatibilityPlugin(
 
     def _reconcile_firmware_stage(self):
         """Refresh stage truth, using the authoritative current protocol."""
-        with self._state_lock:
-            authoritative = bool(int(
-                self._state.get("storage", {}).get("caps", {}).get(
-                    "firmware_status", 0
-                )
-            ))
-        if authoritative:
-            status = self._file_service.firmware_status()
-            with self._state_lock:
-                staged = self._apply_authoritative_firmware_locked(status)
-            self._persist_and_publish()
-            return staged
-
-        # Compatibility fallback for firmware predating FIRMWARE QUERY. Keep
-        # plugin provenance mandatory: an arbitrary BBF on USB is never stage
-        # evidence.
-        with self._state_lock:
-            claimed_stage = self._state["firmware"].get("status") in ("ready", "staged")
-        if not claimed_stage:
-            # Current firmware has no idle bootloader-stage status record. A
-            # file on USB is therefore insufficient evidence to promote the
-            # UI into staged state.
+        # SESSION can arrive before deferred FILE service initialization. The
+        # storage initializer performs this reconciliation again once ready.
+        if self._file_service is None:
             return False
-        try:
-            staged = self._file_service.stat("FWUPD.RME")
-        except FileServiceError as exc:
-            if str(exc).endswith("not_found"):
-                self._clear_staged_firmware_state()
-                self._persist_and_publish()
-                return False
-            raise
-        if staged.get("type") != "file":
-            self._clear_staged_firmware_state()
-            self._persist_and_publish()
-            return False
+        status = self._file_service.firmware_status()
         with self._state_lock:
-            self._state["firmware"].update(
-                status="ready",
-                size=max(0, int(staged.get("size", 0))),
-                offset=max(0, int(staged.get("size", 0))), progress=100,
-                error=None, staged_path="/usb/FWUPD.RME",
-                reconnect_expected=False,
-            )
+            staged = self._apply_authoritative_firmware_locked(status)
         self._persist_and_publish()
-        return True
+        return staged
 
     def _unstage_firmware(self):
         """Delete the protected candidate and clear its durable UI state."""
@@ -3377,25 +3317,7 @@ class RmeCompatibilityPlugin(
                 self._firmware_file_thread and self._firmware_file_thread.is_alive()
             ):
                 raise UploadError("Cannot unstage firmware during a transfer")
-            with self._state_lock:
-                authoritative = bool(int(
-                    self._state.get("storage", {}).get("caps", {}).get(
-                        "firmware_unstage", 0
-                    )
-                ))
-            if authoritative:
-                self._file_service.unstage_firmware()
-            else:
-                try:
-                    staged = self._file_service.stat("FWUPD.RME")
-                except FileServiceError as exc:
-                    if not str(exc).endswith("not_found"):
-                        raise
-                    staged = None
-                if staged is not None:
-                    if staged.get("type") != "file":
-                        raise UploadError("Protected firmware stage is not a regular file")
-                    self._file_service.mutate("DELETE", "FWUPD.RME")
+            self._file_service.unstage_firmware()
             self._clear_staged_firmware_state()
             self._persist_and_publish()
             self._defer(self._refresh_storage_after_change, "/")
@@ -3488,14 +3410,7 @@ class RmeCompatibilityPlugin(
         with self._state_lock:
             if self._state["firmware"].get("status") not in ("ready", "staged"):
                 raise UploadError("Upload and verify firmware on the printer before flashing")
-            use_file_service = bool(
-                self._state["storage"].get("supported")
-                and int(self._state["storage"].get("caps", {}).get("flash", 0))
-            )
-        if use_file_service:
-            self._file_service.mutate("FLASH", "FWUPD.RME")
-        else:
-            self._send_command("M997 /usb/FWUPD.BBF")
+        self._file_service.mutate("FLASH", "FWUPD.RME")
         with self._state_lock:
             self._state["firmware"].update(
                 status="flash_queued", error=None, flash_after_stage=False,

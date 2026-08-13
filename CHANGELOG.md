@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.0b40 — 2026-08-12
+
+- Aligned upload transport selection with current Buddy firmware
+  `e20edcbb946f0c8b6eb61b0e517e91af3a3dabc0`: `binary=1` now directly selects
+  the documented raw path without the removed `binary_resync` compatibility
+  gate.
+- Use the firmware-negotiated 1024-byte/eight-frame binary window and
+  384-byte/four-command bulk window without the obsolete host-side frame
+  reductions or pacing added for the now-fixed re-entrant parser corruption.
+- Treat the current firmware's inactivity `RME_FILE_BINARY_SUSPENDED` record as
+  authoritative line-mode recovery, retaining its durable prefix and avoiding
+  a false reboot-required communication lock.
+- Removed legacy M998 upload, M997 flash, protected-file STAT, and generic
+  DELETE staging fallbacks. Firmware candidate status, unstage, and flash now
+  use only the current FILE/FIRMWARE protocol and validate candidate size and
+  SHA-256 before enabling installation.
+
 ## 0.1.0b39 — 2026-08-12
 
 - Added the current firmware's authoritative `@RME FIRMWARE QUERY` lifecycle.
