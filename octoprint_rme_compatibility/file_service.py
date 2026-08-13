@@ -93,19 +93,17 @@ class RmeFileService(object):
             self._condition.notify_all()
 
     def cancel(self):
-        """Cancel an active upload/download at its next response boundary."""
+        """Suspend an active upload/download at its next response boundary.
+
+        Current firmware retains upload provenance across interruption.  The
+        explicit discard workflow performs a matching BEGIN and confirmed
+        line-mode ABORT; cancellation must not send an untracked ABORT here.
+        """
         self._cancel.set()
         with self._condition:
             if self._active:
                 self._error = "cancelled"
             self._condition.notify_all()
-        try:
-            # The active worker performs the raw abort handshake so it can
-            # wait for RME_FILE_BINARY_ABORTED before releasing line traffic.
-            if not (self._binary_active and self.send_binary):
-                self.send_command("@RME FILE ABORT")
-        except Exception:
-            pass
 
     def handle_response(self, record):
         """Wake the active HTTP/API worker for relevant parsed file records."""
@@ -323,7 +321,8 @@ class RmeFileService(object):
 
     def write_file(
         self, local_path, remote_path, progress=None, finalizing=None,
-        starting=None, cancel_check=None,
+        starting=None, cancel_check=None, manifest_update=None,
+        manifest_complete=None,
     ):
         """Upload, hash-check, and atomically publish one local file on USB."""
         encoded = normalize_remote_path(remote_path)
@@ -343,6 +342,8 @@ class RmeFileService(object):
                     and int(self._capabilities.get("binary", 0))
                 )
                 if use_binary:
+                    if manifest_update:
+                        manifest_update("binary", size, digest)
                     try:
                         offset = self._write_binary(
                             local_path, encoded, size, digest, progress
@@ -367,16 +368,24 @@ class RmeFileService(object):
                             )
                         use_binary = False
                         if bool(int(self._capabilities.get("bulk", 0))):
+                            if manifest_update:
+                                manifest_update("bulk", size, digest)
                             offset = self._write_bulk(
                                 local_path, encoded, size, digest, progress
                             )
                         else:
+                            if manifest_update:
+                                manifest_update("legacy", size, digest)
                             offset = self._write_legacy(
                                 local_path, encoded, size, digest, progress
                             )
                 elif bool(int(self._capabilities.get("bulk", 0))):
+                    if manifest_update:
+                        manifest_update("bulk", size, digest)
                     offset = self._write_bulk(local_path, encoded, size, digest, progress)
                 else:
+                    if manifest_update:
+                        manifest_update("legacy", size, digest)
                     offset = self._write_legacy(local_path, encoded, size, digest, progress)
                 if offset != size:
                     raise FileServiceError("Printer did not acknowledge the complete upload")
@@ -404,15 +413,122 @@ class RmeFileService(object):
                         "@RME FILE WRITE_END path=%s" % encoded,
                         "file_write_complete", timeout=60,
                     )
+                if manifest_complete:
+                    manifest_complete()
             except Exception:
                 try:
                     if self._binary_active and self.send_binary:
                         self._abort_binary_transport()
-                    elif not self._binary_mode_uncertain:
-                        self.send_command("@RME FILE ABORT")
                 except Exception:
                     pass
+                # Line-mode failures intentionally retain the firmware's
+                # durable partial.  A matching BEGIN may resume it after a
+                # reconnect; only the explicit discard workflow sends ABORT.
                 raise
+
+    def discard_partial(self, remote_path, size, digest):
+        """Recover an identified partial and atomically discard its sidecars."""
+        encoded = normalize_remote_path(remote_path)
+        size = int(size)
+        digest = str(digest).lower()
+        if size < 0 or len(digest) != 64:
+            raise FileServiceError("The saved transfer manifest is invalid")
+        with self._operation_lock:
+            self._cancel.clear()
+            if self._capabilities is None:
+                records = self._exchange("@RME FILE CAPS", "file_caps")
+                self._capabilities = dict(self._terminal(records, "file_caps"))
+            if bool(int(self._capabilities.get("bulk", 0))):
+                command = (
+                    "@RME FILE WRITE_BULK_BEGIN path=%s size=%d sha256=%s"
+                    % (encoded, size, digest)
+                )
+                expected = "file_bulk_ready"
+            else:
+                command = (
+                    "@RME FILE WRITE_BEGIN path=%s size=%d sha256=%s"
+                    % (encoded, size, digest)
+                )
+                expected = "file_write_ready"
+            self._exchange_when_available(command, expected)
+            self._exchange(
+                "@RME FILE ABORT", "file_aborted", respect_cancel=False,
+            )
+
+    def probe_partial(self, remote_path, size, digest):
+        """Recover the committed offset, then suspend without discarding it.
+
+        The current firmware always advertises the bounded binary transport.
+        Its raw abort is the only operation that releases the shared latch
+        while retaining the recovered partial for an operator decision.
+        """
+        encoded = normalize_remote_path(remote_path)
+        size = int(size)
+        digest = str(digest).lower()
+        if size < 0 or len(digest) != 64:
+            raise FileServiceError("The saved transfer manifest is invalid")
+        with self._operation_lock:
+            self._cancel.clear()
+            if self._capabilities is None:
+                records = self._exchange("@RME FILE CAPS", "file_caps")
+                self._capabilities = dict(self._terminal(records, "file_caps"))
+            if not (
+                self.send_binary and self.begin_binary and self.end_binary
+                and int(self._capabilities.get("binary", 0))
+                and int(self._capabilities.get("durable_resume", 0))
+            ):
+                raise FileServiceError(
+                    "Current durable binary recovery is unavailable"
+                )
+            records = self._exchange_when_available(
+                "@RME FILE WRITE_BINARY_BEGIN path=%s size=%d sha256=%s"
+                % (encoded, size, digest), "file_binary_ready",
+            )
+            ready = self._terminal(records, "file_binary_ready")
+            offset = int(ready.get("offset", -1))
+            if not 0 <= offset <= size:
+                raise FileServiceError("Printer returned an invalid resume offset")
+            try:
+                marker = self.begin_binary()
+                self.send_command(marker)
+                self._binary_active = True
+                self._binary_mode_uncertain = True
+                self._abort_binary_transport()
+            except Exception:
+                if self._binary_active:
+                    raise
+                self.end_binary()
+                raise
+            return ready
+
+    def cleanup_orphan(self, remote_path):
+        """Delete only mechanically derived partial/meta names supplied by a user."""
+        normalized = str(remote_path or "").replace("\\", "/").strip("/")
+        if not normalized:
+            raise FileServiceError("Enter the original destination path")
+        if normalized.lower().endswith((".rme-part", ".rme-meta", ".rme-old")):
+            raise FileServiceError("Enter the original final path, not a private sidecar")
+        # Validate once before deriving the two firmware-private siblings.
+        normalize_remote_path(normalized)
+        results = []
+        for suffix in (".rme-part", ".rme-meta"):
+            candidate = normalized + suffix
+            try:
+                self.stat(candidate)
+            except FileServiceError as exc:
+                if not str(exc).endswith("not_found"):
+                    raise
+                results.append({"path": candidate, "deleted": False})
+                continue
+            try:
+                self.mutate("DELETE", candidate)
+                deleted = True
+            except FileServiceError as exc:
+                if not str(exc).endswith("not_found"):
+                    raise
+                deleted = False
+            results.append({"path": candidate, "deleted": deleted})
+        return results
 
     def _abort_binary_transport(self):
         """Return firmware and OctoPrint to line mode after a raw failure."""
@@ -521,6 +637,10 @@ class RmeFileService(object):
             max(1, int(ready.get("window", self._capabilities.get("binary_window", 8)))),
         )
         offset = int(ready.get("offset", 0))
+        if not 0 <= offset <= size:
+            raise FileServiceError("Printer returned an invalid resume offset")
+        if progress:
+            progress(offset, size)
         if self.logger:
             self.logger.info(
                 "Using RME binary upload: chunk=%d window=%d", chunk_size, window_size
@@ -590,6 +710,8 @@ class RmeFileService(object):
         offset = int(ready.get("offset", 0))
         if not 0 <= offset <= size:
             raise FileServiceError("Printer returned an invalid resume offset")
+        if progress:
+            progress(offset, size)
         with open(local_path, "rb") as source:
             source.seek(offset)
             while True:
@@ -635,6 +757,10 @@ class RmeFileService(object):
             max(1, int(ready.get("window", self._capabilities.get("bulk_window", BULK_WINDOW_SIZE)))),
         )
         offset = int(ready.get("offset", 0))
+        if not 0 <= offset <= size:
+            raise FileServiceError("Printer returned an invalid resume offset")
+        if progress:
+            progress(offset, size)
         with open(local_path, "rb") as source:
             source.seek(offset)
             while offset < size:

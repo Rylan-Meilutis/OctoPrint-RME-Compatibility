@@ -4,7 +4,7 @@ import time
 import unittest
 from pathlib import Path
 
-from octoprint_rme_compatibility.storage import StateStore
+from octoprint_rme_compatibility.storage import StateStore, TransferManifestStore
 
 
 class StorageTests(unittest.TestCase):
@@ -21,3 +21,18 @@ class StorageTests(unittest.TestCase):
             store.stop()
             self.assertEqual(json.loads(path.read_text()), state)
             self.assertEqual(StateStore(str(path), lambda: {}).load(), state)
+
+    def test_transfer_manifest_is_immediately_durable_and_clearable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "transfer.json"
+            value = {
+                "remote_path": "jobs/part.bgcode", "size": 123,
+                "sha256": "a" * 64, "transport": "bulk",
+            }
+            store = TransferManifestStore(str(path))
+            store.save(value)
+            self.assertEqual(value, json.loads(path.read_text()))
+            self.assertEqual(value, TransferManifestStore(str(path)).load())
+            store.clear()
+            self.assertFalse(path.exists())
+            self.assertIsNone(store.get())

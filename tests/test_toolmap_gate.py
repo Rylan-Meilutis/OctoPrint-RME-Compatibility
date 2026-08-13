@@ -63,6 +63,7 @@ _install_octoprint_stubs()
 from octoprint_rme_compatibility.plugin import RmeCompatibilityPlugin
 from octoprint_rme_compatibility.file_service import FileServiceError
 from octoprint_rme_compatibility.protocol import parse_line
+from octoprint_rme_compatibility.storage import TransferManifestStore
 
 
 class _Settings(object):
@@ -467,6 +468,63 @@ class ToolmapGateTests(unittest.TestCase):
             self.assertEqual("queued", plugin._file_service.status_before_start)
             self.assertEqual("ready", plugin._state["firmware"]["status"])
             self.assertEqual("/usb/FWUPD.RME", plugin._state["firmware"]["staged_path"])
+
+    def test_interrupted_upload_retains_source_and_resumes_from_durable_manifest(self):
+        class FileService(object):
+            binary_mode_uncertain = False
+
+            def __init__(self):
+                self.calls = []
+
+            def write_file(
+                self, local_path, remote_path, manifest_update=None,
+                manifest_complete=None, **kwargs
+            ):
+                self.calls.append((local_path, remote_path))
+                with open(local_path, "rb") as source:
+                    payload = source.read()
+                manifest_update(
+                    "bulk", len(payload), hashlib.sha256(payload).hexdigest()
+                )
+                if len(self.calls) == 1:
+                    raise FileServiceError("Printer disconnected")
+                manifest_complete()
+
+        with tempfile.TemporaryDirectory() as directory:
+            original = os.path.join(directory, "job.bgcode")
+            with open(original, "wb") as source:
+                source.write(b"durable upload bytes")
+            transfer_directory = os.path.join(directory, "retained")
+            os.makedirs(transfer_directory)
+
+            plugin = RmeCompatibilityPlugin()
+            plugin._logger = logging.getLogger("rme-manifest-test")
+            plugin._file_service = FileService()
+            plugin._transfer_directory = transfer_directory
+            plugin._manifest_store = TransferManifestStore(
+                os.path.join(directory, "manifest.json")
+            )
+            plugin._manifest_store.load()
+            plugin._persist_and_publish = lambda: None
+
+            with self.assertRaisesRegex(FileServiceError, "disconnected"):
+                plugin._write_file_with_manifest(
+                    original, "jobs/job.bgcode", kind="file"
+                )
+            manifest = plugin._manifest_store.get()
+            self.assertIsNotNone(manifest)
+            self.assertTrue(os.path.isfile(manifest["source_path"]))
+            self.assertEqual("jobs/job.bgcode", manifest["remote_path"])
+
+            plugin._write_file_with_manifest(
+                manifest["source_path"], manifest["remote_path"],
+                kind="file", resume_manifest=manifest,
+            )
+            self.assertIsNone(plugin._manifest_store.get())
+            self.assertFalse(os.path.exists(manifest["source_path"]))
+            self.assertEqual(
+                plugin._file_service.calls[0][0], plugin._file_service.calls[1][0]
+            )
 
     def test_current_firmware_flashes_through_file_service(self):
         class FileService(object):

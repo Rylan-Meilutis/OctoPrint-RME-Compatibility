@@ -61,3 +61,57 @@ class StateStore(object):
         except OSError:
             if self.logger:
                 self.logger.exception("Could not persist RME UI state")
+
+
+class TransferManifestStore(object):
+    """Synchronously persist the one transfer owned by the RME file latch.
+
+    Unlike the coalesced UI state, firmware requires this provenance to reach
+    durable storage *before* BEGIN is sent.  The shared firmware transfer latch
+    permits only one active upload, so a single atomic manifest is sufficient.
+    """
+
+    def __init__(self, path, logger=None):
+        self.path = path
+        self.logger = logger
+        self._lock = threading.RLock()
+        self._value = None
+
+    def load(self):
+        with self._lock:
+            try:
+                with open(self.path, "r", encoding="utf-8") as handle:
+                    value = json.load(handle)
+            except (OSError, ValueError):
+                value = None
+            self._value = value if isinstance(value, dict) else None
+            return dict(self._value) if self._value else None
+
+    def get(self):
+        with self._lock:
+            return dict(self._value) if self._value else None
+
+    def save(self, value):
+        value = dict(value)
+        temporary = self.path + ".tmp"
+        with self._lock:
+            try:
+                os.makedirs(os.path.dirname(self.path), exist_ok=True)
+                with open(temporary, "w", encoding="utf-8") as handle:
+                    json.dump(value, handle, sort_keys=True, indent=2)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, self.path)
+                self._value = value
+            except OSError:
+                if self.logger:
+                    self.logger.exception("Could not persist RME transfer manifest")
+                raise
+
+    def clear(self):
+        with self._lock:
+            try:
+                os.unlink(self.path)
+            except FileNotFoundError:
+                pass
+            self._value = None

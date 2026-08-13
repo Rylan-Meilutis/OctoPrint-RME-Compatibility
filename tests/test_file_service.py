@@ -717,3 +717,165 @@ class FileServiceTests(unittest.TestCase):
         finally:
             os.unlink(source_path)
         self.assertEqual([], commands)
+
+    def test_manifest_is_saved_before_begin_and_cleared_after_completion(self):
+        service = None
+        events = []
+
+        def send(command):
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb write=1 bulk=1 bulk_chunk=384 bulk_window=4"
+                ))
+            elif "WRITE_BULK_BEGIN" in command:
+                self.assertEqual("manifest:bulk", events[-1])
+                service.handle_response(parse_line(
+                    "RME_FILE_BULK_READY offset=0 chunk=384 window=4 resumed=0"
+                ))
+            elif "WRITE_BULK_CHUNK" in command:
+                payload = base64.b64decode(command.split("data=", 1)[1])
+                offset = int(command.split("offset=", 1)[1].split(" ", 1)[0])
+                service.handle_response(parse_line(
+                    "RME_FILE_BULK_ACK offset=%d" % (offset + len(payload))
+                ))
+            elif "WRITE_BULK_END" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BULK_COMPLETE path=jobs/restartable.bgcode"
+                ))
+
+        service = RmeFileService(send, response_timeout=1)
+        with tempfile.NamedTemporaryFile(delete=False) as source:
+            source.write(b"restartable")
+            source_path = source.name
+        try:
+            service.write_file(
+                source_path, "jobs/restartable.bgcode",
+                manifest_update=lambda transport, size, digest: events.append(
+                    "manifest:" + transport
+                ),
+                manifest_complete=lambda: events.append("complete"),
+            )
+        finally:
+            os.unlink(source_path)
+        self.assertEqual(["manifest:bulk", "complete"], events)
+
+    def test_line_failure_preserves_partial_without_implicit_abort(self):
+        service = None
+        commands = []
+
+        def send(command):
+            commands.append(command)
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb write=1 bulk=1 bulk_chunk=384 bulk_window=4"
+                ))
+            elif "WRITE_BULK_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BULK_READY offset=0 chunk=384 window=4 resumed=0"
+                ))
+            elif "WRITE_BULK_CHUNK" in command:
+                service.handle_response(parse_line(
+                    "echo:RME_ERROR workflow=file code=disk_write_failed offset=0 resumable=1"
+                ))
+
+        service = RmeFileService(send, response_timeout=1)
+        with tempfile.NamedTemporaryFile(delete=False) as source:
+            source.write(b"keep this prefix")
+            source_path = source.name
+        try:
+            with self.assertRaisesRegex(FileServiceError, "disk_write_failed"):
+                service.write_file(source_path, "jobs/keep.bgcode")
+        finally:
+            os.unlink(source_path)
+        self.assertNotIn("@RME FILE ABORT", commands)
+
+    def test_discard_recovers_with_bulk_begin_then_confirms_line_abort(self):
+        service = None
+        commands = []
+
+        def send(command):
+            commands.append(command)
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb write=1 bulk=1 durable_resume=1"
+                ))
+            elif "WRITE_BULK_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BULK_READY offset=4096 chunk=384 window=4 resumed=1"
+                ))
+            elif command == "@RME FILE ABORT":
+                service.handle_response(parse_line("RME_FILE_ABORTED"))
+
+        service = RmeFileService(send, response_timeout=1)
+        service.discard_partial("jobs/keep.bgcode", 8192, "a" * 64)
+        self.assertTrue(any("WRITE_BULK_BEGIN" in item for item in commands))
+        self.assertFalse(any("WRITE_BINARY_BEGIN" in item for item in commands))
+        self.assertEqual("@RME FILE ABORT", commands[-1])
+
+    def test_reconnect_probe_recovers_offset_then_suspends_raw_transport(self):
+        service = None
+        commands = []
+        raw = []
+        ended = []
+
+        def send(command):
+            commands.append(command)
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb binary=1 durable_resume=1 "
+                    "binary_timeout_ms=10000"
+                ))
+            elif "WRITE_BINARY_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_READY offset=4096 chunk=1024 window=8 "
+                    "header=10 endian=little crc=crc32 resumed=1"
+                ))
+
+        def send_binary(frame):
+            raw.append(frame)
+            offset, length, _ = struct.unpack("<IHI", frame[:10])
+            self.assertEqual(0xFFFFFFFF, offset)
+            self.assertEqual(0, length)
+            service.handle_response(parse_line(
+                "RME_FILE_BINARY_ABORTED offset=4096 resumable=1"
+            ))
+
+        service = RmeFileService(
+            send, response_timeout=1, send_binary=send_binary,
+            begin_binary=lambda: "@RME FILE RAW_SESSION token=" + "b" * 32,
+            end_binary=lambda: ended.append(True),
+        )
+        ready = service.probe_partial("jobs/resume.bgcode", 8192, "c" * 64)
+        self.assertEqual(4096, ready["offset"])
+        self.assertEqual(1, ready["resumed"])
+        self.assertEqual(1, len(raw))
+        self.assertEqual([True], ended)
+        self.assertFalse(service.binary_mode_uncertain)
+
+    def test_lost_manifest_cleanup_derives_only_current_private_sidecars(self):
+        service = None
+        commands = []
+
+        def send(command):
+            commands.append(command)
+            if command.endswith("jobs/resume.bgcode.rme-part") and " STAT " in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_STAT path=jobs/resume.bgcode.rme-part "
+                    "type=file size=4096 mtime=1"
+                ))
+            elif command.endswith("jobs/resume.bgcode.rme-part") and " DELETE " in command:
+                service.handle_response(parse_line("RME_FILE_DELETED"))
+            elif command.endswith("jobs/resume.bgcode.rme-meta") and " STAT " in command:
+                service.handle_response(parse_line(
+                    "echo:RME_ERROR workflow=file code=not_found"
+                ))
+
+        service = RmeFileService(send, response_timeout=1)
+        result = service.cleanup_orphan("jobs/resume.bgcode")
+
+        self.assertEqual([
+            {"path": "jobs/resume.bgcode.rme-part", "deleted": True},
+            {"path": "jobs/resume.bgcode.rme-meta", "deleted": False},
+        ], result)
+        self.assertFalse(any(" LIST " in command for command in commands))
+        self.assertFalse(any(".rme-old" in command for command in commands))

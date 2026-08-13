@@ -113,6 +113,23 @@
             <p class="help-block">Uploads negotiate the fastest safe RME FILE mode, pipeline bulk chunks when supported, verify SHA-256, and atomically rename the <code>.rme-part</code> file.</p>
         </div>
     </div>
+    <div class="alert alert-info" data-bind="visible: partialTransfer">
+        <strong>Interrupted printer upload available.</strong>
+        <span data-bind="text: partialTransferSummary"></span>
+        <div>
+            <button type="button" class="btn btn-primary" data-bind="click: resumePartialTransfer, enable: partialTransfer() && partialTransfer().source_available && !partialRecoveryActive()">Resume</button>
+            <button type="button" class="btn" data-bind="click: discardPartialTransfer, enable: !partialRecoveryActive()">Discard partial</button>
+        </div>
+        <span class="text-error" data-bind="visible: partialTransfer() && partialTransfer().error, text: partialTransfer() && partialTransfer().error"></span>
+    </div>
+    <div class="control-group">
+        <label class="control-label">Lost-manifest cleanup</label>
+        <div class="controls">
+            <input type="text" placeholder="jobs/original-name.bgcode" data-bind="value: partialCleanupPath, enable: !partialTransfer()">
+            <button type="button" class="btn" data-bind="click: cleanupNamedPartial, enable: partialCleanupPath() && !partialTransfer()">Clean exact partial…</button>
+            <p class="help-block">If the host manifest was lost, enter the original final USB path. The plugin probes and removes only its derived <code>.rme-part</code> and <code>.rme-meta</code> siblings. It never scans hidden files, parses metadata, or deletes <code>.rme-old</code>.</p>
+        </div>
+    </div>
     <table class="table table-condensed rme-storage-table" data-bind="visible: storage().supported">
         <thead><tr><th>Name</th><th>Type/size</th><th>Actions</th></tr></thead>
         <tbody data-bind="foreach: storageEntries"><tr>

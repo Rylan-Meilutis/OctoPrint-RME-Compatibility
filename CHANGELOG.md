@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.0b41 — 2026-08-12
+
+- Aligned with Buddy firmware `50293bda570fd5a0ca6771baca81a06fd7b4e5f5`
+  and its hidden-artifact contract. Private `FWUPD.RME`, `FWUPD.UI`,
+  `.rme-part`, `.rme-meta`, and `.rme-old` files are never inferred from an
+  ordinary USB listing.
+- Added a synchronous, atomic host transfer manifest written before every FILE
+  BEGIN. The exact destination, byte count, SHA-256, retained Pi source, and
+  selected transport now survive OctoPrint restarts and printer reconnects.
+- Added explicit Resume and Discard workflows for interrupted uploads. Resume
+  repeats the identical BEGIN and honors the firmware-recovered offset;
+  discard uses text/bulk BEGIN followed by a confirmed line-mode ABORT so the
+  firmware removes the partial and metadata together.
+- Retain line-mode partials after transport failures and cancellation instead
+  of issuing an unconfirmed implicit ABORT. Provenance is cleared only after a
+  verified completion record or `RME_FILE_ABORTED`.
+- Added lost-manifest cleanup for a user-supplied final path. It probes and
+  deletes only the mechanically derived `.rme-part` and `.rme-meta` siblings,
+  treats `not_found` as clean, and never scans, parses metadata, or touches
+  `.rme-old`.
+- Retain a durable copy of every upload source until completion/discard and
+  expose interrupted-transfer status plus recovery actions in Settings and
+  the top-bar transfer indicator.
+
 ## 0.1.0b40 — 2026-08-12
 
 - Aligned upload transport selection with current Buddy firmware

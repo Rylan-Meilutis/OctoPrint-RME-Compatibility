@@ -36,6 +36,7 @@ $(function () {
         self.fileManagerBridgeInstalled = false;
         self.octoprintFirmwareEntry = ko.observable(null);
         self.selectedFirmware = ko.observable();
+        self.partialCleanupPath = ko.observable("");
         self.mappingRows = ko.observableArray([]);
         self.mappingEnabled = ko.observable(true);
         self.physicalTools = ko.observableArray([]);
@@ -291,6 +292,7 @@ $(function () {
             var state = self.state();
             var firmware = state.firmware || {};
             var storage = state.storage || {};
+            var partial = storage.partial || null;
             var download = storage.download || {};
             var firmwareStatuses = ["queued", "canceling", "starting", "uploading", "verifying", "flash_queued", "flashing", "restarting"];
             var progress;
@@ -322,6 +324,15 @@ $(function () {
                     summary: firmwareLabel + (progress !== null ? " · " + Math.round(progress) + "%" : ""),
                     detail: firmware.filename || firmwareLabel,
                     progress: progress
+                };
+            }
+            if (partial) {
+                return {
+                    active: true, icon: "fa-upload", title: "Interrupted upload",
+                    summary: partial.status === "discarding" ? "Discarding printer partial" :
+                        (partial.status === "queued" ? "Resume queued" : "Upload interrupted · action required"),
+                    detail: partial.remote_path || "Interrupted printer upload",
+                    progress: null
                 };
             }
             if (["queued", "downloading"].indexOf(String(download.status || "")) >= 0) {
@@ -501,6 +512,21 @@ $(function () {
         self.firmwareFiles = ko.pureComputed(function () { return self.state().firmware_files || []; });
         self.firmwareLabel = function (file) { return file.name + " (" + formatBytes(file.size) + ")"; };
         self.firmware = ko.pureComputed(function () { return self.state().firmware || {}; });
+        self.partialTransfer = ko.pureComputed(function () {
+            return (self.state().storage || {}).partial || null;
+        });
+        self.partialRecoveryActive = ko.pureComputed(function () {
+            var partial = self.partialTransfer();
+            return !!partial && ["queued", "transferring", "discarding"].indexOf(partial.status) >= 0;
+        });
+        self.partialTransferSummary = ko.pureComputed(function () {
+            var partial = self.partialTransfer();
+            if (!partial) return "";
+            var label = partial.remote_path || "printer upload";
+            var detail = formatBytes(partial.size || 0) + " · " + (partial.transport || "negotiated transport");
+            if (!partial.source_available) detail += " · source unavailable";
+            return label + " — " + detail;
+        });
         self.firmwareProgress = ko.pureComputed(function () { return Number(self.firmware().progress || 0) + "%"; });
         self.piUploadWidth = ko.pureComputed(function () {
             return Math.max(0, Math.min(100, Number(self.piUploadProgress()) || 0)) + "%";
@@ -796,6 +822,19 @@ $(function () {
             if (window.confirm("Confirm that the printer itself was power-cycled or rebooted? RME communication will be unlocked.")) {
                 self.command("confirm_printer_reboot");
             }
+        };
+        self.resumePartialTransfer = function () {
+            self.command("partial_resume");
+        };
+        self.discardPartialTransfer = function () {
+            if (window.confirm("Discard this interrupted upload and remove its private partial data from the printer?")) {
+                self.command("partial_discard");
+            }
+        };
+        self.cleanupNamedPartial = function () {
+            var path = String(self.partialCleanupPath() || "").trim();
+            if (!path || !window.confirm("Probe and remove only " + path + ".rme-part and " + path + ".rme-meta?")) return;
+            self.command("partial_cleanup", {path: path});
         };
         self.deleteFirmware = function () {
             var filename = self.selectedFirmware();

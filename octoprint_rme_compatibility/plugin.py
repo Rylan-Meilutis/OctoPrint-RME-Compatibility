@@ -41,7 +41,7 @@ from .spoolmanager import (
     SpoolmanBridge,
     spool_alias,
 )
-from .storage import StateStore
+from .storage import StateStore, TransferManifestStore
 from .uploader import FirmwareUploader, UploadError, firmware_metadata
 
 
@@ -73,6 +73,9 @@ class RmeCompatibilityPlugin(
         self._state_lock = threading.RLock()
         self._state = self._empty_state()
         self._store = None
+        self._manifest_store = None
+        self._transfer_directory = None
+        self._partial_thread = None
         self._uploader = None
         self._file_service = None
         self._firmware_file_thread = None
@@ -178,7 +181,7 @@ class RmeCompatibilityPlugin(
                 "supported": False, "caps": {}, "path": "/", "entries": [],
                 "status": "not checked", "progress": None, "error": None,
                 "updated": None, "native_files": [], "download": None,
-                "downloads": [],
+                "downloads": [], "partial": None,
             },
             "errors": [],
         }
@@ -192,6 +195,8 @@ class RmeCompatibilityPlugin(
         os.makedirs(self._firmware_directory, exist_ok=True)
         self._download_directory = os.path.join(data_folder, "downloads")
         os.makedirs(self._download_directory, exist_ok=True)
+        self._transfer_directory = os.path.join(data_folder, "transfer_sources")
+        os.makedirs(self._transfer_directory, exist_ok=True)
         restored_downloads = []
         for stored_name in sorted(os.listdir(self._download_directory)):
             match = re.match(r"^([0-9a-f]{32})--(.+)$", stored_name)
@@ -212,6 +217,25 @@ class RmeCompatibilityPlugin(
             os.path.join(data_folder, "state.json"), self._persistent_snapshot, self._logger
         )
         persisted = self._store.load()
+        self._manifest_store = TransferManifestStore(
+            os.path.join(data_folder, "transfer-manifest.json"), self._logger
+        )
+        interrupted_transfer = self._manifest_store.load()
+        retained_source = (
+            os.path.realpath(interrupted_transfer.get("source_path"))
+            if interrupted_transfer and interrupted_transfer.get("source_path") else None
+        )
+        for stored_name in os.listdir(self._transfer_directory):
+            stored_path = os.path.realpath(
+                os.path.join(self._transfer_directory, stored_name)
+            )
+            if stored_path != retained_source and os.path.isfile(stored_path):
+                try:
+                    os.unlink(stored_path)
+                except OSError:
+                    self._logger.warning(
+                        "Could not remove stale RME transfer source %s", stored_path
+                    )
         with self._state_lock:
             for key in (
                 "machine", "toolmap",
@@ -241,6 +265,10 @@ class RmeCompatibilityPlugin(
             # A one-click flash request is deliberately process-local. Never
             # carry a bootloader handoff intent across an OctoPrint restart.
             self._state["firmware"]["flash_after_stage"] = False
+            if interrupted_transfer:
+                self._state["storage"]["partial"] = self._public_manifest(
+                    interrupted_transfer, status="interrupted"
+                )
         self._store.start()
         self._uploader = FirmwareUploader(
             self._send_command, self._firmware_state_changed, self._logger
@@ -428,6 +456,9 @@ class RmeCompatibilityPlugin(
             "storage_print": ["path"],
             "storage_flash": ["path"],
             "storage_download": ["path", "target"],
+            "partial_resume": [],
+            "partial_discard": [],
+            "partial_cleanup": ["path"],
         }
 
     def on_api_get(self, request):
@@ -640,6 +671,14 @@ class RmeCompatibilityPlugin(
             if not permission.can():
                 flask.abort(403)
             self._start_storage_download(data["path"], data["target"])
+        elif command == "partial_resume":
+            self._resume_partial_transfer()
+        elif command == "partial_discard":
+            self._discard_partial_transfer()
+        elif command == "partial_cleanup":
+            if not getattr(Permissions, "FILES_DELETE", Permissions.CONTROL).can():
+                flask.abort(403)
+            self._cleanup_named_partial(data["path"])
         return flask.jsonify(self._public_state())
 
     @staticmethod
@@ -738,7 +777,9 @@ class RmeCompatibilityPlugin(
                 return flask.jsonify({"error": "File exceeds the printer USB limit"}), 413
             self._set_storage_status("uploading", progress=0, error=None)
             try:
-                self._file_service.write_file(temporary, remote_path, self._storage_progress)
+                self._write_file_with_manifest(
+                    temporary, remote_path, kind="file", progress=self._storage_progress
+                )
                 self._set_storage_status("ready", progress=100, error=None)
                 self._defer(self._refresh_storage_after_change, directory)
             except Exception as exc:
@@ -2762,6 +2803,229 @@ class RmeCompatibilityPlugin(
 
     # -- RME USB storage ---------------------------------------------------
 
+    @staticmethod
+    def _public_manifest(manifest, status=None, error=None):
+        """Return provenance and recovery state without exposing a Pi path."""
+        if not manifest:
+            return None
+        value = {
+            key: manifest.get(key) for key in (
+                "remote_path", "source_name", "size", "sha256", "transport",
+                "kind", "offset", "resumed", "created",
+            )
+        }
+        value["status"] = status or manifest.get("status") or "interrupted"
+        value["error"] = error
+        value["source_available"] = bool(
+            manifest.get("source_path") and os.path.isfile(manifest["source_path"])
+        )
+        return value
+
+    def _stage_transfer_source(self, local_path):
+        """Retain upload bytes across OctoPrint and printer reconnects."""
+        source_name = secure_filename(os.path.basename(str(local_path))) or "upload.bin"
+        destination = os.path.join(
+            self._transfer_directory, uuid.uuid4().hex + "--" + source_name
+        )
+        shutil.copyfile(local_path, destination)
+        with open(destination, "rb") as retained:
+            os.fsync(retained.fileno())
+        return destination, source_name
+
+    def _write_file_with_manifest(
+        self, local_path, remote_path, kind="file", resume_manifest=None, **kwargs
+    ):
+        """Write through FILE while durably preserving current-firmware provenance."""
+        # Lightweight unit/plugin harnesses may exercise transfer routing
+        # without running OctoPrint's startup lifecycle.
+        if self._manifest_store is None:
+            return self._file_service.write_file(local_path, remote_path, **kwargs)
+        manifest = dict(resume_manifest or {})
+        created_source = False
+        if resume_manifest:
+            source_path = manifest.get("source_path")
+            if not source_path or not os.path.isfile(source_path):
+                raise FileServiceError(
+                    "The saved source file is unavailable; discard the printer partial"
+                )
+        else:
+            if self._manifest_store.get():
+                raise FileServiceError(
+                    "An interrupted printer upload must be resumed or discarded first"
+                )
+            source_path, source_name = self._stage_transfer_source(local_path)
+            created_source = True
+            manifest = {
+                "version": 1,
+                "source_path": source_path,
+                "source_name": source_name,
+                "remote_path": str(remote_path).replace("\\", "/").lstrip("/"),
+                "kind": str(kind),
+                "created": int(time.time()),
+                "offset": 0,
+            }
+
+        def update_manifest(transport, size, digest):
+            if resume_manifest and (
+                int(manifest.get("size", -1)) != int(size)
+                or str(manifest.get("sha256", "")).lower() != str(digest).lower()
+            ):
+                raise FileServiceError(
+                    "The retained source no longer matches the interrupted upload"
+                )
+            manifest.update(
+                transport=transport, size=int(size), sha256=str(digest).lower(),
+                status="transferring",
+            )
+            self._manifest_store.save(manifest)
+            with self._state_lock:
+                self._state["storage"]["partial"] = self._public_manifest(
+                    manifest, status="transferring"
+                )
+            self._persist_and_publish()
+
+        def complete_manifest():
+            self._manifest_store.clear()
+            with self._state_lock:
+                self._state["storage"]["partial"] = None
+            try:
+                os.unlink(source_path)
+            except FileNotFoundError:
+                pass
+            self._persist_and_publish()
+
+        try:
+            return self._file_service.write_file(
+                source_path, remote_path,
+                manifest_update=update_manifest,
+                manifest_complete=complete_manifest,
+                **kwargs
+            )
+        except Exception as exc:
+            saved = self._manifest_store.get()
+            if not saved and created_source:
+                try:
+                    os.unlink(source_path)
+                except FileNotFoundError:
+                    pass
+            elif saved:
+                with self._state_lock:
+                    self._state["storage"]["partial"] = self._public_manifest(
+                        saved, status="interrupted", error=str(exc)
+                    )
+                self._persist_and_publish()
+            if getattr(self._file_service, "binary_mode_uncertain", False):
+                self._firmware_state_changed(
+                    status="error", recovery_required=True,
+                    error=(
+                        "Printer communication is locked because binary teardown "
+                        "was not confirmed. Power-cycle the printer, then confirm "
+                        "the reboot in RME settings. No further RME commands will be sent."
+                    ),
+                )
+                self._disconnect_for_transport_recovery()
+            raise
+
+    def _set_partial_status(self, status, error=None):
+        manifest = self._manifest_store.get()
+        with self._state_lock:
+            self._state["storage"]["partial"] = self._public_manifest(
+                manifest, status=status, error=error
+            )
+        self._persist_and_publish()
+
+    def _resume_partial_transfer(self):
+        self._require_storage()
+        manifest = self._manifest_store.get()
+        if not manifest:
+            raise FileServiceError("There is no interrupted RME upload to resume")
+        if self._partial_thread and self._partial_thread.is_alive():
+            raise FileServiceError("Partial-file recovery is already active")
+        self._set_partial_status("queued")
+
+        def resume():
+            try:
+                progress = (
+                    self._firmware_file_progress
+                    if manifest.get("kind") == "firmware" else self._storage_progress
+                )
+                if manifest.get("kind") == "firmware":
+                    self._firmware_state_changed(
+                        status="starting", filename=manifest.get("source_name"),
+                        size=int(manifest.get("size", 0)),
+                        sha256=manifest.get("sha256"), error=None,
+                    )
+                self._write_file_with_manifest(
+                    manifest["source_path"], manifest["remote_path"],
+                    kind=manifest.get("kind", "file"), resume_manifest=manifest,
+                    progress=progress,
+                    finalizing=(
+                        lambda: self._firmware_state_changed(
+                            status="verifying", offset=int(manifest["size"]), progress=100
+                        )
+                    ) if manifest.get("kind") == "firmware" else None,
+                )
+                if manifest.get("kind") == "firmware":
+                    self._confirm_completed_firmware_manifest(manifest)
+                else:
+                    self._set_storage_status("ready", progress=100, error=None)
+                    self._defer(
+                        self._refresh_storage_after_change,
+                        self._parent_storage_path(manifest["remote_path"]),
+                    )
+            except Exception as exc:
+                self._logger.exception("RME partial upload resume failed")
+                if manifest.get("kind") == "firmware":
+                    self._firmware_state_changed(status="error", error=str(exc))
+                self._set_partial_status("interrupted", str(exc))
+
+        self._partial_thread = threading.Thread(
+            target=resume, name="rme-partial-resume", daemon=True
+        )
+        self._partial_thread.start()
+
+    def _discard_partial_transfer(self):
+        self._require_storage()
+        manifest = self._manifest_store.get()
+        if not manifest:
+            raise FileServiceError("There is no interrupted RME upload to discard")
+        if self._partial_thread and self._partial_thread.is_alive():
+            raise FileServiceError("Partial-file recovery is already active")
+        self._set_partial_status("discarding")
+
+        def discard():
+            try:
+                self._file_service.discard_partial(
+                    manifest["remote_path"], manifest["size"], manifest["sha256"]
+                )
+                self._manifest_store.clear()
+                try:
+                    os.unlink(manifest["source_path"])
+                except FileNotFoundError:
+                    pass
+                with self._state_lock:
+                    self._state["storage"]["partial"] = None
+                    if manifest.get("kind") == "firmware":
+                        self._state["firmware"] = self._empty_state()["firmware"]
+                self._persist_and_publish()
+            except Exception as exc:
+                self._logger.exception("RME partial upload discard failed")
+                self._set_partial_status("interrupted", str(exc))
+
+        self._partial_thread = threading.Thread(
+            target=discard, name="rme-partial-discard", daemon=True
+        )
+        self._partial_thread.start()
+
+    def _cleanup_named_partial(self, path):
+        self._require_storage()
+        if self._manifest_store.get():
+            raise FileServiceError(
+                "Resolve the known interrupted upload before orphan cleanup"
+            )
+        self._file_service.cleanup_orphan(path)
+        self._set_storage_status("ready", progress=None, error=None)
+
     def _require_storage(self):
         with self._state_lock:
             connected = self._state["connected"] and self._state["supported"]
@@ -2809,6 +3073,9 @@ class RmeCompatibilityPlugin(
             caps = {key: value for key, value in caps.items() if key != "record"}
             with self._state_lock:
                 self._state["storage"].update(supported=True, caps=caps)
+            self._probe_interrupted_transfer()
+            if getattr(self._file_service, "binary_mode_uncertain", False):
+                return
             self._reconcile_firmware_stage()
             self._refresh_storage("/")
             self._refresh_native_storage_files()
@@ -2818,6 +3085,40 @@ class RmeCompatibilityPlugin(
                     supported=False, status="unsupported", progress=None, error=str(exc)
                 )
             self._persist_and_publish()
+
+    def _probe_interrupted_transfer(self):
+        """Reopen and suspend a hidden partial to recover its committed offset."""
+        manifest = self._manifest_store.get() if self._manifest_store else None
+        if not manifest or (self._partial_thread and self._partial_thread.is_alive()):
+            return
+        try:
+            ready = self._file_service.probe_partial(
+                manifest["remote_path"], manifest["size"], manifest["sha256"]
+            )
+            manifest["offset"] = int(ready.get("offset", 0))
+            manifest["resumed"] = bool(int(ready.get("resumed", 0)))
+            manifest["status"] = "interrupted"
+            self._manifest_store.save(manifest)
+            with self._state_lock:
+                self._state["storage"]["partial"] = self._public_manifest(
+                    manifest, status="interrupted"
+                )
+            self._persist_and_publish()
+        except Exception as exc:
+            self._logger.warning(
+                "Could not inspect interrupted RME upload: %s", exc
+            )
+            self._set_partial_status("interrupted", str(exc))
+            if getattr(self._file_service, "binary_mode_uncertain", False):
+                self._firmware_state_changed(
+                    status="error", recovery_required=True,
+                    error=(
+                        "Printer communication is locked because binary teardown "
+                        "was not confirmed. Power-cycle the printer, then confirm "
+                        "the reboot in RME settings. No further RME commands will be sent."
+                    ),
+                )
+                self._disconnect_for_transport_recovery()
 
     def _refresh_storage(self, path=None):
         """List one USB directory and publish browser-ready full paths."""
@@ -3051,8 +3352,8 @@ class RmeCompatibilityPlugin(
             started = time.monotonic()
             try:
                 self._set_storage_status("uploading", progress=0, error=None)
-                self._file_service.write_file(
-                    path, remote_name, progress=self._storage_progress
+                self._write_file_with_manifest(
+                    path, remote_name, kind="file", progress=self._storage_progress
                 )
                 self._set_storage_status("ready", progress=100, error=None)
                 success_callback(filename, remote_name, time.monotonic() - started)
@@ -3133,6 +3434,10 @@ class RmeCompatibilityPlugin(
             raise UploadError("Firmware file was not found on the Pi")
         metadata = firmware_metadata(path)
         with self._firmware_action_lock:
+            if self._manifest_store and self._manifest_store.get():
+                raise UploadError(
+                    "Resume or discard the interrupted printer upload first"
+                )
             if self._uploader.busy or (
                 self._firmware_file_thread and self._firmware_file_thread.is_alive()
             ):
@@ -3188,9 +3493,10 @@ class RmeCompatibilityPlugin(
     def _run_file_firmware_upload(self, path, metadata):
         """Stage and verify ``FWUPD.BBF`` through the current FILE service."""
         try:
-            self._file_service.write_file(
+            self._write_file_with_manifest(
                 path,
                 "FWUPD.BBF",
+                kind="firmware",
                 progress=self._firmware_file_progress,
                 starting=lambda: self._firmware_state_changed(status="starting"),
                 cancel_check=self._firmware_file_cancel.is_set,
@@ -3198,22 +3504,7 @@ class RmeCompatibilityPlugin(
                     status="verifying", offset=metadata["size"], progress=100
                 ),
             )
-            staged = self._file_service.firmware_status()
-            if (
-                not int(staged.get("candidate", 0))
-                or int(staged.get("armed", 0))
-                or str(staged.get("state", "")).lower() != "ready"
-                or int(staged.get("size", -1)) != int(metadata["size"])
-                or str(staged.get("sha256", "")).lower()
-                != str(metadata["sha256"]).lower()
-            ):
-                raise FileServiceError(
-                    "Printer did not confirm the verified firmware candidate"
-                )
-            self._firmware_state_changed(
-                status="ready", offset=metadata["size"], progress=100,
-                staged_path="/usb/" + str(staged.get("path", "FWUPD.RME")).lstrip("/"),
-            )
+            self._confirm_completed_firmware_manifest(metadata)
         except Exception as exc:
             self._logger.exception("RME FILE firmware transfer failed")
             recovery_required = bool(
@@ -3244,6 +3535,25 @@ class RmeCompatibilityPlugin(
                     "Disconnecting after unconfirmed RME binary teardown"
                 )
                 self._disconnect_for_transport_recovery()
+
+    def _confirm_completed_firmware_manifest(self, metadata):
+        """Require the authoritative protected candidate after FILE completion."""
+        staged = self._file_service.firmware_status()
+        if (
+            not int(staged.get("candidate", 0))
+            or int(staged.get("armed", 0))
+            or str(staged.get("state", "")).lower() != "ready"
+            or int(staged.get("size", -1)) != int(metadata["size"])
+            or str(staged.get("sha256", "")).lower()
+            != str(metadata["sha256"]).lower()
+        ):
+            raise FileServiceError(
+                "Printer did not confirm the verified firmware candidate"
+            )
+        self._firmware_state_changed(
+            status="ready", offset=metadata["size"], progress=100,
+            staged_path="/usb/" + str(staged.get("path", "FWUPD.RME")).lstrip("/"),
+        )
 
     def _clear_staged_firmware_state(self):
         """Forget only candidate/handoff state and stale firmware workflow."""

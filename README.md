@@ -76,12 +76,22 @@ and `doc/gcode/M998.md`.
   inventory, selected spools, and firmware statistics with an OctoPrint API key.
 - Integrates the current RME firmware's sandboxed `/usb` filesystem in Settings:
   browse directories, download files through authenticated OctoPrint, upload
-  with negotiated raw binary frames only when firmware advertises bounded
-  `binary_resync=1` recovery (otherwise paced pipelined bulk or legacy
-  acknowledged transport), SHA-256 atomic finalization, create and
+  with negotiated raw binary frames when firmware advertises `binary=1`
+  (otherwise pipelined bulk or acknowledged text transport), SHA-256 atomic
+  finalization, create and
   rename directories/files, delete entries, start USB prints, and flash BBFs.
   Paths are percent-encoded and cannot escape the printer's user-visible USB
   volume.
+- Persists the current firmware's required upload manifest before BEGIN,
+  including the exact final path, size, SHA-256, retained Pi source, and
+  selected transport. Interrupted transfers survive OctoPrint/printer
+  reconnects and present explicit Resume and Discard actions. Discard recovers
+  with a matching text/bulk BEGIN and waits for confirmed line-mode ABORT;
+  ordinary failure and cancellation preserve the resumable partial.
+- Supports explicit lost-manifest cleanup from an operator-supplied final path.
+  It probes only the derived `.rme-part` and `.rme-meta` siblings, never scans
+  hidden transfer files, never parses `.rme-meta`, and never deletes the
+  firmware-owned `.rme-old` rollback copy.
 - Hooks OctoPrint's standard SD-card upload action and replaces M28/M29
 streaming with acknowledged, atomic RME FILE transfers when FILE WRITE is
 advertised. OctoPrint still receives its normal transfer lifecycle callbacks.
@@ -92,11 +102,9 @@ is held and canceled without inserting print-control G-code into that channel.
   accepts the compatible `FWUPD.BBF` wire name but protects the verified file
   as hidden `/usb/FWUPD.RME` until an explicit RME FILE FLASH request hands it
   to the bootloader. It can be staged and flashed in one operation, and the browser shows
-  upload-to-Pi progress separately from the printer transfer. Older RME builds
-  retain the acknowledged M998 transfer and confirmed
-  `M997 /usb/FWUPD.BBF` fallback.
-  Legacy M998 commands include a nonnumeric parser sentinel required by the
-  original handler to retain its complete phase/offset argument body.
+  upload-to-Pi progress separately from the printer transfer. Candidate truth,
+  unstage, and bootloader handoff use the authoritative current
+  `@RME FIRMWARE QUERY`, `@RME FIRMWARE UNSTAGE`, and FILE FLASH operations.
 - Adds firmware actions to `.BBF` entries in OctoPrint's standard local Files
   sidebar, so an existing OctoPrint file can be uploaded as a verified
   candidate or uploaded and flashed without making a second browser upload.
