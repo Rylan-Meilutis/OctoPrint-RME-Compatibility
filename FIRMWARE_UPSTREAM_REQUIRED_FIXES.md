@@ -17,6 +17,11 @@ RME_FILE_BINARY_NACK offset=27648 reason=chunk_too_large
 <receiver stops responding, including to the binary abort frame>
 ```
 
+The failure was reproduced again after the host limited payloads to 512 bytes:
+the upload stopped producing ACK/NACK responses and the subsequent zero-length
+abort frame also timed out. Payload reduction alone therefore cannot make this
+firmware generation's raw transport safe.
+
 The receiver currently trusts a corrupted header's 16-bit payload length and
 sets `discard_remaining` to that value. A false large length can therefore
 consume every later byte, including the framed abort, for an unbounded period.
@@ -42,6 +47,9 @@ Required behavior:
 - Ensure the CDC receive path can actually sustain every advertised chunk and
   window. If 1024-byte payloads are not reliable, advertise the measured safe
   maximum (for example 512) rather than 1024.
+- Advertise `binary_resync=1` only after corrupt-length recovery is bounded and
+  both binary abort mechanisms are recognized from every parser state. Hosts
+  must use acknowledged bulk mode when this capability is absent.
 
 Tests should inject byte loss, duplication, CRC corruption, a corrupted length
 of 65535, disconnect mid-header, disconnect mid-payload, and abort during each

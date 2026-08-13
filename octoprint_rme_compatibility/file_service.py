@@ -338,7 +338,22 @@ class RmeFileService(object):
                 use_binary = bool(
                     self.send_binary and self.begin_binary and self.end_binary
                     and int(self._capabilities.get("binary", 0))
+                    # Buddy protocol generations through 0702267843 can enter
+                    # an unbounded corrupt-length discard state in raw mode,
+                    # after which even the abort frame is ignored. Do not risk
+                    # that transport until firmware explicitly promises bounded
+                    # resynchronization and out-of-band abort recognition.
+                    and int(self._capabilities.get("binary_resync", 0))
                 )
+                if (
+                    not use_binary
+                    and int(self._capabilities.get("binary", 0))
+                    and self.logger
+                ):
+                    self.logger.info(
+                        "RME binary upload disabled: firmware does not advertise "
+                        "binary_resync=1; using acknowledged bulk transport"
+                    )
                 if use_binary:
                     try:
                         offset = self._write_binary(

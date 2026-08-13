@@ -76,8 +76,9 @@ and `doc/gcode/M998.md`.
   inventory, selected spools, and firmware statistics with an OctoPrint API key.
 - Integrates the current RME firmware's sandboxed `/usb` filesystem in Settings:
   browse directories, download files through authenticated OctoPrint, upload
-  with negotiated raw binary frames (then pipelined bulk or legacy
-  acknowledged fallback), SHA-256 atomic finalization, create and
+  with negotiated raw binary frames only when firmware advertises bounded
+  `binary_resync=1` recovery (otherwise paced pipelined bulk or legacy
+  acknowledged transport), SHA-256 atomic finalization, create and
   rename directories/files, delete entries, start USB prints, and flash BBFs.
   Paths are percent-encoded and cannot escape the printer's user-visible USB
   volume.

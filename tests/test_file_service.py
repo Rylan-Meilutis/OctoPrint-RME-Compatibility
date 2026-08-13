@@ -16,6 +16,53 @@ from octoprint_rme_compatibility.protocol import parse_line
 
 
 class FileServiceTests(unittest.TestCase):
+    def test_binary_without_resync_capability_uses_safe_bulk_transport(self):
+        service = None
+        commands = []
+        raw_frames = []
+
+        def send(command):
+            commands.append(command)
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb write=1 bulk=1 bulk_chunk=384 "
+                    "bulk_window=4 binary=1 binary_chunk=1024 binary_window=8 "
+                    "binary_control=1 resumable_abort=1 durable_resume=1"
+                ))
+            elif "WRITE_BULK_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BULK_READY offset=0 chunk=384 window=4"
+                ))
+            elif "WRITE_BULK_CHUNK" in command:
+                offset = int(command.split("offset=", 1)[1].split(" ", 1)[0])
+                payload = base64.b64decode(command.split("data=", 1)[1])
+                service.handle_response(parse_line(
+                    "RME_FILE_BULK_ACK offset=%d" % (offset + len(payload))
+                ))
+            elif "WRITE_BULK_END" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BULK_COMPLETE path=FWUPD.BBF"
+                ))
+
+        service = RmeFileService(
+            send, response_timeout=1,
+            send_binary=raw_frames.append,
+            begin_binary=lambda: "@RME FILE RAW_SESSION token=" + "f" * 32,
+            end_binary=lambda: None,
+        )
+        with tempfile.NamedTemporaryFile(delete=False) as source:
+            source.write(bytes(range(256)) * 4)
+            source_path = source.name
+        try:
+            service.write_file(source_path, "FWUPD.BBF")
+        finally:
+            os.unlink(source_path)
+
+        self.assertFalse(raw_frames)
+        self.assertFalse(any("WRITE_BINARY_BEGIN" in item for item in commands))
+        self.assertTrue(any("WRITE_BULK_BEGIN" in item for item in commands))
+        self.assertTrue(any("WRITE_BULK_END" in item for item in commands))
+
     def test_transfer_latch_waits_without_arming_raw_writer(self):
         service = None
         commands = []
@@ -25,7 +72,7 @@ class FileServiceTests(unittest.TestCase):
             commands.append(command)
             if command == "@RME FILE CAPS":
                 service.handle_response(parse_line(
-                    "RME_FILE_CAPS root=/usb write=1 binary=1 "
+                    "RME_FILE_CAPS root=/usb write=1 binary=1 binary_resync=1 "
                     "binary_chunk=1024 binary_window=8"
                 ))
             elif "WRITE_BINARY_BEGIN" in command:
@@ -88,7 +135,7 @@ class FileServiceTests(unittest.TestCase):
         def send(command):
             if command == "@RME FILE CAPS":
                 service.handle_response(parse_line(
-                    "RME_FILE_CAPS root=/usb write=1 bulk=1 binary=1 "
+                    "RME_FILE_CAPS root=/usb write=1 bulk=1 binary=1 binary_resync=1 "
                     "binary_chunk=1024 binary_window=8"
                 ))
             elif "WRITE_BINARY_BEGIN" in command:
@@ -151,7 +198,7 @@ class FileServiceTests(unittest.TestCase):
         def send(command):
             if command == "@RME FILE CAPS":
                 service.handle_response(parse_line(
-                    "RME_FILE_CAPS root=/usb write=1 binary=1 "
+                    "RME_FILE_CAPS root=/usb write=1 binary=1 binary_resync=1 "
                     "binary_chunk=1024 binary_window=8"
                 ))
             elif "WRITE_BINARY_BEGIN" in command:
@@ -218,7 +265,7 @@ class FileServiceTests(unittest.TestCase):
         def send(command):
             if command == "@RME FILE CAPS":
                 service.handle_response(parse_line(
-                    "RME_FILE_CAPS root=/usb write=1 bulk=1 binary=1 "
+                    "RME_FILE_CAPS root=/usb write=1 bulk=1 binary=1 binary_resync=1 "
                     "binary_chunk=1024 binary_window=8"
                 ))
             elif "WRITE_BINARY_BEGIN" in command:
@@ -294,7 +341,7 @@ class FileServiceTests(unittest.TestCase):
             if command == "@RME FILE CAPS":
                 service.handle_response(parse_line(
                     "RME_FILE_CAPS root=/usb write=1 bulk=1 bulk_chunk=320 "
-                    "bulk_window=4 binary=1 binary_chunk=1024 binary_window=8"
+                    "bulk_window=4 binary=1 binary_resync=1 binary_chunk=1024 binary_window=8"
                 ))
             elif "WRITE_BINARY_BEGIN" in command:
                 service.handle_response(parse_line(
@@ -395,7 +442,7 @@ class FileServiceTests(unittest.TestCase):
             commands.append(command)
             if command == "@RME FILE CAPS":
                 service.handle_response(parse_line(
-                    "RME_FILE_CAPS root=/usb write=1 bulk=1 binary=1 "
+                    "RME_FILE_CAPS root=/usb write=1 bulk=1 binary=1 binary_resync=1 "
                     "binary_chunk=1024 binary_window=8"
                 ))
             elif "WRITE_BINARY_BEGIN" in command:

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.0b38 — 2026-08-12
+
+- Disabled raw binary uploads for firmware that does not explicitly advertise
+  `binary_resync=1`. Current firmware through `0702267843` can still become
+  permanently silent at 512-byte payloads and ignore its abort frame, so its
+  `binary=1` capability alone is not safe enough to enter raw mode.
+- Use the paced, cumulative-ACK bulk transport for current firmware. This is
+  slower than raw framing but retains byte-count/SHA-256 verification, atomic
+  publication, durable resume, shared transfer latching, and—critically—keeps
+  the printer in recoverable line mode.
+- Extended the upstream firmware handoff with the capability gate required to
+  re-enable binary transfers after bounded parser resynchronization is added.
+
 ## 0.1.0b37 — 2026-08-12
 
 - Started current-firmware raw uploads at a reliable 512-byte CDC boundary and
