@@ -3213,6 +3213,9 @@ class RmeCompatibilityPlugin(
                     "path": full_path.lstrip("/"),
                     "name": os.path.basename(full_path),
                     "size": max(0, int(entry.get("size", 0))),
+                    # FILE LIST has no mtime, but OctoPrint's core Files
+                    # templates require the date property to exist.
+                    "date": None,
                     "category": category,
                 })
 

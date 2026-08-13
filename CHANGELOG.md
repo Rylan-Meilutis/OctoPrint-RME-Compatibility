@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0b42 — 2026-08-13
+
+- Keep each raw binary window open until its cumulative ACK reaches that
+  window's target offset (or a NACK arrives). A delayed ACK from the preceding
+  window can no longer be misclassified as an incomplete current-window ACK,
+  avoiding an unnecessary binary teardown and `upload_state` bulk fallback.
+- Supply the core OctoPrint Files view's required `date` property on synthetic
+  RME SD-card files and folders. Current firmware does not expose FILE LIST
+  mtimes, so the value is explicitly unknown rather than fabricated.
+
 ## 0.1.0b41 — 2026-08-12
 
 - Aligned with Buddy firmware `50293bda570fd5a0ca6771baca81a06fd7b4e5f5`

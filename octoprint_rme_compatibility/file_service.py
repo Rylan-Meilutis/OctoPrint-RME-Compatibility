@@ -659,6 +659,14 @@ class RmeFileService(object):
                     expected_offset += len(payload)
                 records = self._exchange(
                     frames, ("file_binary_ack", "file_binary_nack"),
+                    # A cumulative ACK from the preceding raw window may be
+                    # delivered after this window has already been queued.
+                    # It is safe progress information, but it cannot complete
+                    # the current exchange. Wait for its target or any NACK.
+                    terminal=lambda item, target=expected_offset: (
+                        item.get("record") == "file_binary_nack"
+                        or int(item.get("offset", -1)) >= target
+                    ),
                 )
                 responses = [
                     item for item in records
@@ -693,7 +701,7 @@ class RmeFileService(object):
                     self._wait_for_binary_quiet()
                     continue
                 if acknowledged != expected_offset:
-                    raise FileServiceError("Printer returned an incomplete binary upload ACK")
+                    raise FileServiceError("Printer returned an invalid binary upload ACK")
                 retries = 0
                 offset = acknowledged
                 if progress:

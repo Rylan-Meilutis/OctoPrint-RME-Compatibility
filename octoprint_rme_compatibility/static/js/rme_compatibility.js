@@ -1101,7 +1101,7 @@ $(function () {
                     var folder = {
                         type: "folder", typePath: ["folder"], name: parts[parts.length - 1],
                         display: parts[parts.length - 1], path: path, origin: "sdcard",
-                        children: [], rme: true
+                        children: [], date: null, rme: true
                     };
                     folders[path] = folder;
                     parent.push(folder);
@@ -1116,7 +1116,8 @@ $(function () {
                     type: item.category === "model" ? "model" : "machinecode",
                     typePath: item.category === "model" ? ["model", "rme_artifact"] : ["machinecode", "gcode"],
                     name: filename, display: filename, path: String(item.path),
-                    origin: "sdcard", size: Number(item.size || 0), rme: true,
+                    origin: "sdcard", size: Number(item.size || 0),
+                    date: item.date == null ? null : Number(item.date), rme: true,
                     refs: {resource: OctoPrint.getBlueprintUrl("rme_compatibility") + "storage/download"}
                 });
             });

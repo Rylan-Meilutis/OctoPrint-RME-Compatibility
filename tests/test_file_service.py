@@ -405,6 +405,74 @@ class FileServiceTests(unittest.TestCase):
         self.assertEqual(source_data, bytes(received))
         self.assertEqual([True], ended)
 
+    def test_binary_upload_ignores_delayed_ack_from_preceding_window(self):
+        service = None
+        source_data = bytes(range(256)) * 64
+        received = bytearray()
+        window = []
+        window_number = [0]
+
+        def send(command):
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb write=1 binary=1 "
+                    "binary_chunk=1024 binary_window=8"
+                ))
+            elif "WRITE_BINARY_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_READY offset=0 chunk=1024 window=8 "
+                    "header=10 endian=little crc=crc32"
+                ))
+
+        def send_binary(frame):
+            offset, length, _ = struct.unpack("<IHI", frame[:10])
+            payload = frame[10:]
+            if not payload:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_COMPLETE path=delayed.bin"
+                ))
+                return
+            self.assertEqual(len(received) + sum(len(item[1]) for item in window), offset)
+            window.append((offset, payload))
+            if len(window) != 8:
+                return
+            for _, item in window:
+                received.extend(item)
+            window[:] = []
+            window_number[0] += 1
+            committed = len(received)
+            if window_number[0] == 2:
+                # Simulate the previous window's cumulative ACK arriving
+                # while the second window exchange is active.
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_ACK offset=8192"
+                ))
+                threading.Timer(
+                    0.02,
+                    lambda: service.handle_response(parse_line(
+                        "RME_FILE_BINARY_ACK offset=%d" % committed
+                    )),
+                ).start()
+            else:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_ACK offset=%d" % committed
+                ))
+
+        service = RmeFileService(
+            send, response_timeout=1, send_binary=send_binary,
+            begin_binary=lambda: "@RME FILE RAW_SESSION token=" + "8" * 32,
+            end_binary=lambda: None,
+        )
+        with tempfile.NamedTemporaryFile(delete=False) as source:
+            source.write(source_data)
+            source_path = source.name
+        try:
+            service.write_file(source_path, "delayed.bin")
+        finally:
+            os.unlink(source_path)
+
+        self.assertEqual(source_data, bytes(received))
+
     def test_binary_transport_failure_aborts_and_falls_back_to_bulk(self):
         service = None
         commands = []

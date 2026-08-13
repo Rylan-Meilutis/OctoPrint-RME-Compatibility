@@ -684,6 +684,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("unstageFirmware", javascript)
         self.assertIn("stage_octoprint_firmware", javascript)
         self.assertIn("rme-local-firmware-action", javascript)
+        self.assertIn("date: item.date == null ? null", javascript)
         self.assertIn("applyPackedBrightness", javascript)
         self.assertIn("lightPolicyText", javascript)
         self.assertIn("Filament resynchronization required", javascript)
