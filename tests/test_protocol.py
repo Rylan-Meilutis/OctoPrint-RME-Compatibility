@@ -161,6 +161,27 @@ class ProtocolTests(unittest.TestCase):
             "RME_FIRMWARE_RESTART reconnect=1"
         ), {"record": "firmware_restart", "reconnect": 1})
         self.assertEqual(parse_line(
+            "RME_FIRMWARE candidate=1 armed=0 state=ready path=FWUPD.RME "
+            "size=3921020 sha256=" + "a" * 64
+        ), {
+            "record": "firmware_status", "candidate": 1, "armed": 0,
+            "state": "ready", "path": "FWUPD.RME", "size": 3921020,
+            "sha256": "a" * 64,
+        })
+        self.assertEqual(parse_line(
+            "RME_FIRMWARE_UNSTAGED candidate=0 armed=0"
+        ), {"record": "firmware_unstaged", "candidate": 0, "armed": 0})
+        self.assertEqual(parse_line(
+            "RME_FILE_BINARY_SUSPENDED offset=27648 resumable=1 "
+            "reason=inactivity_timeout"
+        ), {
+            "record": "file_binary_suspended", "offset": 27648,
+            "resumable": 1, "reason": "inactivity_timeout",
+        })
+        self.assertEqual(parse_line(
+            "echo:RME_ERROR workflow=firmware code=transfer_busy"
+        )["record"], "firmware_error")
+        self.assertEqual(parse_line(
             "RME_LIGHT_STATE state=deep_idle screen=20 chamber=20 status=20"
         ), {
             "record": "light_state", "state": "deep_idle",

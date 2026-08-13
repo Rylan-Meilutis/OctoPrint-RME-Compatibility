@@ -116,7 +116,12 @@ class RmeFileService(object):
 
     def handle_response(self, record):
         """Wake the active HTTP/API worker for relevant parsed file records."""
-        if not record or not str(record.get("record", "")).startswith("file_"):
+        if not record or not (
+            str(record.get("record", "")).startswith("file_")
+            or record.get("record") in (
+                "firmware_status", "firmware_unstaged", "firmware_error",
+            )
+        ):
             return
         with self._condition:
             if record["record"] in ("file_binary_ack", "file_binary_nack"):
@@ -127,7 +132,9 @@ class RmeFileService(object):
             if not self._active:
                 self._condition.notify_all()
                 return
-            if record["record"] == "file_error":
+            if record["record"] in (
+                "file_error", "firmware_error", "file_binary_suspended",
+            ):
                 self._error = dict(record)
             else:
                 self._records.append(dict(record))
@@ -178,7 +185,10 @@ class RmeFileService(object):
                     if self._error:
                         error = self._error
                         if isinstance(error, dict):
-                            code = error.get("code") or error.get("message")
+                            code = (
+                                error.get("code") or error.get("reason")
+                                or error.get("message") or error.get("record")
+                            )
                             raise FileServiceError(
                                 "Printer USB operation failed: %s" % code,
                                 record=error,
@@ -343,7 +353,10 @@ class RmeFileService(object):
                     # after which even the abort frame is ignored. Do not risk
                     # that transport until firmware explicitly promises bounded
                     # resynchronization and out-of-band abort recognition.
-                    and int(self._capabilities.get("binary_resync", 0))
+                    and (
+                        int(self._capabilities.get("binary_resync", 0))
+                        or int(self._capabilities.get("binary_timeout_ms", 0)) > 0
+                    )
                 )
                 if (
                     not use_binary
@@ -352,7 +365,7 @@ class RmeFileService(object):
                 ):
                     self.logger.info(
                         "RME binary upload disabled: firmware does not advertise "
-                        "binary_resync=1; using acknowledged bulk transport"
+                        "bounded raw recovery; using acknowledged bulk transport"
                     )
                 if use_binary:
                     try:
@@ -723,6 +736,24 @@ class RmeFileService(object):
         with self._operation_lock:
             self._cancel.clear()
             self._exchange_when_available(command, replies[action])
+
+    def firmware_status(self):
+        """Return the firmware's authoritative protected-candidate state."""
+        with self._operation_lock:
+            self._cancel.clear()
+            records = self._exchange_when_available(
+                "@RME FIRMWARE QUERY", "firmware_status"
+            )
+        return self._terminal(records, "firmware_status")
+
+    def unstage_firmware(self):
+        """Idempotently remove the unarmed protected firmware candidate."""
+        with self._operation_lock:
+            self._cancel.clear()
+            records = self._exchange_when_available(
+                "@RME FIRMWARE UNSTAGE", "firmware_unstaged"
+            )
+        return self._terminal(records, "firmware_unstaged")
 
     @staticmethod
     def _hash_file(path):

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.0b39 — 2026-08-12
+
+- Added the current firmware's authoritative `@RME FIRMWARE QUERY` lifecycle.
+  The plugin now reports a candidate only when firmware returns `candidate=1`,
+  preserves its verified size/SHA-256, distinguishes an unarmed ready candidate
+  from `armed=1 state=restarting`, and clears stale UI state when firmware
+  reports no candidate.
+- Replaced generic deletion of protected `FWUPD.RME` with the idempotent
+  `@RME FIRMWARE UNSTAGE` operation when `firmware_unstage=1` is advertised.
+  Older firmware retains the provenance-gated compatibility fallback.
+- Enabled the raw binary fast path for current firmware advertising a positive
+  `binary_timeout_ms`, the documented bounded-recovery release contract, while
+  keeping older firmware without either recovery capability on safe bulk.
+- Added `RME_FILE_BINARY_SUSPENDED` handling so an inactivity recovery returns
+  cleanly to line mode and resumes the durable prefix through bulk transport
+  instead of falsely latching a reboot-required communication failure.
+- Firmware uploads now require the authoritative ready candidate to match the
+  uploaded byte count and SHA-256 before the UI enables flashing.
+
 ## 0.1.0b38 — 2026-08-12
 
 - Disabled raw binary uploads for firmware that does not explicitly advertise

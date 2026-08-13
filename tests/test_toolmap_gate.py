@@ -1100,6 +1100,56 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual("ready", plugin._state["firmware"]["status"])
         self.assertEqual(3921020, plugin._state["firmware"]["size"])
 
+    def test_current_firmware_stage_state_is_authoritative(self):
+        records = [
+            {
+                "record": "firmware_status", "candidate": 1, "armed": 0,
+                "state": "ready", "path": "FWUPD.RME", "size": 3921020,
+                "sha256": "c" * 64,
+            },
+            {
+                "record": "firmware_status", "candidate": 0, "armed": 0,
+                "state": "idle",
+            },
+        ]
+        plugin = RmeCompatibilityPlugin()
+        plugin._file_service = types.SimpleNamespace(
+            firmware_status=lambda: records.pop(0)
+        )
+        plugin._state["storage"]["caps"] = {"firmware_status": 1}
+        plugin._persist_and_publish = lambda: None
+
+        self.assertTrue(plugin._reconcile_firmware_stage())
+        self.assertEqual("ready", plugin._state["firmware"]["status"])
+        self.assertEqual("c" * 64, plugin._state["firmware"]["sha256"])
+        self.assertFalse(plugin._state["firmware"]["armed"])
+
+        self.assertFalse(plugin._reconcile_firmware_stage())
+        self.assertEqual("idle", plugin._state["firmware"]["status"])
+
+    def test_current_firmware_unstage_uses_dedicated_command(self):
+        calls = []
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+        plugin._file_service = types.SimpleNamespace(
+            unstage_firmware=lambda: calls.append("unstage") or {
+                "record": "firmware_unstaged", "candidate": 0, "armed": 0,
+            }
+        )
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["firmware"].update(
+            status="ready", staged_path="/usb/FWUPD.RME"
+        )
+        plugin._state["storage"].update(
+            supported=True, caps={"firmware_unstage": 1}
+        )
+        plugin._persist_and_publish = lambda: None
+        plugin._defer = lambda callback, *args: None
+
+        plugin._unstage_firmware()
+        self.assertEqual(["unstage"], calls)
+        self.assertEqual("idle", plugin._state["firmware"]["status"])
+
     def test_unstage_deletes_only_the_protected_stage_and_is_idempotent(self):
         class FileService(object):
             def __init__(self):

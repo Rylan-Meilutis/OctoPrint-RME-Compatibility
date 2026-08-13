@@ -112,6 +112,7 @@ def parse_line(raw_line):
         ("RME_FILE_BINARY_READY ", "file_binary_ready"),
         ("RME_FILE_BINARY_ACK ", "file_binary_ack"),
         ("RME_FILE_BINARY_NACK ", "file_binary_nack"),
+        ("RME_FILE_BINARY_SUSPENDED ", "file_binary_suspended"),
         ("RME_FILE_BINARY_ABORTED ", "file_binary_aborted"),
         ("RME_FILE_BINARY_CONTROL_NACK ", "file_binary_control_nack"),
         ("RME_FILE_BINARY_READ_READY ", "file_binary_read_ready"),
@@ -142,6 +143,10 @@ def parse_line(raw_line):
     if line.startswith("echo:RME_ERROR workflow=file "):
         result = parse_fields(line[len("echo:RME_ERROR workflow=file ") :])
         result.update(record="file_error", message=line)
+        return result
+    if line.startswith("echo:RME_ERROR workflow=firmware "):
+        result = parse_fields(line[len("echo:RME_ERROR workflow=firmware ") :])
+        result.update(record="firmware_error", message=line)
         return result
     if line.startswith("RME_EVENT "):
         result = parse_fields(line[len("RME_EVENT ") :])
@@ -188,9 +193,17 @@ def parse_line(raw_line):
             result = parse_fields(line[len(prefix) :])
             result["record"] = record
             return result
+    if line.startswith("RME_FIRMWARE_UNSTAGED "):
+        result = parse_fields(line[len("RME_FIRMWARE_UNSTAGED ") :])
+        result["record"] = "firmware_unstaged"
+        return result
     if line.startswith("RME_FIRMWARE_RESTART "):
         result = parse_fields(line[len("RME_FIRMWARE_RESTART ") :])
         result["record"] = "firmware_restart"
+        return result
+    if line.startswith("RME_FIRMWARE "):
+        result = parse_fields(line[len("RME_FIRMWARE ") :])
+        result["record"] = "firmware_status"
         return result
     if line.startswith("RME_PROMPT "):
         actions = line[len("RME_PROMPT ") :].strip()

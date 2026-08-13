@@ -170,6 +170,9 @@ class RmeCompatibilityPlugin(
                 "flash_after_stage": False,
                 "reconnect_expected": False,
                 "recovery_required": False,
+                "candidate": False,
+                "armed": False,
+                "printer_stage_state": "idle",
             },
             "storage": {
                 "supported": False, "caps": {}, "path": "/", "entries": [],
@@ -1240,6 +1243,11 @@ class RmeCompatibilityPlugin(
                 workflow = self._state.get("workflow") or {}
                 if (
                     printer_state == "IDLE"
+                    and not int(
+                        self._state.get("storage", {}).get("caps", {}).get(
+                            "firmware_status", 0
+                        )
+                    )
                     and (
                         firmware_status in ("flashing", "restarting")
                         or (
@@ -1263,6 +1271,7 @@ class RmeCompatibilityPlugin(
                 if lease and not previous_lease:
                     follow_up.append("@RME DIALOG QUERY")
                     follow_up.append("refresh_configuration:all")
+                    follow_up.append("reconcile_firmware_stage")
             elif kind == "event":
                 now = int(time.time())
                 record["workflow"] = classify_workflow(record)
@@ -1382,7 +1391,15 @@ class RmeCompatibilityPlugin(
                 self._state["firmware"].update(
                     status="restarting", error=None,
                     reconnect_expected=bool(record.get("reconnect", 0)),
+                    candidate=True, armed=True,
+                    printer_stage_state="restarting",
                 )
+            elif kind == "firmware_status":
+                self._apply_authoritative_firmware_locked(record)
+            elif kind == "firmware_unstaged":
+                self._apply_authoritative_firmware_locked({
+                    "candidate": 0, "armed": 0, "state": "idle",
+                })
             elif kind == "filament":
                 filament = {key: value for key, value in record.items() if key != "record"}
                 identity = (filament.get("user"), filament.get("slot"))
@@ -1486,6 +1503,8 @@ class RmeCompatibilityPlugin(
                 self._schedule_manufacturer_profile_sync()
             elif item == "probe_stats":
                 self._defer(self._probe_stats)
+            elif item == "reconcile_firmware_stage":
+                self._defer(self._reconcile_firmware_stage)
             elif item == "release_transfer_conflict":
                 self._defer(self._release_transfer_conflict_hold)
             elif item.startswith("refresh_configuration:"):
@@ -3187,11 +3206,34 @@ class RmeCompatibilityPlugin(
                     status="verifying", offset=metadata["size"], progress=100
                 ),
             )
-            staged = self._file_service.stat("FWUPD.RME")
-            if staged.get("type") != "file" or int(staged.get("size", -1)) != int(metadata["size"]):
-                raise FileServiceError(
-                    "Printer did not confirm the protected firmware stage"
-                )
+            with self._state_lock:
+                authoritative = bool(int(
+                    self._state.get("storage", {}).get("caps", {}).get(
+                        "firmware_status", 0
+                    )
+                ))
+            if authoritative:
+                staged = self._file_service.firmware_status()
+                if (
+                    not int(staged.get("candidate", 0))
+                    or int(staged.get("armed", 0))
+                    or str(staged.get("state", "")).lower() != "ready"
+                    or int(staged.get("size", -1)) != int(metadata["size"])
+                    or str(staged.get("sha256", "")).lower()
+                    != str(metadata["sha256"]).lower()
+                ):
+                    raise FileServiceError(
+                        "Printer did not confirm the verified firmware candidate"
+                    )
+            else:
+                staged = self._file_service.stat("FWUPD.RME")
+                if (
+                    staged.get("type") != "file"
+                    or int(staged.get("size", -1)) != int(metadata["size"])
+                ):
+                    raise FileServiceError(
+                        "Printer did not confirm the protected firmware stage"
+                    )
             self._firmware_state_changed(
                 status="ready", offset=metadata["size"], progress=100,
                 staged_path="/usb/FWUPD.RME",
@@ -3240,8 +3282,62 @@ class RmeCompatibilityPlugin(
                 if (self._state.get("prompt") or {}).get("kind") == "firmware":
                     self._state["prompt"] = None
 
+    def _apply_authoritative_firmware_locked(self, record):
+        """Apply one current-firmware stage record while holding state lock."""
+        candidate = bool(int(record.get("candidate", 0)))
+        armed = bool(int(record.get("armed", 0)))
+        printer_state = str(record.get("state", "idle")).lower()
+        if not candidate:
+            recovery_required = bool(
+                self._state["firmware"].get("recovery_required")
+            )
+            if not recovery_required:
+                self._state["firmware"] = self._empty_state()["firmware"]
+                workflow = self._state.get("workflow") or {}
+                if workflow.get("workflow") == "firmware_update":
+                    self._state["workflow"] = None
+                    if (self._state.get("prompt") or {}).get("kind") == "firmware":
+                        self._state["prompt"] = None
+            return False
+
+        size = max(0, int(record.get("size", self._state["firmware"].get("size", 0))))
+        path = str(record.get("path", "FWUPD.RME"))
+        status = "restarting" if armed or printer_state == "restarting" else "ready"
+        self._state["firmware"].update(
+            status=status,
+            size=size,
+            offset=size,
+            progress=100,
+            sha256=record.get("sha256", self._state["firmware"].get("sha256")),
+            error=None,
+            staged_path="/usb/" + path.lstrip("/"),
+            reconnect_expected=(status == "restarting"),
+            candidate=True,
+            armed=armed,
+            printer_stage_state=printer_state,
+        )
+        if status == "restarting":
+            self._firmware_handoff_started_at = time.monotonic()
+        return True
+
     def _reconcile_firmware_stage(self):
-        """Validate plugin provenance without inferring stage from a file."""
+        """Refresh stage truth, using the authoritative current protocol."""
+        with self._state_lock:
+            authoritative = bool(int(
+                self._state.get("storage", {}).get("caps", {}).get(
+                    "firmware_status", 0
+                )
+            ))
+        if authoritative:
+            status = self._file_service.firmware_status()
+            with self._state_lock:
+                staged = self._apply_authoritative_firmware_locked(status)
+            self._persist_and_publish()
+            return staged
+
+        # Compatibility fallback for firmware predating FIRMWARE QUERY. Keep
+        # plugin provenance mandatory: an arbitrary BBF on USB is never stage
+        # evidence.
         with self._state_lock:
             claimed_stage = self._state["firmware"].get("status") in ("ready", "staged")
         if not claimed_stage:
@@ -3281,16 +3377,25 @@ class RmeCompatibilityPlugin(
                 self._firmware_file_thread and self._firmware_file_thread.is_alive()
             ):
                 raise UploadError("Cannot unstage firmware during a transfer")
-            try:
-                staged = self._file_service.stat("FWUPD.RME")
-            except FileServiceError as exc:
-                if not str(exc).endswith("not_found"):
-                    raise
-                staged = None
-            if staged is not None:
-                if staged.get("type") != "file":
-                    raise UploadError("Protected firmware stage is not a regular file")
-                self._file_service.mutate("DELETE", "FWUPD.RME")
+            with self._state_lock:
+                authoritative = bool(int(
+                    self._state.get("storage", {}).get("caps", {}).get(
+                        "firmware_unstage", 0
+                    )
+                ))
+            if authoritative:
+                self._file_service.unstage_firmware()
+            else:
+                try:
+                    staged = self._file_service.stat("FWUPD.RME")
+                except FileServiceError as exc:
+                    if not str(exc).endswith("not_found"):
+                        raise
+                    staged = None
+                if staged is not None:
+                    if staged.get("type") != "file":
+                        raise UploadError("Protected firmware stage is not a regular file")
+                    self._file_service.mutate("DELETE", "FWUPD.RME")
             self._clear_staged_firmware_state()
             self._persist_and_publish()
             self._defer(self._refresh_storage_after_change, "/")

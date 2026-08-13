@@ -16,6 +16,79 @@ from octoprint_rme_compatibility.protocol import parse_line
 
 
 class FileServiceTests(unittest.TestCase):
+    def test_current_binary_timeout_capability_enables_fast_transport(self):
+        service = None
+        commands = []
+        raw_frames = []
+
+        def send(command):
+            commands.append(command)
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb write=1 bulk=1 binary=1 "
+                    "binary_chunk=1024 binary_window=8 binary_timeout_ms=10000"
+                ))
+            elif "WRITE_BINARY_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_READY offset=0 chunk=1024 window=8 "
+                    "header=10 endian=little crc=crc32"
+                ))
+
+        def send_binary(frame):
+            raw_frames.append(frame)
+            offset, length, _ = struct.unpack("<IHI", frame[:10])
+            if length:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_ACK offset=%d" % (offset + length)
+                ))
+            else:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_COMPLETE path=fast.bin"
+                ))
+
+        service = RmeFileService(
+            send, response_timeout=1, send_binary=send_binary,
+            begin_binary=lambda: "@RME FILE RAW_SESSION token=" + "d" * 32,
+            end_binary=lambda: None,
+        )
+        with tempfile.NamedTemporaryFile(delete=False) as source:
+            source.write(b"current bounded binary transport")
+            source_path = source.name
+        try:
+            service.write_file(source_path, "fast.bin")
+        finally:
+            os.unlink(source_path)
+
+        self.assertTrue(raw_frames)
+        self.assertTrue(any("WRITE_BINARY_BEGIN" in item for item in commands))
+        self.assertFalse(any("WRITE_BULK_BEGIN" in item for item in commands))
+
+    def test_authoritative_firmware_query_and_unstage_are_serialized(self):
+        service = None
+        commands = []
+
+        def send(command):
+            commands.append(command)
+            if command == "@RME FIRMWARE QUERY":
+                service.handle_response(parse_line(
+                    "RME_FIRMWARE candidate=1 armed=0 state=ready "
+                    "path=FWUPD.RME size=1234 sha256=" + "b" * 64
+                ))
+            elif command == "@RME FIRMWARE UNSTAGE":
+                service.handle_response(parse_line(
+                    "RME_FIRMWARE_UNSTAGED candidate=0 armed=0"
+                ))
+
+        service = RmeFileService(send, response_timeout=1)
+        status = service.firmware_status()
+        self.assertEqual(1234, status["size"])
+        self.assertEqual("ready", status["state"])
+        result = service.unstage_firmware()
+        self.assertEqual(0, result["candidate"])
+        self.assertEqual([
+            "@RME FIRMWARE QUERY", "@RME FIRMWARE UNSTAGE",
+        ], commands)
+
     def test_binary_without_resync_capability_uses_safe_bulk_transport(self):
         service = None
         commands = []
