@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0b43 — 2026-08-13
+
+- Corrected saved-lighting synchronization to match the current Buddy
+  firmware's `LightState` storage: `deep_idle` occupies the least-significant
+  byte and `printing` the most-significant byte (`0xPPAAIIDD`). Both UI decode
+  and `LIGHT SET` encoding now use the firmware implementation's byte order.
+- Prefer the firmware's authoritative decoded `RME_LIGHT_STATE` records when
+  populating the four saved-lighting columns, with packed decoding retained as
+  a fallback for an incomplete snapshot.
+
 ## 0.1.0b42 — 2026-08-13
 
 - Keep each raw binary window open until its cumulative ACK reaches that

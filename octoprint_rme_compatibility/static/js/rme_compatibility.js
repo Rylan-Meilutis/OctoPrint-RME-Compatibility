@@ -697,7 +697,9 @@ $(function () {
                         ko.utils.arrayForEach(self.persistentLightProfiles, function (profile) {
                             var supported = !!Number(value.light[profile.key + "_supported"]);
                             profile.supported(supported);
-                            applyPackedBrightness(profile, packed[profile.key]);
+                            if (!applyDecodedBrightness(profile, value.light.states, profile.key)) {
+                                applyPackedBrightness(profile, packed[profile.key]);
+                            }
                         });
                     }
                 }
@@ -1350,17 +1352,35 @@ $(function () {
         };
     }
     function applyPackedBrightness(profile, packed) {
+        // Buddy's current LightState enum is deep_idle=0 through printing=3,
+        // and light_state_shift() is state * 8.  The wire value is therefore
+        // 0xPPAAIIDD: deep idle is the least-significant byte.
         var value = Number(packed) >>> 0;
-        profile.deepIdle((value >>> 24) & 0xff);
-        profile.idle((value >>> 16) & 0xff);
-        profile.active((value >>> 8) & 0xff);
-        profile.printing(value & 0xff);
+        profile.deepIdle(value & 0xff);
+        profile.idle((value >>> 8) & 0xff);
+        profile.active((value >>> 16) & 0xff);
+        profile.printing((value >>> 24) & 0xff);
+    }
+    function applyDecodedBrightness(profile, states, channel) {
+        var names = ["deep_idle", "idle", "active", "printing"];
+        var values = [];
+        for (var index = 0; index < names.length; index++) {
+            var record = states && states[names[index]];
+            var value = record && Number(record[channel]);
+            if (!Number.isFinite(value) || value < 0 || value > 100) return false;
+            values.push(value);
+        }
+        profile.deepIdle(values[0]);
+        profile.idle(values[1]);
+        profile.active(values[2]);
+        profile.printing(values[3]);
+        return true;
     }
     function packBrightness(profile) {
         function byte(value) { return Math.max(0, Math.min(100, Number(value) || 0)); }
         return (
-            byte(profile.deepIdle()) * 0x1000000 + byte(profile.idle()) * 0x10000 +
-            byte(profile.active()) * 0x100 + byte(profile.printing())
+            byte(profile.deepIdle()) + byte(profile.idle()) * 0x100 +
+            byte(profile.active()) * 0x10000 + byte(profile.printing()) * 0x1000000
         );
     }
     function formatBytes(bytes) {

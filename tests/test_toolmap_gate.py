@@ -686,6 +686,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("rme-local-firmware-action", javascript)
         self.assertIn("date: item.date == null ? null", javascript)
         self.assertIn("applyPackedBrightness", javascript)
+        self.assertIn("applyDecodedBrightness", javascript)
         self.assertIn("lightPolicyText", javascript)
         self.assertIn("Filament resynchronization required", javascript)
         self.assertIn("MMU · idle", javascript)
@@ -1276,6 +1277,29 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual(300, light["policy"]["event_timeout_s"])
         self.assertEqual("idle", light["live"]["state"])
         self.assertEqual(20, light["live"]["chamber"])
+
+    def test_lighting_ui_uses_current_firmware_byte_order(self):
+        with open(
+            "octoprint_rme_compatibility/static/js/rme_compatibility.js"
+        ) as javascript_file:
+            javascript = javascript_file.read()
+
+        # Current Buddy firmware defines deep_idle=0, idle=1, active=2, and
+        # printing=3 with light_state_shift(state) == state * 8.  Keep both
+        # browser directions aligned with that 0xPPAAIIDD representation.
+        self.assertIn("profile.deepIdle(value & 0xff)", javascript)
+        self.assertIn("profile.idle((value >>> 8) & 0xff)", javascript)
+        self.assertIn("profile.active((value >>> 16) & 0xff)", javascript)
+        self.assertIn("profile.printing((value >>> 24) & 0xff)", javascript)
+        self.assertIn(
+            "byte(profile.deepIdle()) + byte(profile.idle()) * 0x100 +",
+            javascript,
+        )
+        self.assertIn(
+            "byte(profile.active()) * 0x10000 + "
+            "byte(profile.printing()) * 0x1000000",
+            javascript,
+        )
 
     def test_configuration_changes_drive_domain_refresh_without_polling(self):
         plugin = RmeCompatibilityPlugin()
