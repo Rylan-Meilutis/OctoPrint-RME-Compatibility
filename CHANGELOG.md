@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.0b48 — 2026-08-13
+
+- Align with current Buddy firmware `de72137518448a4627d9de427e3a5711feb8a772`
+  (6.6.3 RME build 13), including the shared 384-byte/four-command bulk
+  contract, 2048-byte CDC receive FIFO, and unified 10-second upload timeout.
+- Parse the new `RME_FILE_SUSPENDED` record for bulk and legacy transfers and
+  resume the firmware-authoritative committed prefix with a matching BEGIN.
+  Suspension notifications racing a cumulative ACK are retained between
+  exchanges, including the final ACK-to-END boundary.
+- Remove the obsolete binary and text-bulk send delays now that firmware owns
+  enough receive backlog for its advertised window. Treat an unlocated
+  `upload_state` failure as an integrity error and require a confirmed ABORT
+  instead of replaying an uncertain window.
+- Extend the fragmented serial-link firmware model with bulk, legacy, and
+  ACK-boundary suspension recovery. Source-contract checks now follow the
+  firmware's shared transfer header and verify its FIFO capacity, generic
+  timeout, suspension record, and activity tracking.
+
 ## 0.1.0b47 — 2026-08-13
 
 - Allow printer-storage action buttons to wrap across rows inside the settings

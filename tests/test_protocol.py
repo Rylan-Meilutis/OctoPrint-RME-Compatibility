@@ -179,6 +179,13 @@ class ProtocolTests(unittest.TestCase):
             "resumable": 1, "reason": "inactivity_timeout",
         })
         self.assertEqual(parse_line(
+            "RME_FILE_SUSPENDED offset=3072 resumable=1 "
+            "reason=inactivity_timeout"
+        ), {
+            "record": "file_suspended", "offset": 3072,
+            "resumable": 1, "reason": "inactivity_timeout",
+        })
+        self.assertEqual(parse_line(
             "echo:RME_ERROR workflow=firmware code=transfer_busy"
         )["record"], "firmware_error")
         self.assertEqual(parse_line(

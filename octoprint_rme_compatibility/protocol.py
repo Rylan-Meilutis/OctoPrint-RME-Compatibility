@@ -113,6 +113,7 @@ def parse_line(raw_line):
         ("RME_FILE_BINARY_ACK ", "file_binary_ack"),
         ("RME_FILE_BINARY_NACK ", "file_binary_nack"),
         ("RME_FILE_BINARY_SUSPENDED ", "file_binary_suspended"),
+        ("RME_FILE_SUSPENDED ", "file_suspended"),
         ("RME_FILE_BINARY_ABORTED ", "file_binary_aborted"),
         ("RME_FILE_BINARY_CONTROL_NACK ", "file_binary_control_nack"),
         ("RME_FILE_BINARY_READ_READY ", "file_binary_read_ready"),

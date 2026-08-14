@@ -14,12 +14,6 @@ FILE_CHUNK_SIZE = 48
 BULK_CHUNK_SIZE = 384
 BULK_WINDOW_SIZE = 4
 TRANSFER_LATCH_RETRY_SECONDS = 1.0
-# Give Buddy's Marlin/USB task a scheduler turn between frames. The advertised
-# windows describe ACK cadence, not permission to refill CDC RX without pause.
-# Without these small gaps the current firmware can re-enter its live parser,
-# duplicate part of a payload, and strand the following offsets in upload_state.
-BINARY_FRAME_SEND_DELAY = 0.002
-BULK_COMMAND_SEND_DELAY = 0.01
 
 
 class FileServiceError(RuntimeError):
@@ -74,6 +68,7 @@ class RmeFileService(object):
         self._binary_mode_uncertain = False
         self._last_binary_response = 0.0
         self._last_file_error_response = 0.0
+        self._pending_line_suspension = None
 
     @property
     def busy(self):
@@ -100,6 +95,7 @@ class RmeFileService(object):
         self._binary_active = False
         self._binary_mode_uncertain = False
         with self._condition:
+            self._pending_line_suspension = None
             if self._active:
                 self._error = reason
             self._condition.notify_all()
@@ -127,6 +123,11 @@ class RmeFileService(object):
         ):
             return
         with self._condition:
+            if record["record"] == "file_suspended":
+                # This can race the cumulative ACK that ends an exchange.
+                # Preserve it independently so the next matching BEGIN uses
+                # the firmware-authoritative committed prefix.
+                self._pending_line_suspension = dict(record)
             if record["record"] in ("file_binary_ack", "file_binary_nack"):
                 # A failed pipelined window can produce one NACK for the bad
                 # frame and more for frames that were already in flight. Track
@@ -137,6 +138,7 @@ class RmeFileService(object):
                 return
             if record["record"] in (
                 "file_error", "firmware_error", "file_binary_suspended",
+                "file_suspended",
             ):
                 if record["record"] == "file_error":
                     self._last_file_error_response = time.monotonic()
@@ -168,10 +170,10 @@ class RmeFileService(object):
     def _discard_uncertain_line_upload(self):
         """Return the firmware line receiver to a known idle state.
 
-        An ``upload_state`` response has no authoritative committed offset. If
-        replaying the same paced window cannot recover it, the only safe action
-        in the current protocol is a confirmed ABORT.  Never leave that partial
-        receiver live while OctoPrint resumes ordinary command traffic.
+        An ``upload_state`` response has no authoritative committed offset.
+        The only safe action in the current protocol is a confirmed ABORT.
+        Never leave that partial receiver live while OctoPrint resumes
+        ordinary command traffic.
         """
         try:
             self._wait_for_file_error_quiet()
@@ -204,7 +206,6 @@ class RmeFileService(object):
 
     def _exchange(
         self, command, expected, timeout=None, terminal=None, respect_cancel=True,
-        send_delay=0,
     ):
         """Send a command and return all records through its terminal reply."""
         expected = set(expected if isinstance(expected, (tuple, list, set)) else [expected])
@@ -215,15 +216,13 @@ class RmeFileService(object):
             self._active = True
         try:
             commands = command if isinstance(command, (tuple, list)) else [command]
-            for index, item in enumerate(commands):
+            for item in commands:
                 if isinstance(item, bytes):
                     if not self.send_binary:
                         raise FileServiceError("Raw printer transport is unavailable")
                     self.send_binary(item)
                 else:
                     self.send_command(item)
-                if send_delay and index + 1 < len(commands):
-                    time.sleep(send_delay)
             deadline = time.monotonic() + (timeout or self.response_timeout)
             with self._condition:
                 while not any(
@@ -460,8 +459,9 @@ class RmeFileService(object):
                             if manifest_update:
                                 manifest_update("bulk", size, digest)
                             try:
-                                offset = self._write_bulk(
-                                    local_path, encoded, size, digest, progress
+                                offset = self._write_and_finish_line(
+                                    self._write_bulk, "bulk", local_path, encoded,
+                                    size, digest, progress, finalizing,
                                 )
                             except FileServiceError as bulk_exc:
                                 if self._error_code(bulk_exc) not in (
@@ -484,29 +484,37 @@ class RmeFileService(object):
                                 if manifest_update:
                                     manifest_update("legacy", size, digest)
                                 use_bulk = False
-                                offset = self._write_legacy(
-                                    local_path, encoded, size, digest, progress
+                                offset = self._write_and_finish_line(
+                                    self._write_legacy, "legacy", local_path, encoded,
+                                    size, digest, progress, finalizing,
                                 )
                         else:
                             if manifest_update:
                                 manifest_update("legacy", size, digest)
-                            offset = self._write_legacy(
-                                local_path, encoded, size, digest, progress
+                            offset = self._write_and_finish_line(
+                                self._write_legacy, "legacy", local_path, encoded,
+                                size, digest, progress, finalizing,
                             )
                 elif bool(int(self._capabilities.get("bulk", 0))):
                     use_bulk = True
                     if manifest_update:
                         manifest_update("bulk", size, digest)
-                    offset = self._write_bulk(local_path, encoded, size, digest, progress)
+                    offset = self._write_and_finish_line(
+                        self._write_bulk, "bulk", local_path, encoded,
+                        size, digest, progress, finalizing,
+                    )
                 else:
                     if manifest_update:
                         manifest_update("legacy", size, digest)
-                    offset = self._write_legacy(local_path, encoded, size, digest, progress)
+                    offset = self._write_and_finish_line(
+                        self._write_legacy, "legacy", local_path, encoded,
+                        size, digest, progress, finalizing,
+                    )
                 if offset != size:
                     raise FileServiceError("Printer did not acknowledge the complete upload")
-                if finalizing:
-                    finalizing()
                 if use_binary:
+                    if finalizing:
+                        finalizing()
                     # A zero-length frame verifies SHA-256, atomically installs
                     # the file, and restores firmware's line parser.
                     self._exchange(
@@ -518,16 +526,6 @@ class RmeFileService(object):
                     self.end_binary()
                     self._binary_active = False
                     self._binary_mode_uncertain = False
-                elif use_bulk:
-                    self._exchange(
-                        "@RME FILE WRITE_BULK_END path=%s" % encoded,
-                        ("file_bulk_complete", "file_write_complete"), timeout=60,
-                    )
-                else:
-                    self._exchange(
-                        "@RME FILE WRITE_END path=%s" % encoded,
-                        "file_write_complete", timeout=60,
-                    )
                 if manifest_complete:
                     manifest_complete()
             except Exception:
@@ -719,6 +717,76 @@ class RmeFileService(object):
             or record.get("message") or record.get("record") or ""
         )
 
+    def _take_pending_line_suspension(self):
+        """Consume a line-transfer suspension delivered between exchanges."""
+        with self._condition:
+            record = self._pending_line_suspension
+            self._pending_line_suspension = None
+            return record
+
+    def _raise_pending_line_suspension(self):
+        record = self._take_pending_line_suspension()
+        if record:
+            raise FileServiceError(
+                "Printer USB operation failed: %s"
+                % (record.get("reason") or "file_suspended"),
+                record=record,
+            )
+
+    def _write_and_finish_line(
+        self, writer, transport, local_path, encoded, size, digest, progress,
+        finalizing,
+    ):
+        """Resume a suspended text upload and publish its verified prefix."""
+        resume_attempts = 0
+        while True:
+            try:
+                self._raise_pending_line_suspension()
+                offset = writer(local_path, encoded, size, digest, progress)
+                if offset != size:
+                    raise FileServiceError(
+                        "Printer did not acknowledge the complete upload"
+                    )
+                # Firmware may suspend after its final cumulative ACK but
+                # before the host queues END. Check the asynchronous record
+                # before attempting publication.
+                self._raise_pending_line_suspension()
+                if finalizing:
+                    finalizing()
+                if transport == "bulk":
+                    self._exchange(
+                        "@RME FILE WRITE_BULK_END path=%s" % encoded,
+                        ("file_bulk_complete", "file_write_complete"),
+                        timeout=60,
+                    )
+                else:
+                    self._exchange(
+                        "@RME FILE WRITE_END path=%s" % encoded,
+                        "file_write_complete", timeout=60,
+                    )
+                return offset
+            except FileServiceError as exc:
+                suspended = (
+                    exc.record
+                    and exc.record.get("record") == "file_suspended"
+                    and self._error_code(exc) in (
+                        "disconnect", "inactivity_timeout",
+                    )
+                )
+                # An active exchange also stores the notification so it cannot
+                # be lost in an ACK/suspension race. Consume that duplicate
+                # before reopening the matching upload.
+                if suspended:
+                    self._take_pending_line_suspension()
+                if not suspended or resume_attempts >= 2:
+                    raise
+                resume_attempts += 1
+                if self.logger:
+                    self.logger.warning(
+                        "RME %s upload was suspended; resuming the verified "
+                        "prefix (attempt %d/2)", transport, resume_attempts,
+                    )
+
     @staticmethod
     def _binary_frame(offset, payload):
         """Build one firmware raw frame with a CRC32-protected payload."""
@@ -800,7 +868,6 @@ class RmeFileService(object):
                         item.get("record") == "file_binary_nack"
                         or int(item.get("offset", -1)) >= target
                     ),
-                    send_delay=BINARY_FRAME_SEND_DELAY,
                 )
                 responses = [
                     item for item in records
@@ -882,7 +949,7 @@ class RmeFileService(object):
                     progress(offset, size)
 
     def _write_bulk(self, local_path, encoded, size, digest, progress):
-        """Pipeline negotiated Base64 chunks and pace them with cumulative ACKs.
+        """Pipeline negotiated Base64 chunks with cumulative ACKs.
 
         OctoPrint's supported plugin interface is line-oriented, so raw binary
         framing cannot safely take ownership of its receive parser. Bulk mode
@@ -926,38 +993,22 @@ class RmeFileService(object):
                         % (expected_offset, base64.b64encode(block).decode("ascii"))
                     )
                     expected_offset += len(block)
-                window_retries = 0
-                while True:
-                    try:
-                        records = self._exchange(
-                            commands, "file_bulk_ack",
-                            terminal=lambda item, target=expected_offset: int(item.get("offset", -1)) >= target,
-                            send_delay=BULK_COMMAND_SEND_DELAY,
-                        )
-                        break
-                    except FileServiceError as exc:
-                        if self._error_code(exc) != "upload_state":
-                            raise
-                        if window_retries >= 2:
-                            self._discard_uncertain_line_upload()
-                            raise FileServiceError(
-                                "Printer bulk parser lost framing; the partial "
-                                "upload was safely discarded, so retry the transfer"
-                            ) from exc
-                        # A malformed/missed command leaves the rest of its
-                        # already-pipelined window stale. Firmware retains the
-                        # same bulk receiver and committed offset, so drain
-                        # those replies and retry the identical window. If a
-                        # prefix actually advanced, the bounded retries still
-                        # fail safely instead of guessing a new offset.
-                        window_retries += 1
-                        self._wait_for_file_error_quiet()
-                        if self.logger:
-                            self.logger.warning(
-                                "RME bulk window lost framing; retrying the "
-                                "same verified offset (attempt %d/2)",
-                                window_retries,
-                            )
+                try:
+                    records = self._exchange(
+                        commands, "file_bulk_ack",
+                        terminal=lambda item, target=expected_offset: int(item.get("offset", -1)) >= target,
+                    )
+                except FileServiceError as exc:
+                    if self._error_code(exc) != "upload_state":
+                        raise
+                    # upload_state carries no committed offset. Replaying an
+                    # in-flight window would guess at firmware state, so use
+                    # the current protocol's confirmed destructive ABORT.
+                    self._discard_uncertain_line_upload()
+                    raise FileServiceError(
+                        "Printer bulk parser lost framing; the partial upload "
+                        "was safely discarded, so retry the transfer"
+                    ) from exc
                 acknowledged = int(self._terminal(records, "file_bulk_ack")["offset"])
                 if acknowledged != expected_offset:
                     raise FileServiceError("Printer returned an invalid bulk upload offset")

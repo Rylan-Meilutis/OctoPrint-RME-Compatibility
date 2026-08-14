@@ -8,15 +8,10 @@ import re
 import struct
 import tempfile
 import threading
-import time
 import unittest
 import zlib
 
-from octoprint_rme_compatibility.file_service import (
-    BINARY_FRAME_SEND_DELAY,
-    BULK_COMMAND_SEND_DELAY,
-    RmeFileService,
-)
+from octoprint_rme_compatibility.file_service import RmeFileService
 from octoprint_rme_compatibility.protocol import parse_line
 
 
@@ -41,7 +36,9 @@ class FirmwareFileServicePeer(object):
         corrupt_frame_position=None,
         fail_raw_writer_once=False, corrupt_bulk_line_once=False,
         reject_bulk_window_once=False, reject_bulk_window_count=0,
-        confirm_abort=True,
+        suspend_bulk_count=0, suspend_legacy_count=0,
+        suspend_bulk_after_ack_count=0,
+        bulk_supported=True, confirm_abort=True,
         fragment_widths=(1, 2, 5, 13, 31),
     ):
         self.service = None
@@ -73,10 +70,14 @@ class FirmwareFileServicePeer(object):
             int(reject_bulk_window_count), 1 if reject_bulk_window_once else 0
         )
         self._bulk_window_rejected = False
+        self._bulk_suspensions_remaining = max(0, int(suspend_bulk_count))
+        self._legacy_suspensions_remaining = max(0, int(suspend_legacy_count))
+        self._bulk_post_ack_suspensions_remaining = max(
+            0, int(suspend_bulk_after_ack_count)
+        )
+        self._bulk_supported = bool(bulk_supported)
         self._confirm_abort = bool(confirm_abort)
         self._fragment_widths = tuple(fragment_widths)
-        self.binary_send_times = []
-        self.bulk_send_times = []
         self._host_to_firmware = queue.Queue()
         self._firmware_to_host = queue.Queue()
         self._errors = []
@@ -106,8 +107,6 @@ class FirmwareFileServicePeer(object):
         if self._host_raw:
             raise AssertionError("line command sent while host owns raw transport")
         self.commands.append(command)
-        if command.startswith("@RME FILE WRITE_BULK_CHUNK "):
-            self.bulk_send_times.append(time.monotonic())
         wire_command = command
         if (
             self._corrupt_bulk_line_once
@@ -129,7 +128,6 @@ class FirmwareFileServicePeer(object):
         wire_frame = bytes(frame)
         _, length, _ = struct.unpack("<IHI", wire_frame[:10])
         if length:
-            self.binary_send_times.append(time.monotonic())
             if self._fail_raw_writer_once and not self._raw_writer_failed:
                 self._raw_writer_failed = True
                 raise IOError("simulated USB raw-writer failure")
@@ -156,11 +154,12 @@ class FirmwareFileServicePeer(object):
     def _handle_line(self, line):
         if line == "@RME FILE CAPS":
             self._reply(
-                "RME_FILE_CAPS root=/usb chunk=48 bulk=1 bulk_chunk=384 "
+                "RME_FILE_CAPS root=/usb chunk=48 bulk=%d bulk_chunk=384 "
                 "bulk_window=4 binary=1 binary_chunk=1024 binary_window=8 "
                 "binary_control=1 binary_control_offset=4294967294 "
                 "resumable_abort=1 durable_resume=1 shared_transfer_latch=1 "
-                "write=1",
+                "binary_timeout_ms=10000 upload_timeout_ms=10000 write=1"
+                % int(self._bulk_supported),
                 "ok",
             )
             return
@@ -297,8 +296,33 @@ class FirmwareFileServicePeer(object):
                 or len(self.received) == self.expected_size
             ):
                 self._line_unacknowledged = 0
+                if self._bulk_suspensions_remaining:
+                    self._bulk_suspensions_remaining -= 1
+                    self._line_transport = None
+                    self._reply(
+                        "RME_FILE_SUSPENDED offset=%d resumable=1 "
+                        "reason=inactivity_timeout" % len(self.received)
+                    )
+                    return
+                if self._bulk_post_ack_suspensions_remaining:
+                    self._bulk_post_ack_suspensions_remaining -= 1
+                    self._line_transport = None
+                    self._reply(
+                        "RME_FILE_BULK_ACK offset=%d" % len(self.received),
+                        "RME_FILE_SUSPENDED offset=%d resumable=1 "
+                        "reason=inactivity_timeout" % len(self.received),
+                    )
+                    return
                 self._reply("RME_FILE_BULK_ACK offset=%d" % len(self.received))
         else:
+            if self._legacy_suspensions_remaining:
+                self._legacy_suspensions_remaining -= 1
+                self._line_transport = None
+                self._reply(
+                    "RME_FILE_SUSPENDED offset=%d resumable=1 "
+                    "reason=inactivity_timeout" % len(self.received)
+                )
+                return
             self._reply("RME_FILE_WRITE_OFFSET offset=%d" % len(self.received))
 
     def _publish(self):
@@ -482,9 +506,9 @@ class SerialLinkIntegrationTests(unittest.TestCase):
         self.assertEqual(content, bytes(link.received))
         self.assertEqual(hashlib.sha256(content).hexdigest(), link.expected_sha)
 
-    def test_repeated_binary_inactivity_recovers_a_rejected_bulk_window(self):
+    def test_binary_fallback_resumes_current_bulk_suspensions(self):
         link = FirmwareFileServicePeer(
-            suspend_binary_count=3, reject_bulk_window_once=True
+            suspend_binary_count=3, suspend_bulk_count=2
         )
         service = RmeFileService(
             link.send_command,
@@ -508,26 +532,53 @@ class SerialLinkIntegrationTests(unittest.TestCase):
             item for item in link.commands if "WRITE_BINARY_BEGIN" in item
         ]
         self.assertEqual(3, len(binary_begins))
-        self.assertTrue(link._bulk_window_rejected)
-        self.assertTrue(any("WRITE_BULK_BEGIN" in item for item in link.commands))
+        bulk_begins = [item for item in link.commands if "WRITE_BULK_BEGIN" in item]
+        self.assertEqual(3, len(bulk_begins))
         self.assertEqual(content, bytes(link.received))
         self.assertEqual("FWUPD.RME", link.published_path)
-        binary_gaps = [
-            later - earlier
-            for earlier, later in zip(
-                link.binary_send_times, link.binary_send_times[1:]
-            )
+
+    def test_current_legacy_suspension_resumes_verified_prefix(self):
+        link = FirmwareFileServicePeer(
+            bulk_supported=False, suspend_legacy_count=2
+        )
+        service = RmeFileService(link.send_command, response_timeout=2)
+        link.service = service
+        content = bytes(range(251)) * 12 + b"legacy-resume-tail"
+
+        with tempfile.NamedTemporaryFile() as source:
+            source.write(content)
+            source.flush()
+            try:
+                service.write_file(source.name, "jobs/resumed.bgcode")
+            finally:
+                link.close()
+
+        begins = [
+            item for item in link.commands
+            if "WRITE_BEGIN" in item and "WRITE_BULK_BEGIN" not in item
         ]
-        bulk_gaps = [
-            later - earlier
-            for earlier, later in zip(link.bulk_send_times, link.bulk_send_times[1:])
-        ]
-        self.assertTrue(any(
-            gap >= BINARY_FRAME_SEND_DELAY * 0.8 for gap in binary_gaps
-        ))
-        self.assertTrue(any(
-            gap >= BULK_COMMAND_SEND_DELAY * 0.8 for gap in bulk_gaps
-        ))
+        self.assertEqual(3, len(begins))
+        self.assertEqual(content, bytes(link.received))
+        self.assertEqual("jobs/resumed.bgcode", link.published_path)
+
+    def test_bulk_suspension_racing_final_ack_is_not_lost(self):
+        link = FirmwareFileServicePeer(suspend_bulk_after_ack_count=1)
+        service = RmeFileService(link.send_command, response_timeout=2)
+        link.service = service
+        content = bytes(range(251)) * 5
+
+        with tempfile.NamedTemporaryFile() as source:
+            source.write(content)
+            source.flush()
+            try:
+                service.write_file(source.name, "jobs/ack-race.bgcode")
+            finally:
+                link.close()
+
+        begins = [item for item in link.commands if "WRITE_BULK_BEGIN" in item]
+        self.assertEqual(2, len(begins))
+        self.assertEqual(content, bytes(link.received))
+        self.assertEqual("jobs/ack-race.bgcode", link.published_path)
 
     def test_persistent_bulk_parser_loss_is_aborted_before_commands_resume(self):
         link = FirmwareFileServicePeer(
@@ -722,11 +773,23 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
         if not source.exists():
             self.skipTest("adjacent current Prusa-Firmware-Buddy checkout unavailable")
         firmware = source.read_text(encoding="utf-8")
+        firmware_root = source.parents[2]
+        transfer_contract = (
+            firmware_root / "src/common/rme_file_transfer.hpp"
+        ).read_text(encoding="utf-8")
+        tinyusb = (
+            firmware_root / "include/tinyusb/tusb_config.h"
+        ).read_text(encoding="utf-8")
+        connect_renderer = (
+            firmware_root / "src/connect/render.cpp"
+        ).read_text(encoding="utf-8")
+        host_service = (
+            Path(__file__).resolve().parents[1]
+            / "octoprint_rme_compatibility/file_service.py"
+        ).read_text(encoding="utf-8")
 
         expected_constants = {
             "transfer_chunk_size": FirmwareFileServicePeer.legacy_chunk_size,
-            "bulk_chunk_size": FirmwareFileServicePeer.bulk_chunk_size,
-            "bulk_window_size": FirmwareFileServicePeer.bulk_window_size,
             "binary_chunk_size": FirmwareFileServicePeer.chunk_size,
             "binary_window_size": FirmwareFileServicePeer.window_size,
         }
@@ -738,9 +801,34 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
                     % (re.escape(name), value),
                 )
         self.assertRegex(
-            firmware,
-            r"binary_inactivity_timeout_ms\s*=\s*10'000\s*;",
+            transfer_contract,
+            r"bulk_payload_size\s*=\s*%d\s*;"
+            % FirmwareFileServicePeer.bulk_chunk_size,
         )
+        self.assertRegex(
+            transfer_contract,
+            r"bulk_window_size\s*=\s*%d\s*;"
+            % FirmwareFileServicePeer.bulk_window_size,
+        )
+        self.assertIn(
+            "bulk_chunk_size = rme_file_transfer::bulk_payload_size", firmware,
+        )
+        self.assertIn(
+            "bulk_window_size = rme_file_transfer::bulk_window_size", firmware,
+        )
+        self.assertRegex(
+            firmware,
+            r"upload_inactivity_timeout_ms\s*=\s*10'000\s*;",
+        )
+        self.assertIn("upload_timeout_ms=", firmware)
+        self.assertIn("RME_FILE_SUSPENDED offset=", firmware)
+        self.assertIn("upload.last_activity_ms = ticks_ms();", firmware)
+        self.assertRegex(tinyusb, r"CFG_TUD_CDC_RX_BUFSIZE\s+2048")
+        self.assertIn("bulk_receive_backlog", firmware)
+        self.assertIn("const char *lfn = dirent_lfn", connect_renderer)
+        self.assertIn("filename_is_rme_private(lfn)", connect_renderer)
+        self.assertNotIn("BINARY_FRAME_SEND_DELAY", host_service)
+        self.assertNotIn("BULK_COMMAND_SEND_DELAY", host_service)
         self.assertIn(
             "const uint8_t unacknowledged = binary_receiver.unacknowledged;",
             firmware,
