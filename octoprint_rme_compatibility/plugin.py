@@ -2914,11 +2914,14 @@ class RmeCompatibilityPlugin(
                         saved, status="interrupted", error=str(exc)
                     )
                 self._persist_and_publish()
-            if getattr(self._file_service, "binary_mode_uncertain", False):
+            if getattr(
+                self._file_service, "transport_mode_uncertain",
+                getattr(self._file_service, "binary_mode_uncertain", False),
+            ):
                 self._firmware_state_changed(
                     status="error", recovery_required=True,
                     error=(
-                        "Printer communication is locked because binary teardown "
+                        "Printer communication is locked because transfer teardown "
                         "was not confirmed. Power-cycle the printer, then confirm "
                         "the reboot in RME settings. No further RME commands will be sent."
                     ),
@@ -3074,7 +3077,10 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 self._state["storage"].update(supported=True, caps=caps)
             self._probe_interrupted_transfer()
-            if getattr(self._file_service, "binary_mode_uncertain", False):
+            if getattr(
+                self._file_service, "transport_mode_uncertain",
+                getattr(self._file_service, "binary_mode_uncertain", False),
+            ):
                 return
             self._reconcile_firmware_stage()
             self._refresh_storage("/")
@@ -3109,11 +3115,14 @@ class RmeCompatibilityPlugin(
                 "Could not inspect interrupted RME upload: %s", exc
             )
             self._set_partial_status("interrupted", str(exc))
-            if getattr(self._file_service, "binary_mode_uncertain", False):
+            if getattr(
+                self._file_service, "transport_mode_uncertain",
+                getattr(self._file_service, "binary_mode_uncertain", False),
+            ):
                 self._firmware_state_changed(
                     status="error", recovery_required=True,
                     error=(
-                        "Printer communication is locked because binary teardown "
+                        "Printer communication is locked because transfer teardown "
                         "was not confirmed. Power-cycle the printer, then confirm "
                         "the reboot in RME settings. No further RME commands will be sent."
                     ),
@@ -3512,12 +3521,15 @@ class RmeCompatibilityPlugin(
             self._logger.exception("RME FILE firmware transfer failed")
             recovery_required = bool(
                 self._file_service
-                and getattr(self._file_service, "binary_mode_uncertain", False)
+                and getattr(
+                    self._file_service, "transport_mode_uncertain",
+                    getattr(self._file_service, "binary_mode_uncertain", False),
+                )
             )
             error = str(exc)
             if recovery_required:
                 error = (
-                    "Printer communication is locked because binary teardown "
+                    "Printer communication is locked because transfer teardown "
                     "was not confirmed. Power-cycle the printer, then confirm "
                     "the reboot in RME settings. No further RME commands will be sent."
                 )
@@ -3535,7 +3547,7 @@ class RmeCompatibilityPlugin(
                 # operator-facing error retains the required reconnect/power
                 # cycle instruction.
                 self._logger.error(
-                    "Disconnecting after unconfirmed RME binary teardown"
+                    "Disconnecting after unconfirmed RME transfer teardown"
                 )
                 self._disconnect_for_transport_recovery()
 

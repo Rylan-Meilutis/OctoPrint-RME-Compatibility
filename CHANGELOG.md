@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.0b46 — 2026-08-13
+
+- Pace binary frames and bulk text chunks so the current Buddy firmware's
+  Marlin/USB task gets a scheduler turn between writes. This works around the
+  observed live-parser corruption that duplicated part of a Base64 payload,
+  treated it as an unknown command, and stranded the upload in `upload_state`.
+- Drain stale errors from an already-pipelined bulk window and retry the same
+  verified offset twice. If firmware still cannot reconcile the window, issue
+  `FILE ABORT` and require its acknowledgement before ordinary traffic resumes.
+- Extend the hard transport lock to an unconfirmed line-upload teardown as well
+  as raw binary teardown, with an accurate operator warning in either case.
+- Exercise repeated binary inactivity, bulk parser rejection, inter-command
+  pacing, safe confirmed discard, and both successful and terminal recovery in
+  the fragmented serial-link firmware simulator.
+
 ## 0.1.0b45 — 2026-08-13
 
 - Replace the upload happy-path simulator with an independent firmware state

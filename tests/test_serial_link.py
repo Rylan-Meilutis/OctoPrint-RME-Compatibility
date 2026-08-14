@@ -8,10 +8,15 @@ import re
 import struct
 import tempfile
 import threading
+import time
 import unittest
 import zlib
 
-from octoprint_rme_compatibility.file_service import RmeFileService
+from octoprint_rme_compatibility.file_service import (
+    BINARY_FRAME_SEND_DELAY,
+    BULK_COMMAND_SEND_DELAY,
+    RmeFileService,
+)
 from octoprint_rme_compatibility.protocol import parse_line
 
 
@@ -32,8 +37,11 @@ class FirmwareFileServicePeer(object):
     legacy_chunk_size = 48
 
     def __init__(
-        self, suspend_binary_once=False, corrupt_frame_position=None,
+        self, suspend_binary_once=False, suspend_binary_count=0,
+        corrupt_frame_position=None,
         fail_raw_writer_once=False, corrupt_bulk_line_once=False,
+        reject_bulk_window_once=False, reject_bulk_window_count=0,
+        confirm_abort=True,
         fragment_widths=(1, 2, 5, 13, 31),
     ):
         self.service = None
@@ -47,8 +55,9 @@ class FirmwareFileServicePeer(object):
         self._host_raw = False
         self._firmware_raw = False
         self._unacknowledged = 0
-        self._suspend_binary_once = bool(suspend_binary_once)
-        self._binary_suspended = False
+        self._binary_suspensions_remaining = max(
+            int(suspend_binary_count), 1 if suspend_binary_once else 0
+        )
         self._corrupt_frame_position = corrupt_frame_position
         self._data_frame_index = 0
         self._fault_injected = False
@@ -60,7 +69,14 @@ class FirmwareFileServicePeer(object):
         self._raw_writer_failed = False
         self._corrupt_bulk_line_once = bool(corrupt_bulk_line_once)
         self._bulk_line_corrupted = False
+        self._reject_bulk_windows_remaining = max(
+            int(reject_bulk_window_count), 1 if reject_bulk_window_once else 0
+        )
+        self._bulk_window_rejected = False
+        self._confirm_abort = bool(confirm_abort)
         self._fragment_widths = tuple(fragment_widths)
+        self.binary_send_times = []
+        self.bulk_send_times = []
         self._host_to_firmware = queue.Queue()
         self._firmware_to_host = queue.Queue()
         self._errors = []
@@ -90,6 +106,8 @@ class FirmwareFileServicePeer(object):
         if self._host_raw:
             raise AssertionError("line command sent while host owns raw transport")
         self.commands.append(command)
+        if command.startswith("@RME FILE WRITE_BULK_CHUNK "):
+            self.bulk_send_times.append(time.monotonic())
         wire_command = command
         if (
             self._corrupt_bulk_line_once
@@ -111,6 +129,7 @@ class FirmwareFileServicePeer(object):
         wire_frame = bytes(frame)
         _, length, _ = struct.unpack("<IHI", wire_frame[:10])
         if length:
+            self.binary_send_times.append(time.monotonic())
             if self._fail_raw_writer_once and not self._raw_writer_failed:
                 self._raw_writer_failed = True
                 raise IOError("simulated USB raw-writer failure")
@@ -144,6 +163,14 @@ class FirmwareFileServicePeer(object):
                 "write=1",
                 "ok",
             )
+            return
+        if line == "@RME FILE ABORT":
+            self.received.clear()
+            self._line_transport = None
+            self._line_unacknowledged = 0
+            self._firmware_raw = False
+            if self._confirm_abort:
+                self._reply("RME_FILE_ABORTED", "ok")
             return
         if line == "@RME FILE FLASH path=FWUPD.RME":
             if self.published_path != "FWUPD.RME":
@@ -240,6 +267,11 @@ class FirmwareFileServicePeer(object):
         if self._line_transport != expected_transport or offset != len(self.received):
             self._reply("echo:RME_ERROR workflow=file code=upload_state")
             return
+        if bulk and self._reject_bulk_windows_remaining:
+            self._reject_bulk_windows_remaining -= 1
+            self._bulk_window_rejected = True
+            self._reply("echo:RME_ERROR workflow=file code=upload_state")
+            return
         try:
             payload = base64.b64decode(encoded, validate=True)
         except Exception:
@@ -322,8 +354,8 @@ class FirmwareFileServicePeer(object):
         )
         if acknowledge:
             self._unacknowledged = 0
-            if self._suspend_binary_once and not self._binary_suspended:
-                self._binary_suspended = True
+            if self._binary_suspensions_remaining:
+                self._binary_suspensions_remaining -= 1
                 self._firmware_raw = False
                 self._reply(
                     "RME_FILE_BINARY_SUSPENDED offset=%d resumable=1 "
@@ -449,6 +481,111 @@ class SerialLinkIntegrationTests(unittest.TestCase):
         self.assertFalse(any("WRITE_BULK_BEGIN" in item for item in link.commands))
         self.assertEqual(content, bytes(link.received))
         self.assertEqual(hashlib.sha256(content).hexdigest(), link.expected_sha)
+
+    def test_repeated_binary_inactivity_recovers_a_rejected_bulk_window(self):
+        link = FirmwareFileServicePeer(
+            suspend_binary_count=3, reject_bulk_window_once=True
+        )
+        service = RmeFileService(
+            link.send_command,
+            response_timeout=2,
+            send_binary=link.send_binary,
+            begin_binary=link.begin_binary,
+            end_binary=link.end_binary,
+        )
+        link.service = service
+        content = bytes(range(251)) * 200 + b"three-suspension-tail"
+
+        with tempfile.NamedTemporaryFile() as source:
+            source.write(content)
+            source.flush()
+            try:
+                service.write_file(source.name, "FWUPD.BBF")
+            finally:
+                link.close()
+
+        binary_begins = [
+            item for item in link.commands if "WRITE_BINARY_BEGIN" in item
+        ]
+        self.assertEqual(3, len(binary_begins))
+        self.assertTrue(link._bulk_window_rejected)
+        self.assertTrue(any("WRITE_BULK_BEGIN" in item for item in link.commands))
+        self.assertEqual(content, bytes(link.received))
+        self.assertEqual("FWUPD.RME", link.published_path)
+        binary_gaps = [
+            later - earlier
+            for earlier, later in zip(
+                link.binary_send_times, link.binary_send_times[1:]
+            )
+        ]
+        bulk_gaps = [
+            later - earlier
+            for earlier, later in zip(link.bulk_send_times, link.bulk_send_times[1:])
+        ]
+        self.assertTrue(any(
+            gap >= BINARY_FRAME_SEND_DELAY * 0.8 for gap in binary_gaps
+        ))
+        self.assertTrue(any(
+            gap >= BULK_COMMAND_SEND_DELAY * 0.8 for gap in bulk_gaps
+        ))
+
+    def test_persistent_bulk_parser_loss_is_aborted_before_commands_resume(self):
+        link = FirmwareFileServicePeer(
+            suspend_binary_count=3, reject_bulk_window_count=20
+        )
+        service = RmeFileService(
+            link.send_command,
+            response_timeout=2,
+            send_binary=link.send_binary,
+            begin_binary=link.begin_binary,
+            end_binary=link.end_binary,
+        )
+        link.service = service
+        content = bytes(range(251)) * 100
+
+        with tempfile.NamedTemporaryFile() as source:
+            source.write(content)
+            source.flush()
+            try:
+                with self.assertRaisesRegex(
+                    Exception, "partial upload was safely discarded"
+                ):
+                    service.write_file(source.name, "FWUPD.BBF")
+            finally:
+                link.close()
+
+        self.assertEqual("@RME FILE ABORT", link.commands[-1])
+        self.assertEqual(b"", bytes(link.received))
+        self.assertFalse(service.binary_mode_uncertain)
+
+    def test_unconfirmed_bulk_abort_locks_all_following_transport(self):
+        link = FirmwareFileServicePeer(
+            suspend_binary_count=3,
+            reject_bulk_window_count=20,
+            confirm_abort=False,
+        )
+        service = RmeFileService(
+            link.send_command,
+            response_timeout=0.2,
+            send_binary=link.send_binary,
+            begin_binary=link.begin_binary,
+            end_binary=link.end_binary,
+        )
+        link.service = service
+
+        with tempfile.NamedTemporaryFile() as source:
+            source.write(bytes(range(251)) * 100)
+            source.flush()
+            try:
+                with self.assertRaisesRegex(
+                    Exception, "teardown was not confirmed"
+                ):
+                    service.write_file(source.name, "FWUPD.BBF")
+            finally:
+                link.close()
+
+        self.assertEqual("@RME FILE ABORT", link.commands[-1])
+        self.assertTrue(service.transport_mode_uncertain)
 
     def test_crc_fault_at_every_window_position_preserves_ack_cadence(self):
         content = bytes(range(256)) * 96 + b"nack-recovery-tail"
