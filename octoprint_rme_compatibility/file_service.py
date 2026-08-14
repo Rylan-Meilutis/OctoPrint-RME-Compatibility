@@ -563,7 +563,24 @@ class RmeFileService(object):
                     % (encoded, size, digest)
                 )
                 expected = "file_write_ready"
-            self._exchange_when_available(command, expected)
+            try:
+                self._exchange_when_available(command, expected)
+            except FileServiceError as exc:
+                if self._error_code(exc) != "upload_state":
+                    raise
+                # The failed upload can still own firmware's line receiver
+                # when OctoPrint offers the durable manifest for discard.
+                # A second matching BEGIN is correctly rejected in that state;
+                # the already-active receiver is precisely the partial the
+                # explicit discard action is meant to remove. Confirm line
+                # ABORT before clearing any host-side provenance.
+                if self.logger:
+                    self.logger.info(
+                        "RME partial is still active; discarding its existing "
+                        "line receiver"
+                    )
+                self._discard_uncertain_line_upload()
+                return
             self._exchange(
                 "@RME FILE ABORT", "file_aborted", respect_cancel=False,
             )

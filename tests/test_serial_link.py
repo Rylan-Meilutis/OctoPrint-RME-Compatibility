@@ -185,6 +185,9 @@ class FirmwareFileServicePeer(object):
             line,
         )
         if begin:
+            if self._line_transport is not None:
+                self._reply("echo:RME_ERROR workflow=file code=upload_state")
+                return
             bulk = bool(begin.group(1))
             path = begin.group(2)
             size = int(begin.group(3))
@@ -638,6 +641,33 @@ class SerialLinkIntegrationTests(unittest.TestCase):
 
         self.assertEqual("@RME FILE ABORT", link.commands[-1])
         self.assertTrue(service.transport_mode_uncertain)
+
+    def test_discard_clears_a_receiver_left_active_by_the_same_manifest(self):
+        link = FirmwareFileServicePeer()
+        service = RmeFileService(
+            link.send_command,
+            response_timeout=2,
+            send_binary=link.send_binary,
+            begin_binary=link.begin_binary,
+            end_binary=link.end_binary,
+        )
+        link.service = service
+        digest = "c" * 64
+        try:
+            service._exchange(
+                "@RME FILE WRITE_BULK_BEGIN path=jobs/active.bgcode "
+                "size=8192 sha256=%s" % digest,
+                "file_bulk_ready",
+            )
+            service.discard_partial("jobs/active.bgcode", 8192, digest)
+        finally:
+            link.close()
+
+        begins = [item for item in link.commands if "WRITE_BULK_BEGIN" in item]
+        self.assertEqual(2, len(begins))
+        self.assertEqual("@RME FILE ABORT", link.commands[-1])
+        self.assertIsNone(link._line_transport)
+        self.assertFalse(service.transport_mode_uncertain)
 
     def test_crc_fault_at_every_window_position_preserves_ack_cadence(self):
         content = bytes(range(256)) * 96 + b"nack-recovery-tail"

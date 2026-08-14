@@ -955,6 +955,50 @@ class FileServiceTests(unittest.TestCase):
         self.assertFalse(any("WRITE_BINARY_BEGIN" in item for item in commands))
         self.assertEqual("@RME FILE ABORT", commands[-1])
 
+    def test_discard_aborts_an_already_active_line_receiver(self):
+        service = None
+        commands = []
+
+        def send(command):
+            commands.append(command)
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb write=1 bulk=1 durable_resume=1"
+                ))
+            elif "WRITE_BULK_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "echo:RME_ERROR workflow=file code=upload_state"
+                ))
+            elif command == "@RME FILE ABORT":
+                service.handle_response(parse_line("RME_FILE_ABORTED"))
+
+        service = RmeFileService(send, response_timeout=1)
+        service.discard_partial("jobs/active.bgcode", 8192, "b" * 64)
+
+        self.assertTrue(any("WRITE_BULK_BEGIN" in item for item in commands))
+        self.assertEqual("@RME FILE ABORT", commands[-1])
+        self.assertFalse(service.transport_mode_uncertain)
+
+    def test_discard_locks_transport_when_active_receiver_abort_is_unconfirmed(self):
+        service = None
+
+        def send(command):
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb write=1 bulk=1 durable_resume=1"
+                ))
+            elif "WRITE_BULK_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "echo:RME_ERROR workflow=file code=upload_state"
+                ))
+
+        service = RmeFileService(send, response_timeout=0.02)
+        with self.assertRaisesRegex(
+                FileServiceError, "teardown was not confirmed"):
+            service.discard_partial("jobs/active.bgcode", 8192, "c" * 64)
+
+        self.assertTrue(service.transport_mode_uncertain)
+
     def test_reconnect_probe_recovers_offset_then_suspends_raw_transport(self):
         service = None
         commands = []

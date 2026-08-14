@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0b50 — 2026-08-14
+
+- Recover partial-file discard when firmware still has the interrupted
+  text/bulk receiver open. A matching recovery BEGIN may correctly return
+  `upload_state`; the plugin now confirms a line-mode ABORT of that existing
+  receiver before clearing the durable host manifest.
+- Make the independent serial firmware model reject a second BEGIN while its
+  line receiver is active, and cover both successful and uncertain teardown.
+
 ## 0.1.0b49 — 2026-08-14
 
 - Align workflow routing with current Buddy firmware `67ce9dac40` and validate
