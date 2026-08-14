@@ -167,5 +167,26 @@
     50% { opacity: 1; }
 }
 
-.rme-storage-table td:last-child { white-space: nowrap; }
-.rme-storage-table .btn { margin: 1px 2px 1px 0; }
+.rme-storage-table {
+    table-layout: auto;
+    width: 100%;
+}
+
+.rme-storage-table th:last-child,
+.rme-storage-table .rme-storage-actions {
+    min-width: 0;
+    white-space: normal;
+}
+
+.rme-storage-table .rme-storage-actions {
+    align-content: flex-start;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.rme-storage-table .rme-storage-actions .btn {
+    flex: 0 0 auto;
+    margin: 0;
+    max-width: 100%;
+}

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0b47 — 2026-08-13
+
+- Allow printer-storage action buttons to wrap across rows inside the settings
+  panel. Long action sets such as Download, Flash, Rename, Move, and Delete no
+  longer overflow the table or get clipped at narrower panel widths.
+
 ## 0.1.0b46 — 2026-08-13
 
 - Pace binary frames and bulk text chunks so the current Buddy firmware's

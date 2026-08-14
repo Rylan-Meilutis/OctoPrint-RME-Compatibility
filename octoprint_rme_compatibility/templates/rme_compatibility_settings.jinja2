@@ -133,7 +133,7 @@
     <table class="table table-condensed rme-storage-table" data-bind="visible: storage().supported">
         <thead><tr><th>Name</th><th>Type/size</th><th>Actions</th></tr></thead>
         <tbody data-bind="foreach: storageEntries"><tr>
-            <td>
+            <td><div class="rme-storage-actions">
                 <a href="#" data-bind="visible: type === 'dir', text: name, click: $parent.storageOpen"></a>
                 <span data-bind="visible: type !== 'dir', text: name"></span>
             </td>
@@ -146,7 +146,7 @@
                 <button type="button" class="btn btn-mini" data-bind="click: $parent.storageRename">Rename…</button>
                 <button type="button" class="btn btn-mini" data-bind="click: $parent.storageMove">Move…</button>
                 <button type="button" class="btn btn-mini btn-danger" data-bind="click: $parent.storageDelete">Delete…</button>
-            </td>
+            </div></td>
         </tr></tbody>
     </table>
     <div data-bind="visible: storageDownloadJob().id">

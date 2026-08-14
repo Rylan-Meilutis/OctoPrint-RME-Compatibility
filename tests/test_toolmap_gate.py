@@ -696,6 +696,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("installFileManagerBridge", javascript)
         self.assertIn("Download to Pi", settings_template)
         self.assertIn("Download to device", settings_template)
+        self.assertIn('class="rme-storage-actions"', settings_template)
         self.assertIn("storageDownloadWidth", settings_template)
         self.assertIn("Schema 2 firmware", settings_template)
         self.assertIn('"plugin/rme_compatibility/storage/upload"', javascript)
@@ -719,6 +720,8 @@ class ToolmapGateTests(unittest.TestCase):
             stylesheet = stylesheet_file.read()
         self.assertIn("overflow-wrap: anywhere", stylesheet)
         self.assertIn("white-space: normal", stylesheet)
+        self.assertIn("flex-wrap: wrap", stylesheet)
+        self.assertNotIn("td:last-child { white-space: nowrap", stylesheet)
         self.assertNotIn(
             'OctoPrint.postForm(\n                PLUGIN_BASEURL', javascript
         )
