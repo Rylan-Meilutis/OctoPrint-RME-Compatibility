@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.0b45 — 2026-08-13
+
+- Replace the upload happy-path simulator with an independent firmware state
+  model driven through fragmented serial bytes. It validates CRCs, offsets,
+  cumulative ACK cadence, durable resume state, transport ownership, final
+  SHA-256, protected firmware publication, and flash selection.
+- Exercise CRC corruption at every position in the current eight-frame binary
+  window, inactivity suspension/resume, boundary sizes around binary chunks
+  and ACK windows, multiple serial fragmentation patterns, and both ordinary
+  file and firmware workflows.
+- Add a full wire-level recovery test for raw writer failure followed by a
+  corrupted bulk Base64 line and verified-prefix legacy completion. This test
+  exposed and now fixes trailing pipelined `upload_state` errors overwriting
+  the causal `decode_failed` response.
+- Check the simulator's transport constants and preserved-NACK ACK state
+  directly against the adjacent current Buddy firmware checkout when present.
+
 ## 0.1.0b44 — 2026-08-13
 
 - Match current Buddy firmware's preserved binary ACK-window cadence after a

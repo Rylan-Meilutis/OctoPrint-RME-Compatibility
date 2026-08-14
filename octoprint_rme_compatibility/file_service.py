@@ -126,7 +126,13 @@ class RmeFileService(object):
             if record["record"] in (
                 "file_error", "firmware_error", "file_binary_suspended",
             ):
-                self._error = dict(record)
+                # Preserve the first causal error from a pipelined window.
+                # Once firmware suspends on a damaged bulk line, commands
+                # already queued behind it legitimately answer upload_state;
+                # allowing those stale replies to overwrite decode_failed
+                # prevents the verified-prefix legacy recovery from running.
+                if self._error is None:
+                    self._error = dict(record)
             else:
                 self._records.append(dict(record))
             self._condition.notify_all()

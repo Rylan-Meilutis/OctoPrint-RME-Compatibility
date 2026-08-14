@@ -1,6 +1,8 @@
-"""End-to-end FILE transport tests over a fragmented simulated serial link."""
+"""End-to-end FILE transports against an independent firmware state model."""
 
+import base64
 import hashlib
+from pathlib import Path
 import queue
 import re
 import struct
@@ -13,33 +15,52 @@ from octoprint_rme_compatibility.file_service import RmeFileService
 from octoprint_rme_compatibility.protocol import parse_line
 
 
-class CurrentFirmwareSerialLink(object):
-    """Minimal current-firmware CDC peer with independent RX/TX workers.
+class FirmwareFileServicePeer(object):
+    """Independent current-firmware FILE state model on a byte-stream link.
 
-    Both directions are deliberately fragmented so this exercises the byte
-    stream boundary, line reconstruction, raw frame reconstruction, negotiated
-    window ACKs, and final hash verification instead of directly invoking
-    ``handle_response`` from the sender callback.
+    This models firmware-owned state (durable prefix, raw/line ownership,
+    preserved ACK count, recovery mode, and final SHA) rather than echoing the
+    host's requested offsets. Both directions are fragmented and faults are
+    injected into serialized bytes before the firmware model sees them.
     """
 
     chunk_size = 1024
     window_size = 8
 
-    def __init__(self, suspend_binary_once=False, nack_binary_once=False):
+    bulk_chunk_size = 384
+    bulk_window_size = 4
+    legacy_chunk_size = 48
+
+    def __init__(
+        self, suspend_binary_once=False, corrupt_frame_position=None,
+        fail_raw_writer_once=False, corrupt_bulk_line_once=False,
+        fragment_widths=(1, 2, 5, 13, 31),
+    ):
         self.service = None
         self.commands = []
         self.received = bytearray()
         self.expected_size = 0
         self.expected_sha = ""
         self.final_path = ""
+        self.published_path = ""
+        self.flash_queued = False
         self._host_raw = False
         self._firmware_raw = False
         self._unacknowledged = 0
         self._suspend_binary_once = bool(suspend_binary_once)
         self._binary_suspended = False
-        self._nack_binary_once = bool(nack_binary_once)
+        self._corrupt_frame_position = corrupt_frame_position
+        self._data_frame_index = 0
+        self._fault_injected = False
         self._binary_nacked = False
         self._recovering = False
+        self._line_transport = None
+        self._line_unacknowledged = 0
+        self._fail_raw_writer_once = bool(fail_raw_writer_once)
+        self._raw_writer_failed = False
+        self._corrupt_bulk_line_once = bool(corrupt_bulk_line_once)
+        self._bulk_line_corrupted = False
+        self._fragment_widths = tuple(fragment_widths)
         self._host_to_firmware = queue.Queue()
         self._firmware_to_host = queue.Queue()
         self._errors = []
@@ -52,9 +73,8 @@ class CurrentFirmwareSerialLink(object):
         self._firmware_thread.start()
         self._host_reader_thread.start()
 
-    @staticmethod
-    def _fragments(data):
-        widths = (1, 2, 5, 13, 31)
+    def _fragments(self, data):
+        widths = self._fragment_widths
         offset = 0
         index = 0
         while offset < len(data):
@@ -70,7 +90,16 @@ class CurrentFirmwareSerialLink(object):
         if self._host_raw:
             raise AssertionError("line command sent while host owns raw transport")
         self.commands.append(command)
-        for fragment in self._fragments((command + "\n").encode("ascii")):
+        wire_command = command
+        if (
+            self._corrupt_bulk_line_once
+            and not self._bulk_line_corrupted
+            and command.startswith("@RME FILE WRITE_BULK_CHUNK ")
+        ):
+            prefix, encoded = command.split("data=", 1)
+            wire_command = prefix + "data=!" + encoded[1:]
+            self._bulk_line_corrupted = True
+        for fragment in self._fragments((wire_command + "\n").encode("ascii")):
             self._host_to_firmware.put(fragment)
 
     def begin_binary(self):
@@ -79,7 +108,22 @@ class CurrentFirmwareSerialLink(object):
     def send_binary(self, frame):
         if not self._host_raw:
             raise AssertionError("raw frame sent before writer reservation")
-        for fragment in self._fragments(bytes(frame)):
+        wire_frame = bytes(frame)
+        _, length, _ = struct.unpack("<IHI", wire_frame[:10])
+        if length:
+            if self._fail_raw_writer_once and not self._raw_writer_failed:
+                self._raw_writer_failed = True
+                raise IOError("simulated USB raw-writer failure")
+            if (
+                not self._fault_injected
+                and self._corrupt_frame_position == self._data_frame_index
+            ):
+                damaged = bytearray(wire_frame)
+                damaged[-1] ^= 0x01
+                wire_frame = bytes(damaged)
+                self._fault_injected = True
+            self._data_frame_index += 1
+        for fragment in self._fragments(wire_frame):
             self._host_to_firmware.put(fragment)
 
     def end_binary(self):
@@ -101,6 +145,61 @@ class CurrentFirmwareSerialLink(object):
                 "ok",
             )
             return
+        if line == "@RME FILE FLASH path=FWUPD.RME":
+            if self.published_path != "FWUPD.RME":
+                self._reply("echo:RME_ERROR workflow=file code=not_found")
+            else:
+                self.flash_queued = True
+                self._reply("RME_FILE_FLASH_QUEUED", "ok")
+            return
+        begin = re.match(
+            r"^@RME FILE WRITE_(BULK_)?BEGIN path=(\S+) size=(\d+) "
+            r"sha256=([0-9a-f]{64})$",
+            line,
+        )
+        if begin:
+            bulk = bool(begin.group(1))
+            path = begin.group(2)
+            size = int(begin.group(3))
+            digest = begin.group(4)
+            resumed = self._prepare_upload(path, size, digest)
+            self._line_transport = "bulk" if bulk else "legacy"
+            self._line_unacknowledged = 0
+            if bulk:
+                self._reply(
+                    "RME_FILE_BULK_READY offset=%d chunk=384 window=4 resumed=%d"
+                    % (len(self.received), resumed),
+                    "ok",
+                )
+            else:
+                self._reply(
+                    "RME_FILE_WRITE_READY offset=%d chunk=48 resumed=%d"
+                    % (len(self.received), resumed),
+                    "ok",
+                )
+            return
+        bulk_chunk = re.match(
+            r"^@RME FILE WRITE_BULK_CHUNK offset=(\d+) data=(\S+)$", line
+        )
+        if bulk_chunk:
+            self._handle_line_chunk(bulk_chunk, bulk=True)
+            return
+        legacy_chunk = re.match(
+            r"^@RME FILE WRITE_CHUNK path=\S+ offset=(\d+) data=(\S+)$", line
+        )
+        if legacy_chunk:
+            self._handle_line_chunk(legacy_chunk, bulk=False)
+            return
+        end = re.match(r"^@RME FILE WRITE_(BULK_)?END path=(\S+)$", line)
+        if end:
+            bulk = bool(end.group(1))
+            if self._line_transport != ("bulk" if bulk else "legacy"):
+                self._reply("echo:RME_ERROR workflow=file code=upload_state")
+                return
+            self._publish()
+            self._line_transport = None
+            self._reply("RME_FILE_WRITE_COMPLETE path=" + end.group(2), "ok")
+            return
         match = re.match(
             r"^@RME FILE WRITE_BINARY_BEGIN path=(\S+) size=(\d+) "
             r"sha256=([0-9a-f]{64})$",
@@ -108,9 +207,7 @@ class CurrentFirmwareSerialLink(object):
         )
         if not match:
             raise AssertionError("unexpected firmware command: %s" % line)
-        self.final_path = match.group(1)
-        self.expected_size = int(match.group(2))
-        self.expected_sha = match.group(3)
+        self._prepare_upload(match.group(1), int(match.group(2)), match.group(3))
         self._firmware_raw = True
         self._unacknowledged = 0
         self._recovering = False
@@ -122,19 +219,82 @@ class CurrentFirmwareSerialLink(object):
             "ok",
         )
 
+    def _prepare_upload(self, path, size, digest):
+        resumed = int(
+            self.final_path == path
+            and self.expected_size == size
+            and self.expected_sha == digest
+            and len(self.received) <= size
+        )
+        if not resumed:
+            self.received.clear()
+        self.final_path = path
+        self.expected_size = size
+        self.expected_sha = digest
+        return resumed
+
+    def _handle_line_chunk(self, match, bulk):
+        expected_transport = "bulk" if bulk else "legacy"
+        offset = int(match.group(1))
+        encoded = match.group(2)
+        if self._line_transport != expected_transport or offset != len(self.received):
+            self._reply("echo:RME_ERROR workflow=file code=upload_state")
+            return
+        try:
+            payload = base64.b64decode(encoded, validate=True)
+        except Exception:
+            self._line_transport = None
+            self._reply(
+                "echo:RME_ERROR workflow=file code=decode_failed offset=%d resumable=1"
+                % len(self.received)
+            )
+            return
+        limit = self.bulk_chunk_size if bulk else self.legacy_chunk_size
+        if len(payload) > limit:
+            self._line_transport = None
+            self._reply(
+                "echo:RME_ERROR workflow=file code=chunk_too_large offset=%d resumable=1"
+                % len(self.received)
+            )
+            return
+        self.received.extend(payload)
+        if bulk:
+            self._line_unacknowledged += 1
+            if (
+                self._line_unacknowledged >= self.bulk_window_size
+                or len(self.received) == self.expected_size
+            ):
+                self._line_unacknowledged = 0
+                self._reply("RME_FILE_BULK_ACK offset=%d" % len(self.received))
+        else:
+            self._reply("RME_FILE_WRITE_OFFSET offset=%d" % len(self.received))
+
+    def _publish(self):
+        if len(self.received) != self.expected_size:
+            raise AssertionError("completed upload size mismatch")
+        if hashlib.sha256(self.received).hexdigest() != self.expected_sha:
+            raise AssertionError("completed upload SHA-256 mismatch")
+        self.published_path = (
+            "FWUPD.RME" if self.final_path == "FWUPD.BBF" else self.final_path
+        )
+
     def _handle_frame(self, frame):
         offset, length, checksum = struct.unpack("<IHI", frame[:10])
         payload = frame[10:]
         if length != len(payload):
             raise AssertionError("raw frame length mismatch")
-        if checksum != zlib.crc32(payload) & 0xFFFFFFFF:
-            raise AssertionError("raw frame CRC mismatch")
         if not payload:
+            if offset == 0xFFFFFFFF:
+                self._firmware_raw = False
+                self._reply(
+                    "RME_FILE_BINARY_ABORTED offset=%d resumable=1"
+                    % len(self.received)
+                )
+                return
             if offset != self.expected_size or len(self.received) != self.expected_size:
                 raise AssertionError("invalid completion offset")
-            if hashlib.sha256(self.received).hexdigest() != self.expected_sha:
-                raise AssertionError("completed upload SHA-256 mismatch")
             self._firmware_raw = False
+            self._publish()
             self._reply("RME_FILE_BINARY_COMPLETE path=" + self.final_path, "ok")
             return
         if offset != len(self.received):
@@ -144,16 +304,14 @@ class CurrentFirmwareSerialLink(object):
             return
         if length > self.chunk_size:
             raise AssertionError("host exceeded negotiated binary chunk")
-        if (
-            self._nack_binary_once and not self._binary_nacked
-            and self._unacknowledged == 2
-        ):
-            self._binary_nacked = True
+        if checksum != zlib.crc32(payload) & 0xFFFFFFFF:
+            if not self._recovering:
+                self._binary_nacked = True
+                self._reply(
+                    "RME_FILE_BINARY_NACK offset=%d reason=crc_mismatch recovering=1"
+                    % len(self.received)
+                )
             self._recovering = True
-            self._reply(
-                "RME_FILE_BINARY_NACK offset=%d reason=crc_mismatch recovering=1"
-                % len(self.received)
-            )
             return
         self._recovering = False
         self.received.extend(payload)
@@ -236,7 +394,7 @@ class CurrentFirmwareSerialLink(object):
 
 class SerialLinkIntegrationTests(unittest.TestCase):
     def test_current_binary_firmware_upload_over_fragmented_serial_link(self):
-        link = CurrentFirmwareSerialLink()
+        link = FirmwareFileServicePeer()
         service = RmeFileService(
             link.send_command,
             response_timeout=2,
@@ -267,7 +425,7 @@ class SerialLinkIntegrationTests(unittest.TestCase):
         self.assertFalse(any("WRITE_BULK_BEGIN" in item for item in link.commands))
 
     def test_binary_inactivity_resumes_verified_prefix_without_bulk_fallback(self):
-        link = CurrentFirmwareSerialLink(suspend_binary_once=True)
+        link = FirmwareFileServicePeer(suspend_binary_once=True)
         service = RmeFileService(
             link.send_command,
             response_timeout=2,
@@ -292,8 +450,74 @@ class SerialLinkIntegrationTests(unittest.TestCase):
         self.assertEqual(content, bytes(link.received))
         self.assertEqual(hashlib.sha256(content).hexdigest(), link.expected_sha)
 
-    def test_binary_nack_completes_preserved_firmware_ack_window(self):
-        link = CurrentFirmwareSerialLink(nack_binary_once=True)
+    def test_crc_fault_at_every_window_position_preserves_ack_cadence(self):
+        content = bytes(range(256)) * 96 + b"nack-recovery-tail"
+        for fault_position in range(FirmwareFileServicePeer.window_size):
+            with self.subTest(fault_position=fault_position):
+                link = FirmwareFileServicePeer(
+                    corrupt_frame_position=fault_position
+                )
+                service = RmeFileService(
+                    link.send_command,
+                    response_timeout=2,
+                    send_binary=link.send_binary,
+                    begin_binary=link.begin_binary,
+                    end_binary=link.end_binary,
+                )
+                link.service = service
+                with tempfile.NamedTemporaryFile() as source:
+                    source.write(content)
+                    source.flush()
+                    try:
+                        service.write_file(source.name, "FWUPD.BBF")
+                    finally:
+                        link.close()
+
+                self.assertTrue(link._fault_injected)
+                self.assertTrue(link._binary_nacked)
+                self.assertEqual(content, bytes(link.received))
+                self.assertFalse(any(
+                    "WRITE_BULK_BEGIN" in item for item in link.commands
+                ))
+
+    def test_file_and_firmware_boundaries_and_firmware_flash(self):
+        sizes = (1, 1023, 1024, 1025, 8191, 8192, 8193)
+        for destination in ("jobs/model.bgcode", "FWUPD.BBF"):
+            for size in sizes:
+                with self.subTest(destination=destination, size=size):
+                    link = FirmwareFileServicePeer()
+                    service = RmeFileService(
+                        link.send_command,
+                        response_timeout=2,
+                        send_binary=link.send_binary,
+                        begin_binary=link.begin_binary,
+                        end_binary=link.end_binary,
+                    )
+                    link.service = service
+                    content = bytes(index % 251 for index in range(size))
+                    with tempfile.NamedTemporaryFile() as source:
+                        source.write(content)
+                        source.flush()
+                        try:
+                            service.write_file(source.name, destination)
+                            if destination == "FWUPD.BBF":
+                                service.mutate("FLASH", "FWUPD.RME")
+                        finally:
+                            link.close()
+
+                    self.assertEqual(content, bytes(link.received))
+                    self.assertEqual(
+                        "FWUPD.RME" if destination == "FWUPD.BBF" else destination,
+                        link.published_path,
+                    )
+                    self.assertEqual(
+                        destination == "FWUPD.BBF", link.flash_queued
+                    )
+
+    def test_raw_failure_and_bulk_decode_failure_resume_with_legacy_bytes(self):
+        link = FirmwareFileServicePeer(
+            fail_raw_writer_once=True, corrupt_bulk_line_once=True
+        )
         service = RmeFileService(
             link.send_command,
             response_timeout=2,
@@ -302,7 +526,7 @@ class SerialLinkIntegrationTests(unittest.TestCase):
             end_binary=link.end_binary,
         )
         link.service = service
-        content = bytes(range(256)) * 96 + b"nack-recovery-tail"
+        content = bytes(range(251)) * 17 + b"fallback-firmware-tail"
 
         with tempfile.NamedTemporaryFile() as source:
             source.write(content)
@@ -312,9 +536,90 @@ class SerialLinkIntegrationTests(unittest.TestCase):
             finally:
                 link.close()
 
-        self.assertTrue(link._binary_nacked)
+        self.assertTrue(link._raw_writer_failed)
+        self.assertTrue(link._bulk_line_corrupted)
         self.assertEqual(content, bytes(link.received))
-        self.assertFalse(any("WRITE_BULK_BEGIN" in item for item in link.commands))
+        self.assertEqual("FWUPD.RME", link.published_path)
+        self.assertTrue(any("WRITE_BINARY_BEGIN" in item for item in link.commands))
+        self.assertTrue(any("WRITE_BULK_BEGIN" in item for item in link.commands))
+        self.assertTrue(any("WRITE_BEGIN" in item for item in link.commands))
+        self.assertTrue(any(
+            "WRITE_END" in item and "WRITE_BULK_END" not in item
+            for item in link.commands
+        ))
+        self.assertFalse(any("WRITE_BULK_END" in item for item in link.commands))
+
+    def test_serial_fragmentation_patterns_do_not_change_protocol_results(self):
+        content = bytes(range(251)) * 37
+        patterns = ((1,), (2, 3, 5, 7), (63, 64, 127))
+        for widths in patterns:
+            with self.subTest(fragment_widths=widths):
+                link = FirmwareFileServicePeer(fragment_widths=widths)
+                service = RmeFileService(
+                    link.send_command,
+                    response_timeout=2,
+                    send_binary=link.send_binary,
+                    begin_binary=link.begin_binary,
+                    end_binary=link.end_binary,
+                )
+                link.service = service
+                with tempfile.NamedTemporaryFile() as source:
+                    source.write(content)
+                    source.flush()
+                    try:
+                        service.write_file(source.name, "jobs/fragmented.bgcode")
+                    finally:
+                        link.close()
+                self.assertEqual(content, bytes(link.received))
+                self.assertEqual("jobs/fragmented.bgcode", link.published_path)
+
+
+class CheckedOutFirmwareContractTests(unittest.TestCase):
+    """Prevent the independent peer from silently drifting from Buddy."""
+
+    def test_peer_constants_and_nack_state_match_current_firmware_checkout(self):
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "Prusa-Firmware-Buddy/src/marlin_stubs/rme_file_service.cpp"
+        )
+        if not source.exists():
+            self.skipTest("adjacent current Prusa-Firmware-Buddy checkout unavailable")
+        firmware = source.read_text(encoding="utf-8")
+
+        expected_constants = {
+            "transfer_chunk_size": FirmwareFileServicePeer.legacy_chunk_size,
+            "bulk_chunk_size": FirmwareFileServicePeer.bulk_chunk_size,
+            "bulk_window_size": FirmwareFileServicePeer.bulk_window_size,
+            "binary_chunk_size": FirmwareFileServicePeer.chunk_size,
+            "binary_window_size": FirmwareFileServicePeer.window_size,
+        }
+        for name, value in expected_constants.items():
+            with self.subTest(constant=name):
+                self.assertRegex(
+                    firmware,
+                    r"constexpr\s+[^;=]+\s+%s\s*=\s*%d\s*;"
+                    % (re.escape(name), value),
+                )
+        self.assertRegex(
+            firmware,
+            r"binary_inactivity_timeout_ms\s*=\s*10'000\s*;",
+        )
+        self.assertIn(
+            "const uint8_t unacknowledged = binary_receiver.unacknowledged;",
+            firmware,
+        )
+        self.assertIn(
+            "binary_receiver.unacknowledged = unacknowledged;",
+            firmware,
+        )
+        self.assertIn(
+            "++binary_receiver.unacknowledged >= binary_window_size",
+            firmware,
+        )
+        self.assertIn(
+            "binary_receiver.unacknowledged = acknowledge ? 0 : unacknowledged;",
+            firmware,
+        )
 
 
 if __name__ == "__main__":
