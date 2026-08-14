@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.0b49 — 2026-08-14
+
+- Align workflow routing with current Buddy firmware `67ce9dac40` and validate
+  it independently against the `v6.5.7-RME` release, adding the
+  distinct INDX `filament_movement/not_moving` and
+  `extrusion_flow_limit/flow_limit` conditions and their shared M1601
+  Continue/Unload/Abort action query.
+- Retain the original extrusion-fault cause while generic filament load/unload
+  recovery progress runs, then clear it when recovery closes or the print
+  finishes, fails, or is canceled.
+- Extend protocol, UI, firmware-source-contract, and lifecycle tests for the
+  new M591/M1601 workflow contract and the shared 6.5.7/6.6.3 FILE transport.
+
 ## 0.1.0b48 — 2026-08-13
 
 - Align with current Buddy firmware `de72137518448a4627d9de427e3a5711feb8a772`

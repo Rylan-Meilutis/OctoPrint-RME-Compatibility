@@ -1342,6 +1342,71 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._open_session()
         self.assertEqual("@RME SESSION OPEN events=31 legacy=0", commands[-1])
 
+    def test_extrusion_fault_cause_survives_shared_recovery_progress(self):
+        plugin = RmeCompatibilityPlugin()
+        commands = []
+        plugin._send_command = commands.append
+        plugin._defer = lambda callback, *args: callback(*args)
+        plugin._schedule_publish = lambda: None
+
+        plugin._handle_record({
+            "record": "event", "seq": 1, "type": "error",
+            "workflow": "filament_movement", "state": "waiting",
+            "code": "not_moving",
+            "message": "Loadcell detected filament not moving",
+        })
+        self.assertEqual(
+            ["@RME DIALOG QUERY", "@RME STUCK QUERY"], commands,
+        )
+        plugin._handle_record({
+            "record": "prompt", "actions": ["Continue", "Unload", "Abort"],
+        })
+
+        plugin._handle_record({
+            "record": "event", "seq": 2, "type": "progress",
+            "workflow": "filament_unload", "state": "active", "progress": 40,
+            "message": "Unloading filament",
+        })
+        workflow = plugin._state["workflow"]
+        self.assertEqual("filament_movement", workflow["workflow"])
+        self.assertEqual("not_moving", workflow["code"])
+        self.assertEqual("filament_unload", workflow["recovery"]["workflow"])
+        self.assertEqual(
+            "Loadcell detected filament not moving",
+            plugin._state["prompt"]["message"],
+        )
+
+        plugin._handle_record({
+            "record": "event", "seq": 3, "type": "progress",
+            "workflow": "filament_unload", "state": "completed", "progress": 100,
+            "message": "Filament unloaded",
+        })
+        self.assertEqual("filament_unload", plugin._state["workflow"]["workflow"])
+        self.assertIsNone(plugin._state["prompt"])
+
+    def test_runout_uses_dialog_only_and_print_end_clears_fault(self):
+        from octoprint.events import Events
+
+        plugin = RmeCompatibilityPlugin()
+        commands = []
+        plugin._send_command = commands.append
+        plugin._defer = lambda callback, *args: callback(*args)
+        plugin._schedule_publish = lambda: None
+        plugin._state.update(connected=True, supported=True)
+
+        plugin._handle_record({
+            "record": "event", "seq": 1, "type": "error",
+            "workflow": "filament_runout", "state": "waiting",
+            "code": "runout", "message": "Loadcell detected filament runout",
+        })
+        self.assertEqual(["@RME DIALOG QUERY"], commands)
+        plugin._state["prompt"] = {"kind": "firmware", "actions": ["Continue"]}
+
+        plugin._defer = lambda callback, *args: None
+        plugin.on_event(Events.PRINT_CANCELLED, {})
+        self.assertIsNone(plugin._state["workflow"])
+        self.assertIsNone(plugin._state["prompt"])
+
     def test_pause_resume_cancel_use_forced_priority_path(self):
         from octoprint.events import Events
 

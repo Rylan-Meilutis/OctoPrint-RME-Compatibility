@@ -5,12 +5,17 @@ An OctoPrint plugin for the custom Prusa RME Buddy firmware in
 `doc/rme_serial_handler_integration.md`, `doc/rme_serial_remote_protocol.md`,
 and `doc/gcode/M998.md`.
 
+The supported firmware baselines are the `v6.5.7-RME` release and the current
+`rme-v6.6.3` release branch. Their RME FILE transport and cause-specific INDX
+extrusion-recovery contracts are exercised independently by the test suite.
+
 ## Features
 
 - Negotiates `@RME` support on every serial connection, opens an event session,
   sends 10-second keepalives, detects event sequence gaps, and re-queries the
   authoritative firmware dialog.
-- Adds live probing, heating, MMU, tool-change, runout, stuck-filament,
+- Adds live probing, heating, MMU, tool-change, runout, filament-movement,
+  flow-pressure-limit, stuck-filament,
   pressure-advance, firmware-update, waste-bin, and generic workflow detail to
   OctoPrint's progress area. Phase elapsed time continues updating while a
   blocking G-code leaves normal file progress stationary.
@@ -29,7 +34,8 @@ and `doc/gcode/M998.md`.
   message, progress, and firmware-provided recovery actions without requiring
   the RME or State tab to be open.
 - Presents the firmware's dedicated MMU, filament load/unload, tool-change,
-  runout, stuck-filament, pressure-advance, probing, heating, firmware-update,
+  runout, filament-movement, flow-pressure-limit, stuck-filament,
+  pressure-advance, probing, heating, firmware-update,
   waste-bin, chamber-vent, and filtration workflows. Detailed MMU states cover
   its load, unload, selector, cutter, purge/ramming, homing, and hardware-test
   phases. Unknown future workflow IDs remain visible with a generated title.
@@ -119,12 +125,23 @@ Live firmware state, tool mapping, and firmware action dialogs are rendered in
 the **RME** tab. Routine configuration, inventory synchronization, remote
 controls, and firmware update operations live in **Settings → RME
 Compatibility**, keeping the main tab focused on status and telemetry.
-This includes MMU loading/errors, filament runout, stuck filament, tool-change
+This includes MMU loading/errors, filament runout, filament-not-moving and
+flow-pressure-limit faults, stuck filament, tool-change
 or pickup failures, purge-bucket/waste-bin warnings, and any future RME dialog
 that supplies named actions. Prompt and workflow state is written to the Pi,
 so it survives a browser refresh or OctoPrint restart. The printer remains the
 authority: resolving an issue on its LCD produces a closed workflow or
 `RME_PROMPT none`, which automatically removes the OctoPrint prompt.
+
+Current INDX firmware reports automatic extrusion faults with stable
+workflow/code pairs: `filament_runout/runout`,
+`filament_movement/not_moving`, and
+`extrusion_flow_limit/flow_limit`. The plugin keeps that original cause visible
+while the shared M1601 load/unload recovery reports progress, queries the
+firmware's Continue/Unload/Abort actions for movement and flow-limit faults,
+and clears the cause only when recovery closes or the print ends. The printer's
+`M591 S` and `M591 U` settings independently control the optional runout and
+movement detectors; calibrated flow-pressure-limit protection remains enabled.
 
 Tool mapping is the first local-print preflight gate. After confirmation, the
 mapping is supplied to Nozzle Filament Validator before OctoPrint releases the

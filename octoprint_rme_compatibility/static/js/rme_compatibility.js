@@ -125,6 +125,8 @@ $(function () {
             mmu: "MMU filament handling",
             tool_change: "Tool change / pickup",
             filament_runout: "Filament runout",
+            filament_movement: "Filament not moving",
+            extrusion_flow_limit: "Extrusion flow-pressure limit",
             stuck_filament: "Stuck filament recovery",
             pressure_advance: "Pressure advance calibration",
             probing: "Bed probing",
@@ -153,10 +155,20 @@ $(function () {
             var state = self.workflow().state || "active";
             return state.charAt(0).toUpperCase() + state.slice(1);
         });
-        self.workflowMessage = ko.pureComputed(function () { return self.workflow().message || self.workflowTitle(); });
-        self.workflowIndeterminate = ko.pureComputed(function () { return !isFinite(Number(self.workflow().progress)); });
+        self.workflowMessage = ko.pureComputed(function () {
+            var workflow = self.workflow();
+            var message = workflow.message || self.workflowTitle();
+            var recovery = workflow.recovery || {};
+            return recovery.message ? message + " · Recovery: " + recovery.message : message;
+        });
+        self.workflowProgress = ko.pureComputed(function () {
+            var workflow = self.workflow();
+            var recovery = workflow.recovery || {};
+            return isFinite(Number(recovery.progress)) ? recovery.progress : workflow.progress;
+        });
+        self.workflowIndeterminate = ko.pureComputed(function () { return !isFinite(Number(self.workflowProgress())); });
         self.workflowWidth = ko.pureComputed(function () {
-            var progress = Number(self.workflow().progress);
+            var progress = Number(self.workflowProgress());
             return isFinite(progress) ? Math.max(0, Math.min(100, progress)) + "%" : "100%";
         });
         self.workflowTiming = ko.pureComputed(function () {
@@ -164,7 +176,7 @@ $(function () {
             var started = Number(self.workflow().phase_started_at || self.workflow().received_at || 0) * 1000;
             if (!started) return "";
             var seconds = Math.max(0, Math.floor((Date.now() - started) / 1000));
-            var progress = self.workflow().progress;
+            var progress = self.workflowProgress();
             return "Phase active for " + formatDuration(seconds) + (isFinite(Number(progress)) ? " · " + progress + "%" : "");
         });
 

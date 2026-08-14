@@ -6,6 +6,7 @@ from pathlib import Path
 import queue
 import re
 import struct
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -845,6 +846,97 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
             "binary_receiver.unacknowledged = acknowledge ? 0 : unacknowledged;",
             firmware,
         )
+
+    def test_current_indx_extrusion_fault_workflow_contract(self):
+        firmware_root = (
+            Path(__file__).resolve().parents[2] / "Prusa-Firmware-Buddy"
+        )
+        marlin_server_path = firmware_root / "src/common/marlin_server.cpp"
+        if not marlin_server_path.exists():
+            self.skipTest("adjacent current Prusa-Firmware-Buddy checkout unavailable")
+
+        marlin_server = marlin_server_path.read_text(encoding="utf-8")
+        m591 = (firmware_root / "src/marlin_stubs/M591.cpp").read_text(
+            encoding="utf-8"
+        )
+        protocol_doc = (
+            firmware_root / "doc/rme_serial_remote_protocol.md"
+        ).read_text(encoding="utf-8")
+        plugin_protocol = (
+            Path(__file__).resolve().parents[1]
+            / "octoprint_rme_compatibility/protocol.py"
+        ).read_text(encoding="utf-8")
+
+        contracts = (
+            ("filament_runout", "runout", "M1601 R1"),
+            ("filament_movement", "not_moving", "M1601 R2"),
+            ("extrusion_flow_limit", "flow_limit", "M1601 R3"),
+        )
+        for workflow, code, command in contracts:
+            with self.subTest(workflow=workflow):
+                self.assertIn(
+                    'notify_error("%s", "%s"' % (workflow, code),
+                    marlin_server,
+                )
+                self.assertIn(command, marlin_server)
+                self.assertIn("workflow=%s" % workflow, protocol_doc)
+                self.assertIn('"%s"' % workflow, plugin_protocol)
+
+        self.assertIn("Loadcell filament runout detection ", m591)
+        self.assertIn("Loadcell filament movement detection ", m591)
+        self.assertIn("M591 S", protocol_doc)
+        self.assertIn("M591 U", protocol_doc)
+        self.assertIn("Retain the cause until recovery closes", protocol_doc)
+
+    def test_657_release_exposes_the_same_host_workflow_and_transfer_contract(self):
+        firmware_root = (
+            Path(__file__).resolve().parents[2] / "Prusa-Firmware-Buddy"
+        )
+        if not (firmware_root / ".git").exists():
+            self.skipTest("adjacent Prusa-Firmware-Buddy git checkout unavailable")
+
+        def release_file(path):
+            try:
+                return subprocess.check_output(
+                    ["git", "-C", str(firmware_root), "show", "v6.5.7-RME:%s" % path],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                )
+            except (OSError, subprocess.CalledProcessError):
+                self.skipTest("v6.5.7-RME release ref unavailable")
+
+        marlin_server = release_file("src/common/marlin_server.cpp")
+        file_service = release_file("src/marlin_stubs/rme_file_service.cpp")
+        transfer_contract = release_file("src/common/rme_file_transfer.hpp")
+        protocol_doc = release_file("doc/rme_serial_remote_protocol.md")
+
+        for workflow, code, command in (
+            ("filament_runout", "runout", "M1601 R1"),
+            ("filament_movement", "not_moving", "M1601 R2"),
+            ("extrusion_flow_limit", "flow_limit", "M1601 R3"),
+        ):
+            with self.subTest(workflow=workflow):
+                self.assertIn(
+                    'notify_error("%s", "%s"' % (workflow, code),
+                    marlin_server,
+                )
+                self.assertIn(command, marlin_server)
+                self.assertIn("workflow=%s" % workflow, protocol_doc)
+
+        self.assertRegex(file_service, r"binary_chunk_size\s*=\s*1024\s*;")
+        self.assertRegex(file_service, r"binary_window_size\s*=\s*8\s*;")
+        self.assertRegex(
+            transfer_contract,
+            r"bulk_payload_size\s*=\s*%d\s*;"
+            % FirmwareFileServicePeer.bulk_chunk_size,
+        )
+        self.assertRegex(
+            transfer_contract,
+            r"bulk_window_size\s*=\s*%d\s*;"
+            % FirmwareFileServicePeer.bulk_window_size,
+        )
+        self.assertIn("RME_FILE_SUSPENDED offset=", file_service)
+        self.assertIn("upload_inactivity_timeout_ms = 10'000", file_service)
 
 
 if __name__ == "__main__":

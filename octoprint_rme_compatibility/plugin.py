@@ -45,6 +45,30 @@ from .storage import StateStore, TransferManifestStore
 from .uploader import FirmwareUploader, UploadError, firmware_metadata
 
 
+EXTRUSION_FAULT_WORKFLOWS = frozenset((
+    "filament_runout",
+    "filament_movement",
+    "extrusion_flow_limit",
+    "stuck_filament",
+))
+STUCK_ACTION_WORKFLOWS = frozenset((
+    "filament_movement",
+    "extrusion_flow_limit",
+    "stuck_filament",
+))
+
+
+def _retain_extrusion_fault(previous, incoming):
+    """Keep the physical cause while the shared M1601 recovery is active."""
+    return bool(
+        previous.get("workflow") in EXTRUSION_FAULT_WORKFLOWS
+        and not workflow_is_terminal(previous)
+        and incoming.get("workflow") in ("filament_load", "filament_unload")
+        and incoming.get("type") == "progress"
+        and not workflow_is_terminal(incoming)
+    )
+
+
 def api_errors(callback):
     """Translate expected command failures into useful Simple API responses."""
     @functools.wraps(callback)
@@ -966,6 +990,11 @@ class RmeCompatibilityPlugin(
                 self._priority_controls_sent.clear()
                 self._firmware_completed_controls.clear()
                 self._transfer_conflict_cancel = False
+                workflow = self._state.get("workflow") or {}
+                if workflow.get("workflow") in EXTRUSION_FAULT_WORKFLOWS:
+                    self._state["workflow"] = None
+                    if (self._state.get("prompt") or {}).get("kind") == "firmware":
+                        self._state["prompt"] = None
             self._defer(self._resume_background_queries)
 
     def gcode_received_hook(self, comm_instance, line, *args, **kwargs):
@@ -1322,9 +1351,17 @@ class RmeCompatibilityPlugin(
                     follow_up.extend(["@RME SESSION QUERY", "@RME DIALOG QUERY"])
                     follow_up.append("refresh_configuration:all")
                 self._state["session"]["last_seq"] = sequence
-                self._state["workflow"] = dict(record)
+                if _retain_extrusion_fault(previous_workflow, record):
+                    retained = dict(previous_workflow)
+                    retained["recovery"] = dict(record)
+                    retained["updated_at"] = now
+                    self._state["workflow"] = retained
+                else:
+                    self._state["workflow"] = dict(record)
                 if record.get("type") == "error" or record.get("state") == "waiting":
                     follow_up.append("@RME DIALOG QUERY")
+                    if record.get("workflow") in STUCK_ACTION_WORKFLOWS:
+                        follow_up.append("@RME STUCK QUERY")
                 if workflow_is_terminal(record):
                     if (self._state.get("prompt") or {}).get("kind") == "firmware":
                         self._state["prompt"] = None

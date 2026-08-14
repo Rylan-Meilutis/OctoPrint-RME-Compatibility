@@ -2,6 +2,7 @@ import base64
 import unittest
 
 from octoprint_rme_compatibility.protocol import (
+    WORKFLOWS,
     chunk_command,
     classify_workflow,
     dialog_response_command,
@@ -227,9 +228,17 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual("filament_load", classify_workflow({
             "workflow": "printer", "message": "Loading filament",
         }))
+        self.assertEqual("filament_movement", classify_workflow({
+            "workflow": "printer", "message": "Filament not moving",
+        }))
+        self.assertEqual("extrusion_flow_limit", classify_workflow({
+            "workflow": "printer", "message": "Flow-pressure limit detected",
+        }))
         self.assertEqual("mmu", classify_workflow({
             "workflow": "mmu", "message": "MMU loading filament",
         }))
+        self.assertIn("filament_movement", WORKFLOWS)
+        self.assertIn("extrusion_flow_limit", WORKFLOWS)
 
 
     def test_builds_binary_safe_chunk(self):
