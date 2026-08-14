@@ -341,16 +341,47 @@ class RmeFileService(object):
                     self.send_binary and self.begin_binary and self.end_binary
                     and int(self._capabilities.get("binary", 0))
                 )
+                use_bulk = False
                 if use_binary:
                     if manifest_update:
                         manifest_update("binary", size, digest)
-                    try:
-                        offset = self._write_binary(
-                            local_path, encoded, size, digest, progress
-                        )
-                    except Exception as exc:
-                        if self._cancel.is_set():
-                            raise
+                    binary_resume_attempts = 0
+                    binary_failure = None
+                    while True:
+                        try:
+                            offset = self._write_binary(
+                                local_path, encoded, size, digest, progress
+                            )
+                            break
+                        except Exception as exc:
+                            if self._cancel.is_set():
+                                raise
+                            suspended = (
+                                isinstance(exc, FileServiceError)
+                                and exc.record
+                                and exc.record.get("record") == "file_binary_suspended"
+                                and self._error_code(exc) == "inactivity_timeout"
+                            )
+                            if not suspended or binary_resume_attempts >= 2:
+                                binary_failure = exc
+                                break
+                            # The SUSPENDED record proves that firmware closed
+                            # raw RX, retained the committed prefix, and
+                            # restored its line parser. Reopen the same binary
+                            # transfer before changing transports: this is both
+                            # the fastest recovery and avoids feeding a large
+                            # Base64 window through a just-recovered line link.
+                            self._release_confirmed_line_mode()
+                            binary_resume_attempts += 1
+                            if self.logger:
+                                self.logger.warning(
+                                    "RME binary upload became inactive; resuming "
+                                    "the verified prefix in binary mode (attempt %d/2)",
+                                    binary_resume_attempts,
+                                )
+                            continue
+                    if binary_failure is not None:
+                        exc = binary_failure
                         # Current firmware leaves raw mode before reporting a
                         # structured FILE error and retains the verified prefix.
                         # Otherwise suspend with the raw abort frame and wait for
@@ -368,11 +399,33 @@ class RmeFileService(object):
                             )
                         use_binary = False
                         if bool(int(self._capabilities.get("bulk", 0))):
+                            use_bulk = True
                             if manifest_update:
                                 manifest_update("bulk", size, digest)
-                            offset = self._write_bulk(
-                                local_path, encoded, size, digest, progress
-                            )
+                            try:
+                                offset = self._write_bulk(
+                                    local_path, encoded, size, digest, progress
+                                )
+                            except FileServiceError as bulk_exc:
+                                if self._error_code(bulk_exc) not in (
+                                    "decode_failed", "chunk_too_large",
+                                ):
+                                    raise
+                                # These errors suspend the upload and restore
+                                # line mode. Resume its verified prefix with the
+                                # one-ACK transport instead of failing the whole
+                                # firmware operation after a damaged bulk line.
+                                if self.logger:
+                                    self.logger.warning(
+                                        "RME bulk upload framing failed; resuming "
+                                        "with verified text chunks: %s", bulk_exc,
+                                    )
+                                if manifest_update:
+                                    manifest_update("legacy", size, digest)
+                                use_bulk = False
+                                offset = self._write_legacy(
+                                    local_path, encoded, size, digest, progress
+                                )
                         else:
                             if manifest_update:
                                 manifest_update("legacy", size, digest)
@@ -380,6 +433,7 @@ class RmeFileService(object):
                                 local_path, encoded, size, digest, progress
                             )
                 elif bool(int(self._capabilities.get("bulk", 0))):
+                    use_bulk = True
                     if manifest_update:
                         manifest_update("bulk", size, digest)
                     offset = self._write_bulk(local_path, encoded, size, digest, progress)
@@ -403,7 +457,7 @@ class RmeFileService(object):
                     self.end_binary()
                     self._binary_active = False
                     self._binary_mode_uncertain = False
-                elif bool(int(self._capabilities.get("bulk", 0))):
+                elif use_bulk:
                     self._exchange(
                         "@RME FILE WRITE_BULK_END path=%s" % encoded,
                         ("file_bulk_complete", "file_write_complete"), timeout=60,
@@ -595,6 +649,16 @@ class RmeFileService(object):
             ) from failure
 
     @staticmethod
+    def _error_code(error):
+        """Return the firmware diagnostic carried by a service exception."""
+        record = error.record if isinstance(error, FileServiceError) else None
+        record = record or {}
+        return str(
+            record.get("code") or record.get("reason")
+            or record.get("message") or record.get("record") or ""
+        )
+
+    @staticmethod
     def _binary_frame(offset, payload):
         """Build one firmware raw frame with a CRC32-protected payload."""
         payload = bytes(payload)
@@ -646,17 +710,25 @@ class RmeFileService(object):
                 "Using RME binary upload: chunk=%d window=%d", chunk_size, window_size
             )
         retries = 0
+        unacknowledged_frames = 0
         with open(local_path, "rb") as source:
             while offset < size:
                 source.seek(offset)
                 frames = []
+                frame_ends = []
                 expected_offset = offset
-                for _ in range(window_size):
+                # Firmware preserves its accepted-frame count across a NACK.
+                # Complete only the remainder of that ACK window after a
+                # retransmission; sending a fresh full window would make the
+                # printer ACK early and then leave both sides waiting.
+                frames_until_ack = max(1, window_size - unacknowledged_frames)
+                for _ in range(frames_until_ack):
                     payload = source.read(chunk_size)
                     if not payload:
                         break
                     frames.append(self._binary_frame(expected_offset, payload))
                     expected_offset += len(payload)
+                    frame_ends.append(expected_offset)
                 records = self._exchange(
                     frames, ("file_binary_ack", "file_binary_nack"),
                     # A cumulative ACK from the preceding raw window may be
@@ -692,17 +764,24 @@ class RmeFileService(object):
                             "Printer repeatedly rejected binary data at offset %d"
                             % acknowledged
                         )
+                    committed_frames = sum(
+                        1 for frame_end in frame_ends if frame_end <= acknowledged
+                    )
+                    unacknowledged_frames = min(
+                        window_size - 1,
+                        unacknowledged_frames + committed_frames,
+                    )
                     # Frames after the failed one were already handed to the
                     # USB driver and can produce stale NACKs for this same
-                    # offset. Let those drain before retransmitting. Firmware
-                    # acknowledges only after its advertised full window, so
-                    # recovery must retain that negotiated cadence.
+                    # offset. Let those drain before sending the remainder of
+                    # the firmware's still-open ACK window.
                     offset = acknowledged
                     self._wait_for_binary_quiet()
                     continue
                 if acknowledged != expected_offset:
                     raise FileServiceError("Printer returned an invalid binary upload ACK")
                 retries = 0
+                unacknowledged_frames = 0
                 offset = acknowledged
                 if progress:
                     progress(offset, size)

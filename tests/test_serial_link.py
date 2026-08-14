@@ -25,7 +25,7 @@ class CurrentFirmwareSerialLink(object):
     chunk_size = 1024
     window_size = 8
 
-    def __init__(self):
+    def __init__(self, suspend_binary_once=False, nack_binary_once=False):
         self.service = None
         self.commands = []
         self.received = bytearray()
@@ -35,6 +35,11 @@ class CurrentFirmwareSerialLink(object):
         self._host_raw = False
         self._firmware_raw = False
         self._unacknowledged = 0
+        self._suspend_binary_once = bool(suspend_binary_once)
+        self._binary_suspended = False
+        self._nack_binary_once = bool(nack_binary_once)
+        self._binary_nacked = False
+        self._recovering = False
         self._host_to_firmware = queue.Queue()
         self._firmware_to_host = queue.Queue()
         self._errors = []
@@ -107,9 +112,13 @@ class CurrentFirmwareSerialLink(object):
         self.expected_size = int(match.group(2))
         self.expected_sha = match.group(3)
         self._firmware_raw = True
+        self._unacknowledged = 0
+        self._recovering = False
+        offset = len(self.received)
         self._reply(
-            "RME_FILE_BINARY_READY offset=0 chunk=1024 window=8 "
-            "header=10 endian=little crc=crc32 resumed=0",
+            "RME_FILE_BINARY_READY offset=%d chunk=1024 window=8 "
+            "header=10 endian=little crc=crc32 resumed=%d"
+            % (offset, 1 if offset else 0),
             "ok",
         )
 
@@ -129,9 +138,24 @@ class CurrentFirmwareSerialLink(object):
             self._reply("RME_FILE_BINARY_COMPLETE path=" + self.final_path, "ok")
             return
         if offset != len(self.received):
-            raise AssertionError("non-contiguous upload offset")
+            # Current firmware emits one diagnostic and silently slides over
+            # the remaining stale frames from an already-pipelined window.
+            self._recovering = True
+            return
         if length > self.chunk_size:
             raise AssertionError("host exceeded negotiated binary chunk")
+        if (
+            self._nack_binary_once and not self._binary_nacked
+            and self._unacknowledged == 2
+        ):
+            self._binary_nacked = True
+            self._recovering = True
+            self._reply(
+                "RME_FILE_BINARY_NACK offset=%d reason=crc_mismatch recovering=1"
+                % len(self.received)
+            )
+            return
+        self._recovering = False
         self.received.extend(payload)
         self._unacknowledged += 1
         acknowledge = (
@@ -140,6 +164,14 @@ class CurrentFirmwareSerialLink(object):
         )
         if acknowledge:
             self._unacknowledged = 0
+            if self._suspend_binary_once and not self._binary_suspended:
+                self._binary_suspended = True
+                self._firmware_raw = False
+                self._reply(
+                    "RME_FILE_BINARY_SUSPENDED offset=%d resumable=1 "
+                    "reason=inactivity_timeout" % len(self.received)
+                )
+                return
             # At the second window, inject a delayed duplicate ACK for the
             # preceding window before the current cumulative ACK.
             if len(self.received) == self.chunk_size * self.window_size * 2:
@@ -232,6 +264,56 @@ class SerialLinkIntegrationTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(content).hexdigest(), link.expected_sha)
         self.assertEqual((len(content), len(content)), progress[-1])
         self.assertTrue(any("WRITE_BINARY_BEGIN" in item for item in link.commands))
+        self.assertFalse(any("WRITE_BULK_BEGIN" in item for item in link.commands))
+
+    def test_binary_inactivity_resumes_verified_prefix_without_bulk_fallback(self):
+        link = CurrentFirmwareSerialLink(suspend_binary_once=True)
+        service = RmeFileService(
+            link.send_command,
+            response_timeout=2,
+            send_binary=link.send_binary,
+            begin_binary=link.begin_binary,
+            end_binary=link.end_binary,
+        )
+        link.service = service
+        content = bytes(range(256)) * 160 + b"resumed-firmware-tail"
+
+        with tempfile.NamedTemporaryFile() as source:
+            source.write(content)
+            source.flush()
+            try:
+                service.write_file(source.name, "FWUPD.BBF")
+            finally:
+                link.close()
+
+        begins = [item for item in link.commands if "WRITE_BINARY_BEGIN" in item]
+        self.assertEqual(2, len(begins))
+        self.assertFalse(any("WRITE_BULK_BEGIN" in item for item in link.commands))
+        self.assertEqual(content, bytes(link.received))
+        self.assertEqual(hashlib.sha256(content).hexdigest(), link.expected_sha)
+
+    def test_binary_nack_completes_preserved_firmware_ack_window(self):
+        link = CurrentFirmwareSerialLink(nack_binary_once=True)
+        service = RmeFileService(
+            link.send_command,
+            response_timeout=2,
+            send_binary=link.send_binary,
+            begin_binary=link.begin_binary,
+            end_binary=link.end_binary,
+        )
+        link.service = service
+        content = bytes(range(256)) * 96 + b"nack-recovery-tail"
+
+        with tempfile.NamedTemporaryFile() as source:
+            source.write(content)
+            source.flush()
+            try:
+                service.write_file(source.name, "FWUPD.BBF")
+            finally:
+                link.close()
+
+        self.assertTrue(link._binary_nacked)
+        self.assertEqual(content, bytes(link.received))
         self.assertFalse(any("WRITE_BULK_BEGIN" in item for item in link.commands))
 
 

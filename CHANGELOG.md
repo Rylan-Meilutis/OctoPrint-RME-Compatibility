@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.0b44 — 2026-08-13
+
+- Match current Buddy firmware's preserved binary ACK-window cadence after a
+  NACK. The host now sends only the remaining frames in the open eight-frame
+  window, preventing an early cumulative ACK from being ignored until the
+  printer suspends the upload for inactivity.
+- Resume an authoritative `inactivity_timeout` suspension in binary mode up to
+  two times before changing transports, retaining the firmware-verified prefix
+  and the fast raw path.
+- If a bulk fallback itself reports `decode_failed` or `chunk_too_large`,
+  resume the same verified partial with bounded legacy chunks and finalize it
+  with the matching text command.
+- Extend the fragmented serial-link simulator with firmware-accurate NACK
+  cadence and inactivity suspension/resume scenarios.
+
 ## 0.1.0b43 — 2026-08-13
 
 - Corrected saved-lighting synchronization to match the current Buddy

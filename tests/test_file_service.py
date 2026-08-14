@@ -537,6 +537,81 @@ class FileServiceTests(unittest.TestCase):
         self.assertTrue(any("WRITE_BULK_BEGIN" in command for command in commands))
         self.assertTrue(any("WRITE_BULK_END" in command for command in commands))
 
+    def test_bulk_decode_failure_resumes_with_legacy_text_transport(self):
+        service = None
+        commands = []
+        received = bytearray()
+        bulk_failed = [False]
+
+        def send(command):
+            commands.append(command)
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb write=1 bulk=1 bulk_chunk=384 "
+                    "bulk_window=4 binary=1 binary_chunk=1024 binary_window=8 "
+                    "durable_resume=1"
+                ))
+            elif "WRITE_BINARY_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_READY offset=0 chunk=1024 window=8 "
+                    "header=10 endian=little crc=crc32"
+                ))
+            elif "WRITE_BULK_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_BULK_READY offset=0 chunk=384 window=4 resumed=1"
+                ))
+            elif "WRITE_BULK_CHUNK" in command and not bulk_failed[0]:
+                bulk_failed[0] = True
+                service.handle_response(parse_line(
+                    "echo:RME_ERROR workflow=file code=decode_failed "
+                    "offset=0 resumable=1"
+                ))
+            elif "WRITE_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_WRITE_READY offset=0 chunk=48 resumed=1"
+                ))
+            elif "WRITE_CHUNK" in command and "WRITE_BULK_CHUNK" not in command:
+                offset = int(command.split("offset=", 1)[1].split(" ", 1)[0])
+                payload = base64.b64decode(command.split("data=", 1)[1])
+                self.assertEqual(len(received), offset)
+                received.extend(payload)
+                service.handle_response(parse_line(
+                    "RME_FILE_WRITE_OFFSET offset=%d" % len(received)
+                ))
+            elif "WRITE_END" in command and "WRITE_BULK_END" not in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_WRITE_COMPLETE path=FWUPD.BBF"
+                ))
+
+        def send_binary(frame):
+            offset, length, _ = struct.unpack("<IHI", frame[:10])
+            if offset == 0xFFFFFFFF and length == 0:
+                service.handle_response(parse_line(
+                    "RME_FILE_BINARY_ABORTED offset=0 resumable=1"
+                ))
+                return
+            raise IOError("simulated raw writer failure")
+
+        service = RmeFileService(
+            send, response_timeout=1, send_binary=send_binary,
+            begin_binary=lambda: "@RME FILE RAW_SESSION token=" + "f" * 32,
+            end_binary=lambda: None,
+        )
+        content = bytes(range(137))
+        with tempfile.NamedTemporaryFile(delete=False) as source:
+            source.write(content)
+            source_path = source.name
+        try:
+            service.write_file(source_path, "FWUPD.BBF")
+        finally:
+            os.unlink(source_path)
+
+        self.assertTrue(bulk_failed[0])
+        self.assertEqual(content, bytes(received))
+        self.assertTrue(any("WRITE_BEGIN" in item for item in commands))
+        self.assertTrue(any("WRITE_END" in item for item in commands))
+        self.assertFalse(any("WRITE_BULK_END" in item for item in commands))
+
     def test_legacy_fallback_resumes_at_ready_offset(self):
         service = None
         commands = []
