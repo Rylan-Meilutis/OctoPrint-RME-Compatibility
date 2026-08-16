@@ -62,6 +62,9 @@ are exercised independently by the test suite.
   OctoPrint's internal cancellation handling.
 - Reads the printer's envelope, logical tool count, shared-nozzle status, and
   live maximum feed rates, then updates the active OctoPrint printer profile.
+  If an MMU is still enabling during the initial machine query, its later
+  enabled `M865` loadout records expand the profile to all five shared-nozzle
+  logical tools automatically.
 - Exposes printer lock status and PIN unlock, temporary and persistent light
   services, persistent theme
   colors, and synchronization of the eight RME user filament presets. The RME

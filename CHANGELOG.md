@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0b55 — 2026-08-16
+
+- Correct Core One+ MMU printer profiles when the connection-time machine
+  query runs before the MMU finishes enabling. Current firmware can initially
+  report one logical tool even though its capacity is five.
+- Treat later `M865 Q` loadout records as authoritative enabled-tool evidence,
+  expand the discovered count through `T4`, and automatically reapply a
+  five-extruder OctoPrint profile with `sharedNozzle=true`.
+- Add a regression test for the complete one-hotend, five-slot shared-nozzle
+  profile transition. All 105 tests pass.
+
 ## 0.1.0b54 — 2026-08-16
 
 - Allow up to 120 seconds for authoritative firmware-stage queries. Current

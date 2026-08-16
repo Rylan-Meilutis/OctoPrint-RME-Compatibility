@@ -156,6 +156,48 @@ class _Comm(object):
 
 
 class ToolmapGateTests(unittest.TestCase):
+    def test_mmu_loadout_expands_early_single_tool_profile_to_five(self):
+        class ProfileManager(object):
+            def __init__(self):
+                self.saved = None
+
+            def get_current_or_default(self):
+                return {
+                    "volume": {}, "extruder": {},
+                    "axes": {"x": {}, "y": {}, "z": {}},
+                }
+
+            def save(self, profile, allow_overwrite=False):
+                self.saved = profile
+
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._settings.values["auto_machine_profile"] = True
+        plugin._printer_profile_manager = ProfileManager()
+        plugin._logger = logging.getLogger("rme-mmu-profile-test")
+        plugin._schedule_publish = lambda: None
+        plugin._accept_firmware_spool = lambda record: None
+        plugin._defer = lambda callback, *args: callback(*args)
+        plugin._state["machine"] = {
+            "hotends": 1, "logical_tools": 1, "tool_capacity": 5,
+            "single_nozzle": 1,
+            "x_min": 0, "x_max": 250,
+            "y_min": 0, "y_max": 220,
+            "z_min": 0, "z_max": 270,
+            "feed_x": 500, "feed_y": 500, "feed_z": 30,
+        }
+
+        plugin._handle_record({
+            "record": "loaded_filament", "tool": 4,
+            "material": "PLA", "color_name": "Blue", "color": "#0073ff",
+        })
+
+        self.assertEqual(5, plugin._state["machine"]["logical_tools"])
+        extruder = plugin._printer_profile_manager.saved["extruder"]
+        self.assertEqual(5, extruder["count"])
+        self.assertTrue(extruder["sharedNozzle"])
+        self.assertEqual([(0, 0)] * 5, extruder["offsets"])
+
     def test_print_and_printer_transfer_ownership_are_mutually_exclusive(self):
         plugin = RmeCompatibilityPlugin()
         plugin._printer = _Printer()

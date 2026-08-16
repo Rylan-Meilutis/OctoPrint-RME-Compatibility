@@ -1548,6 +1548,24 @@ class RmeCompatibilityPlugin(
                 ]
                 existing.append(loadout)
                 existing.sort(key=lambda item: int(item["tool"]))
+                # On MMU printers the connection-time MACHINE query can run
+                # before MMU2::mmu2.Enabled() becomes true and therefore
+                # report one logical tool. M865 emits only enabled virtual
+                # tools, so a later T1..T4 loadout is authoritative evidence
+                # that the profile must expose those shared-nozzle slots.
+                observed_count = int(loadout["tool"]) + 1
+                machine = self._state.get("machine", {})
+                current_count = int(machine.get("logical_tools", 0))
+                capacity = int(machine.get("tool_capacity", observed_count))
+                if (
+                    "logical_tools" in machine
+                    and "tool_capacity" in machine
+                    and current_count < observed_count <= capacity
+                ):
+                    machine["logical_tools"] = observed_count
+                    apply_profile = self._settings.get_boolean(
+                        ["auto_machine_profile"]
+                    )
                 self._refresh_active_tool_locked()
                 self._defer(self._accept_firmware_spool, dict(record))
             elif kind == "rme_error":
