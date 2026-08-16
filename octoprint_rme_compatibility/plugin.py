@@ -2342,6 +2342,27 @@ class RmeCompatibilityPlugin(
             .replace("\n", " ")[:maximum]
         )
 
+    @staticmethod
+    def _firmware_filament_base(material):
+        """Map provider material labels onto Buddy's built-in base presets."""
+        normalized = "".join(
+            character for character in str(material or "").upper()
+            if character.isalnum()
+        )
+        families = (
+            ("PETG", "PETG"), ("PET", "PETG"),
+            ("PLA", "PLA"), ("ASA", "ASA"), ("ABS", "ABS"),
+            ("HIPS", "HIPS"), ("PVB", "PVB"),
+            ("POLYCARBONATE", "PC"), ("PC", "PC"),
+            ("FLEX", "FLEX"), ("TPU", "FLEX"), ("TPE", "FLEX"),
+            ("NYLON", "PA"), ("PA", "PA"),
+            ("POLYPROPYLENE", "PP"), ("PP", "PP"),
+        )
+        return next(
+            (base for prefix, base in families if normalized.startswith(prefix)),
+            "none",
+        )
+
     def _provider_profile_commands(self, published, provider_name):
         """Mirror external color and manufacturer profiles into firmware.
 
@@ -2597,17 +2618,21 @@ class RmeCompatibilityPlugin(
                     if item:
                         nozzle = max(0, min(500, int(item["nozzle_temperature"])))
                         bed = max(0, min(500, int(item["bed_temperature"])))
+                        base = self._firmware_filament_base(item.get("material"))
                         commands.append(
-                            "@RME FILAMENT SET slot=%d name=%s nozzle=%d preheat=%d bed=%d visible=1"
-                            % (slot, item["alias"], nozzle, max(0, nozzle - 40), bed)
+                            "@RME FILAMENT SET slot=%d name=%s base=%s nozzle=%d preheat=%d bed=%d visible=1"
+                            % (
+                                slot, item["alias"], base, nozzle,
+                                max(0, nozzle - 40), bed,
+                            )
                         )
                     else:
                         commands.append(
-                            "@RME FILAMENT SET slot=%d name=EMPTY nozzle=215 preheat=170 bed=60 visible=0"
+                            "@RME FILAMENT SET slot=%d name=EMPTY base=none nozzle=215 preheat=170 bed=60 visible=0"
                             % slot
                         )
                 commands.append(
-                    "@RME FILAMENT SET slot=7 name=NEW nozzle=215 preheat=170 bed=60 visible=1"
+                    "@RME FILAMENT SET slot=7 name=NEW base=PLA nozzle=215 preheat=170 bed=60 visible=1"
                 )
                 commands = [
                     self._with_transaction(command, suppress_refresh=True)
@@ -2624,7 +2649,11 @@ class RmeCompatibilityPlugin(
                 tool_count = max(logical_tools, max(selected_tools, default=-1) + 1)
                 for tool in range(tool_count):
                     if tool not in selected_tools:
-                        assignments.append('M865 S"---" L%d' % tool)
+                        # M865 intentionally rejects the display-only "---"
+                        # name, and neither maintained 6.6.3 nor 6.8.1 exposes
+                        # a metadata-only unloaded-material command. Preserve
+                        # the firmware assignment instead of fabricating a
+                        # physical unload; manufacturer has an explicit clear.
                         assignments.append(self._with_transaction(
                             "@RME MANUFACTURER ASSIGN tool=%d name=none" % tool,
                             suppress_refresh=True,

@@ -1076,6 +1076,11 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
                 integrations.append(ref_file(
                     ref, "doc/rme_serial_handler_integration.md"
                 ))
+                m865 = ref_file(ref, "src/marlin_stubs/M865.cpp")
+                filament = ref_file(ref, "src/common/filament.cpp")
+                remote_queue = ref_file(
+                    ref, "lib/Marlin/Marlin/src/gcode/queue.cpp"
+                )
                 self.assertIn(
                     'report_upload_error("resume_failed", true)', file_service
                 )
@@ -1101,6 +1106,15 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
                     r"binary_window_size\s*=\s*3\s*;",
                 )
                 self.assertIn("binary_receive_backlog", transfer_contract)
+                # The no-filament label is display-only: M865 parses only a
+                # real preset/user type and both maintained branches reject
+                # "---". Provider profiles do support the base family field.
+                self.assertIn(
+                    'SERIAL_ERROR_MSG("Filament type invalid or not specified.")',
+                    m865,
+                )
+                self.assertIn("r != FilamentType::none", filament)
+                self.assertIn('remote_value(command, "base")', remote_queue)
 
         self.assertEqual(protocols[0], protocols[1])
         self.assertEqual(integrations[0], integrations[1])
@@ -1113,6 +1127,12 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn('code == "resume_failed"', host_service)
         self.assertIn('exc.record.get("resumable", 0)', host_service)
+        host_plugin = (
+            Path(__file__).resolve().parents[1]
+            / "octoprint_rme_compatibility/plugin.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("assignments.append('M865 S\"---\"", host_plugin)
+        self.assertIn("base=%s nozzle=%d", host_plugin)
 
     def test_657_release_exposes_the_same_host_workflow_and_transfer_contract(self):
         firmware_root = (

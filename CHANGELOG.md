@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.0b60 — 2026-08-16
+
+- Stop sending the invalid `M865 S"---" L<n>` command for provider tools with
+  no selected spool. Buddy 6.6.3 and 6.8.1 deliberately reject the display-only
+  `---` name, and expose no metadata-only material-clear operation, so the
+  existing firmware material assignment is now preserved.
+- Continue clearing independent manufacturer metadata with its supported
+  `@RME MANUFACTURER ASSIGN ... name=none` workflow.
+- Map SpoolManager and Spoolman material labels such as `PLA_plus`, `PETG`,
+  `TPU`, and `Nylon` onto the firmware user profile's built-in `base` preset,
+  preserving the material-family parameters used by current firmware.
+- Add regressions for the invalid-clear sequence and provider base-preset
+  synchronization.
+
 ## 0.1.0b59 — 2026-08-16
 
 - Latch the synchronous `beforePrintStarted` tool-mapping decision through

@@ -156,6 +156,19 @@ class _Comm(object):
 
 
 class ToolmapGateTests(unittest.TestCase):
+    def test_provider_material_labels_map_to_current_firmware_bases(self):
+        expected = {
+            "PLA": "PLA", "PLA_plus": "PLA", "PETG-CF": "PETG",
+            "TPU 95A": "FLEX", "Nylon 12": "PA", "PA6-CF": "PA",
+            "Polycarbonate": "PC", "Polypropylene": "PP",
+        }
+        for material, base in expected.items():
+            with self.subTest(material=material):
+                self.assertEqual(
+                    base,
+                    RmeCompatibilityPlugin._firmware_filament_base(material),
+                )
+
     def test_comment_only_continuous_print_control_job_skips_toolmap_hold(self):
         with tempfile.TemporaryDirectory() as directory:
             control_path = os.path.join(directory, "continuousprint_start_print.gcode")
@@ -489,7 +502,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIs(internal, provider)
         self.assertEqual("internal", name)
 
-    def test_external_provider_clears_unselected_builtin_tool_assignment(self):
+    def test_external_provider_preserves_unselected_firmware_material(self):
         record = {
             "database_id": 7, "display_name": "External PETG", "vendor": "Atomic Filament",
             "material": "PETG", "color_name": "Blue", "color": "#193a8a",
@@ -536,9 +549,15 @@ class ToolmapGateTests(unittest.TestCase):
             command.startswith("@RME MANUFACTURER ASSIGN tool=0 name=Atomic%20Filament tx=")
             for command in commands
         ))
-        self.assertIn('M865 S"---" L1', commands)
+        self.assertFalse(any('M865 S"---"' in command for command in commands))
         self.assertTrue(any(
             command.startswith("@RME MANUFACTURER ASSIGN tool=1 name=none tx=")
+            for command in commands
+        ))
+        self.assertTrue(any(
+            command.startswith(
+                "@RME FILAMENT SET slot=0 name=PET-007 base=PETG "
+            )
             for command in commands
         ))
 
@@ -592,7 +611,7 @@ class ToolmapGateTests(unittest.TestCase):
             for command in (batch if isinstance(batch, list) else [batch])
         ]
         self.assertTrue(any(
-            command.startswith('@RME FILAMENT SET slot=0 name=PLA-00C nozzle=215 preheat=175 bed=60 visible=1 tx=')
+            command.startswith('@RME FILAMENT SET slot=0 name=PLA-00C base=PLA nozzle=215 preheat=175 bed=60 visible=1 tx=')
             for command in commands
         ))
         self.assertIn('M865 U0 L0 O"#ff7700"', commands)
