@@ -1049,9 +1049,27 @@ class RmeCompatibilityPlugin(
         if phase != "sending" or str(command).upper() != "RME":
             return
         parameters = str(parameters or "").strip()
+        tags = set(kwargs.get("tags") or ())
+        plugin_origin = "plugin:rme_compatibility" in tags
+        operator_origin = not plugin_origin and bool(
+            {"source:terminal", "source:api"}.intersection(tags)
+        )
         if self._transport_recovery_required():
             self._logger.warning(
                 "Blocked @RME %s while printer reboot recovery is required",
+                parameters,
+            )
+            return
+        # Terminal commands use the same serialized writer as plugin traffic,
+        # but a line/binary FILE transaction is an exclusive protocol session.
+        # Let its plugin-tagged frames continue while refusing an operator/API
+        # command that could otherwise be inserted between acknowledged chunks.
+        if operator_origin and bool(
+            (self._uploader and self._uploader.busy)
+            or (self._file_service and self._file_service.busy)
+        ):
+            self._logger.warning(
+                "Blocked terminal @RME %s while an RME transfer is active",
                 parameters,
             )
             return
@@ -2074,8 +2092,10 @@ class RmeCompatibilityPlugin(
         Continuous Print uses small, comment-only ``*.gcode`` control jobs to
         advance its state machine.  OctoPrint still renders
         ``beforePrintStarted`` for those files, but they must not acquire the
-        multi-tool mapping hold.  Unknown, inaccessible, and binary jobs stay
-        gated: skipping is safe only after examining an entire text file.
+        multi-tool mapping hold.  A leading standalone
+        ``; skip-rme-toolmapping`` (or legacy-friendly ``spoolmapping`` alias)
+        also explicitly opts an executable job out. Unknown, inaccessible, and
+        binary jobs stay gated: skipping is safe only after inspecting text.
         """
         try:
             current = self._printer.get_current_data() or {}
@@ -2089,7 +2109,15 @@ class RmeCompatibilityPlugin(
             local_path = self._file_manager.path_on_disk(origin, path)
             with open(local_path, "r", encoding="utf-8", errors="replace") as job_file:
                 for raw_line in job_file:
-                    line = raw_line.split(";", 1)[0].strip()
+                    code, separator, comment = raw_line.partition(";")
+                    if not code.strip() and separator and comment.strip().lower() in {
+                        "skip-rme-toolmapping", "skip-rme-spoolmapping",
+                    }:
+                        self._logger.info(
+                            "Skipping tool mapping for opted-out G-code %s", path
+                        )
+                        return False
+                    line = code.strip()
                     if not line or (line.startswith("(") and line.endswith(")")):
                         continue
                     # Any non-comment content is treated as executable.  This
@@ -3166,7 +3194,14 @@ class RmeCompatibilityPlugin(
         self._file_service.cleanup_orphan(path)
         self._set_storage_status("ready", progress=None, error=None)
 
-    def _require_storage(self):
+    def _require_storage(self, suppress_print_active=False):
+        """Validate FILE access, optionally treating an active print as deferral.
+
+        Read-only capability and directory refreshes are automatic background
+        maintenance. They must not surface an HTTP 409 merely because a user
+        opens Settings while printing. Mutations and transfers retain the
+        strict exception path.
+        """
         with self._state_lock:
             connected = self._state["connected"] and self._state["supported"]
         if not connected or not self._file_service:
@@ -3174,9 +3209,15 @@ class RmeCompatibilityPlugin(
         if self._uploader and self._uploader.busy:
             raise FileServiceError("Firmware staging is already using the serial transfer channel")
         if self._print_job_active():
+            if suppress_print_active:
+                self._logger.debug(
+                    "Deferred automatic RME USB refresh while a print is active"
+                )
+                return False
             raise FileServiceError(
                 "Printer USB transfers are unavailable while a print is active"
             )
+        return True
 
     @staticmethod
     def _join_storage_path(directory, name):
@@ -3206,7 +3247,8 @@ class RmeCompatibilityPlugin(
 
     def _initialize_storage(self):
         """Probe the exact FILE capability record exposed by current RME."""
-        self._require_storage()
+        if not self._require_storage(suppress_print_active=True):
+            return False
         self._set_storage_status("detecting", progress=None, error=None)
         try:
             caps = self._file_service.capabilities()
@@ -3228,6 +3270,7 @@ class RmeCompatibilityPlugin(
                     supported=False, status="unsupported", progress=None, error=str(exc)
                 )
             self._persist_and_publish()
+        return True
 
     def _probe_interrupted_transfer(self):
         """Reopen and suspend a hidden partial to recover its committed offset."""
@@ -3268,7 +3311,8 @@ class RmeCompatibilityPlugin(
 
     def _refresh_storage(self, path=None):
         """List one USB directory and publish browser-ready full paths."""
-        self._require_storage()
+        if not self._require_storage(suppress_print_active=True):
+            return False
         with self._state_lock:
             path = str(path if path is not None else self._state["storage"].get("path", "/"))
             self._state["storage"].update(status="listing", progress=None, error=None)
@@ -3290,6 +3334,7 @@ class RmeCompatibilityPlugin(
         except Exception as exc:
             self._set_storage_status("error", progress=None, error=str(exc))
             raise
+        return True
 
     def _storage_mutation(self, action, path, destination=None):
         """Apply a guarded USB action and refresh the affected directory."""
@@ -3330,6 +3375,11 @@ class RmeCompatibilityPlugin(
 
     def _refresh_native_storage_files(self):
         """Coalesce native Files-view refreshes from UI and M20 polling."""
+        if self._print_job_active():
+            self._logger.debug(
+                "Deferred automatic native file index refresh while a print is active"
+            )
+            return False
         if not self._native_refresh_lock.acquire(False):
             return
         try:
@@ -3339,7 +3389,8 @@ class RmeCompatibilityPlugin(
 
     def _refresh_native_storage_files_locked(self):
         """Build the recursive RME USB index consumed by OctoPrint's Files UI."""
-        self._require_storage()
+        if not self._require_storage(suppress_print_active=True):
+            return False
         files = []
         visited = set()
 
@@ -3381,6 +3432,7 @@ class RmeCompatibilityPlugin(
         except Exception as exc:
             self._set_storage_status("error", progress=None, error=str(exc))
             raise
+        return True
 
     def _start_storage_download(self, remote_path, target):
         """Queue one printer-to-Pi transfer and optionally hand it to a browser."""

@@ -60,6 +60,11 @@ are exercised independently by the test suite.
   Cancelling while this gate is still ahead of the first print-file command
   suppresses the user-configured `afterPrintCancelled` macro while retaining
   OctoPrint's internal cancellation handling.
+  An executable file can explicitly skip this preflight by placing the
+  standalone comment `; skip-rme-toolmapping` before its first G-code command.
+  `; skip-rme-spoolmapping` is accepted as an alias. This only bypasses the
+  RME mapping prompt; it does not disable firmware tool changes, filament
+  safety checks, or other plugins' validation.
 - Reads the printer's envelope, logical tool count, shared-nozzle status, and
   live maximum feed rates, then updates the active OctoPrint printer profile.
   If an MMU is still enabling during the initial machine query, its later
@@ -126,6 +131,14 @@ is held and canceled without inserting print-control G-code into that channel.
 The plugin always uses OctoPrint's serialized printer command queue. It never
 opens a competing serial descriptor, suppresses normal Marlin responses, or
 places `@RME` frames in sliced files.
+
+RME commands can also be issued manually from OctoPrint's **Terminal** tab.
+Enter the complete firmware command with its namespace, for example
+`@RME MACHINE QUERY`, `@RME FIRMWARE QUERY`, or `@RME FILE LIST path=/`.
+The firmware response is shown in the same Terminal stream. Manual Terminal
+and API RME commands are latched out while an upload transaction owns the RME
+transport, preventing an operator query from being inserted between file
+chunks; retry the command after the transfer completes.
 
 ## Remote prompts and recovery
 

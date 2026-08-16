@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.0b58 — 2026-08-16
+
+- Allow an executable G-code file to bypass the RME tool-mapping preflight with
+  a leading standalone `; skip-rme-toolmapping` comment.
+- Accept `; skip-rme-spoolmapping` as an equivalent alias, while deliberately
+  ignoring markers placed after the first executable command.
+- Add regressions for both spellings and for the leading-comment boundary.
+- Quietly defer automatic FILE capability, directory-list, and native Files
+  index refreshes while printing instead of surfacing an HTTP 409; explicit
+  storage mutations and transfers remain strictly blocked.
+
+## 0.1.0b57 — 2026-08-16
+
+- Document and test direct RME firmware commands from OctoPrint's Terminal
+  using the complete `@RME ...` namespace; replies remain visible in the
+  normal Terminal stream.
+- Latch operator Terminal/API RME commands out while an acknowledged upload
+  owns the transport, without blocking the plugin-tagged frames belonging to
+  that transfer.
+
 ## 0.1.0b56 — 2026-08-16
 
 - Do not acquire the multi-tool mapping hold for provably inert, comment-only

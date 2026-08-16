@@ -211,6 +211,58 @@ class ToolmapGateTests(unittest.TestCase):
             self.assertEqual([True], plugin._printer.holds)
             self.assertEqual("toolmap", plugin._state["prompt"]["kind"])
 
+    def test_leading_comment_can_skip_toolmap_hold_for_executable_gcode(self):
+        for marker in ("skip-rme-toolmapping", "skip-rme-spoolmapping"):
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as directory:
+                job_path = os.path.join(directory, "opted-out.gcode")
+                with open(job_path, "w", encoding="utf-8") as job_file:
+                    job_file.write("; %s\nG28\nT0\n" % marker)
+
+                plugin = RmeCompatibilityPlugin()
+                plugin._settings = _Settings()
+                plugin._printer = _Printer()
+                plugin._printer.get_current_data = lambda: {
+                    "job": {"file": {"origin": "local", "path": "opted-out.gcode"}}
+                }
+                plugin._file_manager = types.SimpleNamespace(
+                    path_on_disk=lambda origin, path: job_path
+                )
+                plugin._logger = logging.getLogger("rme-toolmap-opt-out-test")
+                plugin._state.update(supported=True, machine={"logical_tools": 5})
+
+                plugin.gcode_script_hook(None, "gcode", "beforePrintStarted")
+
+                self.assertEqual([], plugin._printer.holds)
+                self.assertIsNone(plugin._state["prompt"])
+
+    def test_toolmap_skip_marker_after_first_command_does_not_bypass_hold(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_path = os.path.join(directory, "late-marker.gcode")
+            with open(job_path, "w", encoding="utf-8") as job_file:
+                job_file.write("G28\n; skip-rme-toolmapping\n")
+
+            plugin = RmeCompatibilityPlugin()
+            plugin._settings = _Settings()
+            plugin._printer = _Printer()
+            plugin._printer.get_current_data = lambda: {
+                "job": {"file": {"origin": "local", "path": "late-marker.gcode"}}
+            }
+            plugin._file_manager = types.SimpleNamespace(
+                path_on_disk=lambda origin, path: job_path
+            )
+            plugin._logger = logging.getLogger("rme-late-toolmap-marker-test")
+            plugin._identifier = "rme_compatibility"
+            plugin._plugin_manager = types.SimpleNamespace(
+                plugins={}, send_plugin_message=lambda *args: None,
+            )
+            plugin._state.update(supported=True, machine={"logical_tools": 5})
+            plugin._defer = lambda callback, *args: None
+
+            plugin.gcode_script_hook(None, "gcode", "beforePrintStarted")
+
+            self.assertEqual([True], plugin._printer.holds)
+            self.assertEqual("toolmap", plugin._state["prompt"]["kind"])
+
     def test_toolmap_hold_is_actionable_and_notified_in_frontend(self):
         with open(
             "octoprint_rme_compatibility/static/js/rme_compatibility.js"
@@ -317,6 +369,29 @@ class ToolmapGateTests(unittest.TestCase):
             plugin._require_storage()
         with self.assertRaisesRegex(RuntimeError, "while a print is active"):
             plugin._require_print_idle("Firmware transfers")
+
+    def test_automatic_storage_refreshes_quietly_defer_during_print(self):
+        def unexpected_usb_call(*args, **kwargs):
+            raise AssertionError("automatic USB reads must not run while printing")
+
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+        plugin._printer.is_printing = lambda: True
+        plugin._logger = logging.getLogger("rme-print-storage-deferral-test")
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["storage"].update(
+            supported=True, status="ready", error=None,
+        )
+        plugin._file_service = types.SimpleNamespace(
+            capabilities=unexpected_usb_call,
+            list_directory=unexpected_usb_call,
+        )
+
+        self.assertFalse(plugin._initialize_storage())
+        self.assertFalse(plugin._refresh_storage("/"))
+        self.assertFalse(plugin._refresh_native_storage_files())
+        self.assertEqual("ready", plugin._state["storage"]["status"])
+        self.assertIsNone(plugin._state["storage"]["error"])
 
     def test_external_spool_provider_exclusively_disables_internal_backend(self):
         class Provider(object):
@@ -956,6 +1031,53 @@ class ToolmapGateTests(unittest.TestCase):
         )
 
         self.assertEqual([("@RME MACHINE QUERY", None)], sent)
+
+    def test_terminal_rme_atcommand_is_forwarded_when_transfer_is_idle(self):
+        sent = []
+        comm = types.SimpleNamespace(
+            _do_send=lambda command, gcode=None: sent.append((command, gcode))
+        )
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-terminal-atcommand-test")
+        plugin._file_service = types.SimpleNamespace(busy=False)
+
+        plugin.atcommand_sending_hook(
+            comm,
+            "sending",
+            "RME",
+            "FIRMWARE QUERY",
+            tags={"source:terminal"},
+        )
+
+        self.assertEqual([("@RME FIRMWARE QUERY", None)], sent)
+
+    def test_terminal_rme_atcommand_cannot_interrupt_active_transfer(self):
+        sent = []
+        comm = types.SimpleNamespace(
+            _do_send=lambda command, gcode=None: sent.append((command, gcode))
+        )
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-terminal-transfer-latch-test")
+        plugin._file_service = types.SimpleNamespace(busy=True)
+
+        plugin.atcommand_sending_hook(
+            comm,
+            "sending",
+            "RME",
+            "MACHINE QUERY",
+            tags={"source:terminal"},
+        )
+        plugin.atcommand_sending_hook(
+            comm,
+            "sending",
+            "RME",
+            "FILE WRITE_BULK_CHUNK offset=0 data=YQ==",
+            tags={"plugin:rme_compatibility"},
+        )
+
+        self.assertEqual(
+            [("@RME FILE WRITE_BULK_CHUNK offset=0 data=YQ==", None)], sent
+        )
 
     def test_binary_marker_writes_raw_frame_on_octoprint_send_thread(self):
         class RawSerial(object):
