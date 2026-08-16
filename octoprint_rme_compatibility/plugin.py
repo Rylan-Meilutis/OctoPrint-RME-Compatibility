@@ -1289,6 +1289,8 @@ class RmeCompatibilityPlugin(
         kind = record["record"]
         if kind.startswith("upload_") or kind.startswith("file_"):
             return
+        if kind == "machine":
+            record = self._normalize_machine_topology(record)
         follow_up = []
         apply_profile = False
         with self._state_lock:
@@ -1628,6 +1630,24 @@ class RmeCompatibilityPlugin(
                 self._defer(self._send_command, item)
         if apply_profile:
             self._defer(self._apply_machine_profile)
+
+    @staticmethod
+    def _normalize_machine_topology(machine):
+        """Bound enabled logical tools by the firmware's physical capacity.
+
+        MMU firmware branches can report ``EXTRUDERS`` as the enabled count,
+        which includes the shared extrusion path on some builds.  The virtual
+        tool capacity is the authoritative count of addressable T indices.
+        """
+        normalized = dict(machine or {})
+        try:
+            logical_tools = int(normalized.get("logical_tools", 0))
+            tool_capacity = int(normalized.get("tool_capacity", 0))
+        except (TypeError, ValueError):
+            return normalized
+        if tool_capacity > 0 and logical_tools > tool_capacity:
+            normalized["logical_tools"] = tool_capacity
+        return normalized
 
     # -- Protocol actions ---------------------------------------------------
 
@@ -2533,7 +2553,16 @@ class RmeCompatibilityPlugin(
                 if self._state["spoolmanager"].get("provider") != provider_name:
                     old_published = []
                 can_send = self._state["connected"] and self._state["supported"]
-                logical_tools = int(self._state.get("machine", {}).get("logical_tools", 0))
+                machine = self._normalize_machine_topology(
+                    self._state.get("machine", {})
+                )
+                logical_tools = int(machine.get("logical_tools", 0))
+                tool_capacity = int(machine.get("tool_capacity", 0))
+            if tool_capacity > 0:
+                selected = [
+                    item for item in selected
+                    if int(item.get("tool", -1)) < tool_capacity
+                ]
 
             # Selected spools have priority, then prior slots, then the remaining
             # inventory. This minimizes menu churn while keeping all active tools.
@@ -2986,7 +3015,9 @@ class RmeCompatibilityPlugin(
 
     def _apply_machine_profile(self):
         with self._state_lock:
-            machine = copy.deepcopy(self._state.get("machine", {}))
+            machine = self._normalize_machine_topology(
+                copy.deepcopy(self._state.get("machine", {}))
+            )
         required = (
             "x_min", "x_max", "y_min", "y_max", "z_min", "z_max",
             "feed_x", "feed_y", "feed_z", "logical_tools", "single_nozzle",

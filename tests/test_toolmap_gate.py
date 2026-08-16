@@ -418,6 +418,48 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertTrue(extruder["sharedNozzle"])
         self.assertEqual([(0, 0)] * 5, extruder["offsets"])
 
+    def test_mmu_machine_count_is_bounded_by_five_slot_capacity(self):
+        self.assertEqual(
+            8,
+            RmeCompatibilityPlugin._normalize_machine_topology({
+                "logical_tools": 8, "tool_capacity": 8,
+            })["logical_tools"],
+        )
+
+        class ProfileManager(object):
+            def __init__(self):
+                self.saved = None
+
+            def get_current_or_default(self):
+                return {
+                    "volume": {}, "extruder": {},
+                    "axes": {"x": {}, "y": {}, "z": {}},
+                }
+
+            def save(self, profile, allow_overwrite=False):
+                self.saved = profile
+
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._printer_profile_manager = ProfileManager()
+        plugin._logger = logging.getLogger("rme-mmu-capacity-test")
+        plugin._schedule_publish = lambda: None
+        plugin._defer = lambda *args: None
+        plugin._handle_record({
+            "record": "machine", "hotends": 1, "logical_tools": 6,
+            "tool_capacity": 5, "single_nozzle": 1,
+            "x_min": 0, "x_max": 250, "y_min": 0, "y_max": 220,
+            "z_min": 0, "z_max": 270,
+            "feed_x": 500, "feed_y": 500, "feed_z": 30,
+        })
+
+        self.assertEqual(5, plugin._state["machine"]["logical_tools"])
+        plugin._apply_machine_profile()
+        extruder = plugin._printer_profile_manager.saved["extruder"]
+        self.assertEqual(5, extruder["count"])
+        self.assertTrue(extruder["sharedNozzle"])
+        self.assertEqual([(0, 0)] * 5, extruder["offsets"])
+
     def test_print_and_printer_transfer_ownership_are_mutually_exclusive(self):
         plugin = RmeCompatibilityPlugin()
         plugin._printer = _Printer()
@@ -518,7 +560,9 @@ class ToolmapGateTests(unittest.TestCase):
                 return [dict(record)]
 
             def selected(self):
-                return [dict(record)]
+                # Reproduce a stale six-extruder OctoPrint profile. The last
+                # empty entry is not a sixth MMU slot and must not reach RME.
+                return [dict(record), None, None, None, None, None]
 
         plugin = RmeCompatibilityPlugin()
         plugin._settings = _Settings()
@@ -532,7 +576,7 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._state.update(
             connected=True,
             supported=True,
-            machine={"logical_tools": 2},
+            machine={"logical_tools": 6, "tool_capacity": 5},
         )
         plugin._state["spoolmanager"].update(provider="internal")
         plugin._state["manufacturers"]["profiles"] = [
@@ -554,6 +598,7 @@ class ToolmapGateTests(unittest.TestCase):
             command.startswith("@RME MANUFACTURER ASSIGN tool=1 name=none tx=")
             for command in commands
         ))
+        self.assertFalse(any("tool=5" in command for command in commands))
         self.assertTrue(any(
             command.startswith(
                 "@RME FILAMENT SET slot=0 name=PET-007 base=PETG "

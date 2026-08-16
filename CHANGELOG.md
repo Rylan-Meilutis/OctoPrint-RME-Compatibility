@@ -13,6 +13,11 @@
   preserving the material-family parameters used by current firmware.
 - Add regressions for the invalid-clear sequence and provider base-preset
   synchronization.
+- Bound firmware `logical_tools` by its authoritative `tool_capacity`. This
+  prevents a five-slot shared-nozzle MMU from becoming six OctoPrint
+  extruders (`0` through `5`) when firmware's enabled count includes the
+  shared physical extrusion path, and prevents provider synchronization from
+  addressing the nonexistent sixth slot.
 
 ## 0.1.0b59 — 2026-08-16
 
