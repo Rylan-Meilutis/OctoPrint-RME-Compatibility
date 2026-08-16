@@ -14,6 +14,10 @@ FILE_CHUNK_SIZE = 48
 BULK_CHUNK_SIZE = 384
 BULK_WINDOW_SIZE = 4
 TRANSFER_LATCH_RETRY_SECONDS = 1.0
+# Current Buddy RME firmware hashes the complete protected candidate before it
+# answers FIRMWARE QUERY.  A multi-megabyte BBF on slower USB media can exceed
+# the generic command deadline even though the upload and printer are healthy.
+FIRMWARE_STATUS_TIMEOUT_SECONDS = 120.0
 
 
 class FileServiceError(RuntimeError):
@@ -1072,7 +1076,10 @@ class RmeFileService(object):
         with self._operation_lock:
             self._cancel.clear()
             records = self._exchange_when_available(
-                "@RME FIRMWARE QUERY", "firmware_status"
+                "@RME FIRMWARE QUERY", "firmware_status",
+                timeout=max(
+                    self.response_timeout, FIRMWARE_STATUS_TIMEOUT_SECONDS
+                ),
             )
         return self._terminal(records, "firmware_status")
 

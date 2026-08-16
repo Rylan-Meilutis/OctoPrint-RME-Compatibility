@@ -1115,7 +1115,7 @@ $(function () {
                     var folder = {
                         type: "folder", typePath: ["folder"], name: parts[parts.length - 1],
                         display: parts[parts.length - 1], path: path, origin: "sdcard",
-                        children: [], date: null, rme: true
+                        children: [], size: 0, date: null, rme: true
                     };
                     folders[path] = folder;
                     parent.push(folder);

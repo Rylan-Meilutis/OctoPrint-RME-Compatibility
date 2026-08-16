@@ -256,7 +256,9 @@ print that starts while one of those operations owns the printer is canceled.
 The plugin verifies the Pi copy before transfer and
 the printer verifies the declared byte count and SHA-256 before publishing its
 protected `/usb/FWUPD.RME` stage. The Prusa bootloader remains responsible for signature,
-printer-model, and compatibility checks.
+printer-model, and compatibility checks. After transfer reaches 100%, the
+current firmware hashes that protected multi-megabyte candidate synchronously;
+the UI remains in **verifying** until the authoritative result arrives.
 
 ## Development
 

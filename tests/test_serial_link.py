@@ -9,6 +9,7 @@ import struct
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 import zlib
 from unittest import mock
@@ -45,6 +46,7 @@ class FirmwareFileServicePeer(object):
         suspend_bulk_after_ack_count=0,
         bulk_supported=True, confirm_abort=True,
         resume_begin_failures=0,
+        firmware_query_delay=0,
         fragment_widths=(1, 2, 5, 13, 31),
     ):
         self.service = None
@@ -84,6 +86,7 @@ class FirmwareFileServicePeer(object):
         self._bulk_supported = bool(bulk_supported)
         self._confirm_abort = bool(confirm_abort)
         self._resume_begin_failures = max(0, int(resume_begin_failures))
+        self._firmware_query_delay = max(0, float(firmware_query_delay))
         self.resume_failed_offsets = []
         self._fragment_widths = tuple(fragment_widths)
         self._host_to_firmware = queue.Queue()
@@ -160,6 +163,23 @@ class FirmwareFileServicePeer(object):
             self._firmware_to_host.put(fragment)
 
     def _handle_line(self, line):
+        if line == "@RME FIRMWARE QUERY":
+            def reply_status():
+                candidate = int(self.published_path == "FWUPD.RME")
+                fields = "RME_FIRMWARE candidate=%d armed=0 state=%s" % (
+                    candidate, "ready" if candidate else "idle",
+                )
+                if candidate:
+                    fields += " path=FWUPD.RME size=%d sha256=%s" % (
+                        len(self.received), self.expected_sha,
+                    )
+                self._reply(fields, "ok")
+
+            if self._firmware_query_delay:
+                threading.Timer(self._firmware_query_delay, reply_status).start()
+            else:
+                reply_status()
+            return
         if line == "@RME FILE CAPS":
             self._reply(
                 "RME_FILE_CAPS root=/usb chunk=48 bulk=%d bulk_chunk=384 "
@@ -484,6 +504,33 @@ class FirmwareFileServicePeer(object):
 
 
 class SerialLinkIntegrationTests(unittest.TestCase):
+    def test_firmware_candidate_hash_may_outlive_generic_command_timeout(self):
+        link = FirmwareFileServicePeer(firmware_query_delay=0.08)
+        service = RmeFileService(
+            link.send_command,
+            response_timeout=0.02,
+            send_binary=link.send_binary,
+            begin_binary=link.begin_binary,
+            end_binary=link.end_binary,
+        )
+        link.service = service
+        content = bytes(range(256)) * 16 + b"signed-firmware-tail"
+
+        with tempfile.NamedTemporaryFile() as source:
+            source.write(content)
+            source.flush()
+            try:
+                service.write_file(source.name, "FWUPD.BBF")
+                started = time.monotonic()
+                status = service.firmware_status()
+            finally:
+                link.close()
+
+        self.assertGreaterEqual(time.monotonic() - started, 0.05)
+        self.assertEqual(1, status["candidate"])
+        self.assertEqual(len(content), status["size"])
+        self.assertEqual(hashlib.sha256(content).hexdigest(), status["sha256"])
+
     def test_current_binary_firmware_upload_over_fragmented_serial_link(self):
         link = FirmwareFileServicePeer()
         service = RmeFileService(
@@ -1009,7 +1056,10 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
             except (OSError, subprocess.CalledProcessError):
                 self.skipTest("firmware ref %s unavailable" % ref)
 
-        refs = ("rme-v6.6.3", "v6.8.1-RME")
+        # Validate maintained branch tips rather than the immutable initial
+        # 6.8.1 release tag: both branches now share the FIFO-safe 512 x 3
+        # framing and the same durable host workflow.
+        refs = ("origin/rme-v6.6.3", "origin/rme-v6.8.1")
         protocols = []
         integrations = []
         for ref in refs:

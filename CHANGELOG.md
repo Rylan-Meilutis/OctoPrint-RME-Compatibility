@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.0b54 — 2026-08-16
+
+- Allow up to 120 seconds for authoritative firmware-stage queries. Current
+  Buddy RME 6.6.3 and 6.8.1 synchronously hash the complete protected BBF
+  candidate before replying, so slower USB media can legitimately exceed the
+  generic 20-second command deadline after an otherwise successful upload.
+- Supply `size` as well as `date` on synthetic printer-storage folder rows so
+  OctoPrint's built-in file-list bindings never evaluate an absent property.
+- Extend the fragmented serial-link firmware peer with delayed candidate
+  hashing and prove that a completed binary upload remains verifiable beyond
+  the generic command timeout.
+- Revalidate the 104-test suite against current maintained firmware tips
+  `30fb59e81e` (6.6.3) and `25dcb1e09e` (6.8.1), including their shared
+  512-byte, three-frame binary contract and durable partial-file workflow.
+
 ## 0.1.0b53 — 2026-08-16
 
 - Validate the same FIFO-safe 512-byte, three-frame binary upload contract on
