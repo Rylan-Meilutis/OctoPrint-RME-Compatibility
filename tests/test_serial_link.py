@@ -26,8 +26,11 @@ class FirmwareFileServicePeer(object):
     injected into serialized bytes before the firmware model sees them.
     """
 
-    chunk_size = 1024
-    window_size = 8
+    # Keep this peer within the firmware's 2 KiB CDC receive FIFO. Three
+    # complete 512-byte frames (10-byte header plus payload) fit without
+    # allowing USB packet loss to splice raw payload into line mode.
+    chunk_size = 512
+    window_size = 3
 
     bulk_chunk_size = 384
     bulk_window_size = 4
@@ -160,7 +163,7 @@ class FirmwareFileServicePeer(object):
         if line == "@RME FILE CAPS":
             self._reply(
                 "RME_FILE_CAPS root=/usb chunk=48 bulk=%d bulk_chunk=384 "
-                "bulk_window=4 binary=1 binary_chunk=1024 binary_window=8 "
+                "bulk_window=4 binary=1 binary_chunk=512 binary_window=3 "
                 "binary_control=1 binary_control_offset=4294967294 "
                 "resumable_abort=1 durable_resume=1 shared_transfer_latch=1 "
                 "binary_timeout_ms=10000 upload_timeout_ms=10000 write=1"
@@ -252,9 +255,9 @@ class FirmwareFileServicePeer(object):
         self._recovering = False
         offset = len(self.received)
         self._reply(
-            "RME_FILE_BINARY_READY offset=%d chunk=1024 window=8 "
+            "RME_FILE_BINARY_READY offset=%d chunk=%d window=%d "
             "header=10 endian=little crc=crc32 resumed=%d"
-            % (offset, 1 if offset else 0),
+            % (offset, self.chunk_size, self.window_size, 1 if offset else 0),
             "ok",
         )
 
@@ -569,7 +572,10 @@ class SerialLinkIntegrationTests(unittest.TestCase):
             item for item in link.commands if "WRITE_BINARY_BEGIN" in item
         ]
         self.assertEqual(4, len(begins))
-        self.assertEqual([8192, 8192], link.resume_failed_offsets)
+        committed_window = link.chunk_size * link.window_size
+        self.assertEqual(
+            [committed_window, committed_window], link.resume_failed_offsets
+        )
         self.assertEqual([begins[0]] * 4, begins)
         self.assertEqual(content, bytes(link.received))
         self.assertEqual("FWUPD.RME", link.published_path)
@@ -883,15 +889,19 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
             / "octoprint_rme_compatibility/file_service.py"
         ).read_text(encoding="utf-8")
 
-        expected_constants = {
-            "transfer_chunk_size": FirmwareFileServicePeer.legacy_chunk_size,
-            "binary_chunk_size": FirmwareFileServicePeer.chunk_size,
+        self.assertRegex(
+            firmware,
+            r"constexpr\s+[^;=]+\s+transfer_chunk_size\s*=\s*%d\s*;"
+            % FirmwareFileServicePeer.legacy_chunk_size,
+        )
+        expected_contract_constants = {
+            "binary_payload_size": FirmwareFileServicePeer.chunk_size,
             "binary_window_size": FirmwareFileServicePeer.window_size,
         }
-        for name, value in expected_constants.items():
+        for name, value in expected_contract_constants.items():
             with self.subTest(constant=name):
                 self.assertRegex(
-                    firmware,
+                    transfer_contract,
                     r"constexpr\s+[^;=]+\s+%s\s*=\s*%d\s*;"
                     % (re.escape(name), value),
                 )

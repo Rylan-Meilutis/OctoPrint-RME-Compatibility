@@ -266,6 +266,13 @@ Protocol and transport tests do not require OctoPrint itself:
 python -m unittest discover -s tests -v
 ```
 
+When the Buddy firmware checkout is adjacent to this repository, the serial
+link suite also reads its shared RME transfer constants and drives the real
+plugin file service through an independent fragmented-byte firmware peer. This
+is the release gate for negotiated binary windows, CRC/NACK recovery, abort,
+disconnect/inactivity suspension, durable resume, fallback transports, SHA-256
+publication, and firmware flash selection.
+
 For integration testing, follow the matrix in the firmware's
 `doc/rme_serial_handler_integration.md`: reconnect and sequence-gap recovery,
 blocking heater/probing commands, MMU and filament errors, tool changes,

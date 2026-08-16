@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.0b52 — 2026-08-16
+
+- Align the fragmented serial firmware peer with Buddy RME 6.8.1's safe
+  512-byte, three-frame binary upload window. The complete negotiated wire
+  backlog now fits the printer's 2048-byte CDC receive FIFO.
+- Read binary transport constants from the firmware's authoritative shared
+  transfer header rather than requiring duplicated literals in the service
+  implementation.
+- Revalidate binary upload, cumulative ACKs, NACK recovery, confirmed abort,
+  inactivity suspension, durable resume, transport fallback, publication, and
+  firmware flash selection against the updated firmware contract. The complete
+  plugin suite passes 103/103 tests.
+
 ## 0.1.0b51 — 2026-08-16
 
 - Validate the plugin against maintained Buddy RME 6.6.3 (`32214273b2`) and
