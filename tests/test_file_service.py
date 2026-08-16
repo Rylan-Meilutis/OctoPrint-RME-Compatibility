@@ -197,6 +197,42 @@ class FileServiceTests(unittest.TestCase):
         self.assertEqual(1, len(armed))
         self.assertGreaterEqual(armed[0], 4)
 
+    def test_resume_failed_retries_the_identical_begin_without_offset_zero(self):
+        service = None
+        commands = []
+        failures = [4096, 4096]
+
+        def send(command):
+            commands.append(command)
+            if failures:
+                service.handle_response(parse_line(
+                    "echo:RME_ERROR workflow=file code=resume_failed "
+                    "offset=%d resumable=1" % failures.pop(0)
+                ))
+            else:
+                service.handle_response(parse_line(
+                    "RME_FILE_BULK_READY offset=4096 chunk=384 window=4 "
+                    "resumed=1"
+                ))
+
+        service = RmeFileService(send, response_timeout=1)
+        command = (
+            "@RME FILE WRITE_BULK_BEGIN path=jobs/resume.bgcode size=8192 "
+            "sha256=" + "a" * 64
+        )
+        with mock.patch(
+            "octoprint_rme_compatibility.file_service.TRANSFER_LATCH_RETRY_SECONDS",
+            0.001,
+        ):
+            records = service._exchange_when_available(
+                command, "file_bulk_ready"
+            )
+
+        self.assertEqual([command, command, command], commands)
+        self.assertEqual(
+            4096, service._terminal(records, "file_bulk_ready")["offset"]
+        )
+
     def test_repeated_binary_nack_retries_negotiated_raw_chunk(self):
         service = None
         # Current firmware snapshots and bounds its parser, so retransmission

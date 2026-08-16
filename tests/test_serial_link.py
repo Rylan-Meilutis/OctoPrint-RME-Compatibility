@@ -11,6 +11,7 @@ import tempfile
 import threading
 import unittest
 import zlib
+from unittest import mock
 
 from octoprint_rme_compatibility.file_service import RmeFileService
 from octoprint_rme_compatibility.protocol import parse_line
@@ -40,6 +41,7 @@ class FirmwareFileServicePeer(object):
         suspend_bulk_count=0, suspend_legacy_count=0,
         suspend_bulk_after_ack_count=0,
         bulk_supported=True, confirm_abort=True,
+        resume_begin_failures=0,
         fragment_widths=(1, 2, 5, 13, 31),
     ):
         self.service = None
@@ -78,6 +80,8 @@ class FirmwareFileServicePeer(object):
         )
         self._bulk_supported = bool(bulk_supported)
         self._confirm_abort = bool(confirm_abort)
+        self._resume_begin_failures = max(0, int(resume_begin_failures))
+        self.resume_failed_offsets = []
         self._fragment_widths = tuple(fragment_widths)
         self._host_to_firmware = queue.Queue()
         self._firmware_to_host = queue.Queue()
@@ -192,6 +196,8 @@ class FirmwareFileServicePeer(object):
             path = begin.group(2)
             size = int(begin.group(3))
             digest = begin.group(4)
+            if self._fail_matching_resume(path, size, digest):
+                return
             resumed = self._prepare_upload(path, size, digest)
             self._line_transport = "bulk" if bulk else "legacy"
             self._line_unacknowledged = 0
@@ -237,6 +243,9 @@ class FirmwareFileServicePeer(object):
         )
         if not match:
             raise AssertionError("unexpected firmware command: %s" % line)
+        if self._fail_matching_resume(
+                match.group(1), int(match.group(2)), match.group(3)):
+            return
         self._prepare_upload(match.group(1), int(match.group(2)), match.group(3))
         self._firmware_raw = True
         self._unacknowledged = 0
@@ -248,6 +257,25 @@ class FirmwareFileServicePeer(object):
             % (offset, 1 if offset else 0),
             "ok",
         )
+
+    def _fail_matching_resume(self, path, size, digest):
+        matching = (
+            self.final_path == path
+            and self.expected_size == size
+            and self.expected_sha == digest
+            and len(self.received) <= size
+        )
+        if not matching or not self._resume_begin_failures:
+            return False
+        self._resume_begin_failures -= 1
+        self.resume_failed_offsets.append(len(self.received))
+        self._line_transport = None
+        self._firmware_raw = False
+        self._reply(
+            "echo:RME_ERROR workflow=file code=resume_failed offset=%d "
+            "resumable=1" % len(self.received)
+        )
+        return True
 
     def _prepare_upload(self, path, size, digest):
         resumed = int(
@@ -509,6 +537,42 @@ class SerialLinkIntegrationTests(unittest.TestCase):
         self.assertFalse(any("WRITE_BULK_BEGIN" in item for item in link.commands))
         self.assertEqual(content, bytes(link.received))
         self.assertEqual(hashlib.sha256(content).hexdigest(), link.expected_sha)
+
+    def test_resume_storage_failures_retry_without_erasing_verified_prefix(self):
+        link = FirmwareFileServicePeer(
+            suspend_binary_once=True, resume_begin_failures=2
+        )
+        service = RmeFileService(
+            link.send_command,
+            response_timeout=2,
+            send_binary=link.send_binary,
+            begin_binary=link.begin_binary,
+            end_binary=link.end_binary,
+        )
+        link.service = service
+        content = bytes(range(256)) * 160 + b"durable-resume-tail"
+
+        with tempfile.NamedTemporaryFile() as source:
+            source.write(content)
+            source.flush()
+            try:
+                with mock.patch(
+                    "octoprint_rme_compatibility.file_service."
+                    "TRANSFER_LATCH_RETRY_SECONDS",
+                    0.001,
+                ):
+                    service.write_file(source.name, "FWUPD.BBF")
+            finally:
+                link.close()
+
+        begins = [
+            item for item in link.commands if "WRITE_BINARY_BEGIN" in item
+        ]
+        self.assertEqual(4, len(begins))
+        self.assertEqual([8192, 8192], link.resume_failed_offsets)
+        self.assertEqual([begins[0]] * 4, begins)
+        self.assertEqual(content, bytes(link.received))
+        self.assertEqual("FWUPD.RME", link.published_path)
 
     def test_binary_fallback_resumes_current_bulk_suspensions(self):
         link = FirmwareFileServicePeer(
@@ -917,6 +981,62 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
         self.assertIn("M591 S", protocol_doc)
         self.assertIn("M591 U", protocol_doc)
         self.assertIn("Retain the cause until recovery closes", protocol_doc)
+
+    def test_maintained_663_and_681_share_the_durable_host_contract(self):
+        firmware_root = (
+            Path(__file__).resolve().parents[2] / "Prusa-Firmware-Buddy"
+        )
+        if not (firmware_root / ".git").exists():
+            self.skipTest("adjacent Prusa-Firmware-Buddy git checkout unavailable")
+
+        def ref_file(ref, path):
+            try:
+                return subprocess.check_output(
+                    ["git", "-C", str(firmware_root), "show", "%s:%s" % (ref, path)],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                )
+            except (OSError, subprocess.CalledProcessError):
+                self.skipTest("firmware ref %s unavailable" % ref)
+
+        refs = ("origin/rme-v6.6.3", "v6.8.1-RME")
+        protocols = []
+        integrations = []
+        for ref in refs:
+            with self.subTest(ref=ref):
+                file_service = ref_file(
+                    ref, "src/marlin_stubs/rme_file_service.cpp"
+                )
+                protocols.append(ref_file(
+                    ref, "doc/rme_serial_remote_protocol.md"
+                ))
+                integrations.append(ref_file(
+                    ref, "doc/rme_serial_handler_integration.md"
+                ))
+                self.assertIn(
+                    'report_upload_error("resume_failed", true)', file_service
+                )
+                self.assertIn("metadata_temp_path", file_service)
+                self.assertIn("durable_resume=1", file_service)
+                self.assertIn("shared_transfer_latch=1", file_service)
+                self.assertRegex(
+                    file_service, r"binary_chunk_size\s*=\s*1024\s*;"
+                )
+                self.assertRegex(
+                    file_service, r"binary_window_size\s*=\s*8\s*;"
+                )
+
+        self.assertEqual(protocols[0], protocols[1])
+        self.assertEqual(integrations[0], integrations[1])
+        self.assertIn("code=resume_failed", protocols[0])
+        self.assertIn("retry the identical BEGIN", integrations[0])
+
+        host_service = (
+            Path(__file__).resolve().parents[1]
+            / "octoprint_rme_compatibility/file_service.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('code == "resume_failed"', host_service)
+        self.assertIn('exc.record.get("resumable", 0)', host_service)
 
     def test_657_release_exposes_the_same_host_workflow_and_transfer_contract(self):
         firmware_root = (

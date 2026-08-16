@@ -5,9 +5,11 @@ An OctoPrint plugin for the custom Prusa RME Buddy firmware in
 `doc/rme_serial_handler_integration.md`, `doc/rme_serial_remote_protocol.md`,
 and `doc/gcode/M998.md`.
 
-The supported firmware baselines are the `v6.5.7-RME` release and the current
-`rme-v6.6.3` release branch. Their RME FILE transport and cause-specific INDX
-extrusion-recovery contracts are exercised independently by the test suite.
+The supported firmware baselines are the `v6.5.7-RME` release, the maintained
+`rme-v6.6.3` release branch, and the `v6.8.1-RME` release. The 6.6.3 and 6.8.1
+host protocol documents are checked byte-for-byte, while their RME FILE
+transport, durable-resume, and cause-specific INDX extrusion-recovery contracts
+are exercised independently by the test suite.
 
 ## Features
 
@@ -93,7 +95,10 @@ extrusion-recovery contracts are exercised independently by the test suite.
   selected transport. Interrupted transfers survive OctoPrint/printer
   reconnects and present explicit Resume and Discard actions. Discard recovers
   with a matching text/bulk BEGIN and waits for confirmed line-mode ABORT;
-  ordinary failure and cancellation preserve the resumable partial.
+  ordinary failure and cancellation preserve the resumable partial. A
+  maintained-firmware `resume_failed resumable=1` response retries only the
+  identical BEGIN, retaining the firmware-authoritative verified prefix rather
+  than falling back to an offset-zero upload.
 - Supports explicit lost-manifest cleanup from an operator-supplied final path.
   It probes only the derived `.rme-part` and `.rme-meta` siblings, never scans
   hidden transfer files, never parses `.rme-meta`, and never deletes the

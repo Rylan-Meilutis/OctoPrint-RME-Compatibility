@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0b51 — 2026-08-16
+
+- Validate the plugin against maintained Buddy RME 6.6.3 (`32214273b2`) and
+  the 6.8.1 RME release (`afed6d77cb`), whose host protocol and integration
+  documents are identical.
+- Handle the shared `resume_failed offset=<committed> resumable=1` contract by
+  retrying only the exact same BEGIN while retaining the durable manifest and
+  firmware-authoritative verified prefix.
+- Extend the independent fragmented-serial firmware model with transient
+  durable reopen/rehash failures and prove that retries neither reset to zero
+  nor switch away from the matching upload.
+
 ## 0.1.0b50 — 2026-08-14
 
 - Recover partial-file discard when firmware still has the interrupted

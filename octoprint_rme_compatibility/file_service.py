@@ -255,30 +255,46 @@ class RmeFileService(object):
                 self._condition.notify_all()
 
     def _exchange_when_available(self, command, expected, **kwargs):
-        """Wait behind a firmware-owned print or Connect/Link transfer.
+        """Wait behind firmware ownership or a recoverable resume failure.
 
         Buddy's shared transfer monitor reports ``transfer_busy`` while
         another producer owns USB storage.  Treat that response, and a remote
         print that OctoPrint did not start, as a held latch rather than a
-        failed upload.  The operation lock remains held, so another local RME
-        operation cannot overtake this waiter.
+        failed upload. Maintained 6.6.3 and 6.8.1 builds also preserve an exact
+        durable checkpoint and report ``resume_failed resumable=1`` when its
+        partial cannot be reopened or rehashed temporarily. Retry the identical
+        command in that case; never allow a cross-transport offset-zero start.
+        The operation lock remains held, so another local RME operation cannot
+        overtake this waiter.
         """
         while True:
             try:
                 return self._exchange(command, expected, **kwargs)
             except FileServiceError as exc:
-                message = str(exc)
-                if not (
-                    message.endswith("transfer_busy")
-                    or message.endswith("printer_busy")
+                code = self._error_code(exc)
+                resumable_resume_failure = (
+                    code == "resume_failed"
+                    and exc.record is not None
+                    and int(exc.record.get("resumable", 0)) == 1
+                )
+                if code not in ("transfer_busy", "printer_busy") and not (
+                    resumable_resume_failure
                 ):
                     raise
                 if self._cancel.is_set():
                     raise FileServiceError("Printer USB operation cancelled")
                 if self.logger:
-                    self.logger.info(
-                        "RME operation paused behind printer activity: %s", message
-                    )
+                    if resumable_resume_failure:
+                        self.logger.warning(
+                            "RME durable partial is temporarily unavailable; "
+                            "retrying the identical BEGIN without resetting "
+                            "its verified offset"
+                        )
+                    else:
+                        self.logger.info(
+                            "RME operation paused behind printer activity: %s",
+                            exc,
+                        )
                 self._cancel.wait(TRANSFER_LATCH_RETRY_SECONDS)
 
     @staticmethod
