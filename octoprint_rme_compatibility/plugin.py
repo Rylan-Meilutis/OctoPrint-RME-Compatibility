@@ -110,6 +110,7 @@ class RmeCompatibilityPlugin(
         self._last_fw_publish = 0
         self._spoolmanager = None
         self._spool_sync_lock = threading.Lock()
+        self._spool_sync_pending = None
         self._expected_provider_events = {}
         self._expected_spoolman_event_until = 0
         self._toolmap_hold_active = False
@@ -1947,11 +1948,24 @@ class RmeCompatibilityPlugin(
                     self._defer(self._probe_stats)
 
     def _print_job_active(self):
-        """Return whether background serial reads must yield to job G-code."""
+        """Return whether OctoPrint's job state owns the serial queue."""
         try:
-            return bool(self._printer.is_printing() or self._printer.is_paused())
+            if self._printer.is_printing() or self._printer.is_paused():
+                return True
         except Exception:
-            return False
+            pass
+        # During Starting/Pausing/Resuming/Cancelling, is_printing() and
+        # is_paused() can both briefly be false.  Configuration batches are
+        # still forbidden: injecting one there corrupts OctoPrint's numbered
+        # stream and can create an unrecoverable resend loop.
+        try:
+            state = str(self._printer.get_state_id() or "").upper()
+        except Exception:
+            state = ""
+        return state in {
+            "STARTING", "PRINTING", "PAUSING", "PAUSED", "RESUMING",
+            "CANCELLING", "FINISHING",
+        }
 
     def _require_print_idle(self, operation="This operation"):
         """Reject printer-storage and firmware work during an active print."""
@@ -2054,6 +2068,45 @@ class RmeCompatibilityPlugin(
         """Backstop older connectors and enrich the pre-start prompt payload."""
         self._prepare_toolmap_prompt(payload)
 
+    def _selected_job_has_executable_gcode(self):
+        """Return false only when the selected text job is provably inert.
+
+        Continuous Print uses small, comment-only ``*.gcode`` control jobs to
+        advance its state machine.  OctoPrint still renders
+        ``beforePrintStarted`` for those files, but they must not acquire the
+        multi-tool mapping hold.  Unknown, inaccessible, and binary jobs stay
+        gated: skipping is safe only after examining an entire text file.
+        """
+        try:
+            current = self._printer.get_current_data() or {}
+            file_info = (current.get("job") or {}).get("file") or {}
+            origin = file_info.get("origin")
+            path = file_info.get("path") or file_info.get("name")
+            if not origin or not path:
+                return True
+            if not str(path).lower().endswith((".gcode", ".gco")):
+                return True
+            local_path = self._file_manager.path_on_disk(origin, path)
+            with open(local_path, "r", encoding="utf-8", errors="replace") as job_file:
+                for raw_line in job_file:
+                    line = raw_line.split(";", 1)[0].strip()
+                    if not line or (line.startswith("(") and line.endswith(")")):
+                        continue
+                    # Any non-comment content is treated as executable.  This
+                    # intentionally favors an unnecessary prompt over letting
+                    # an unfamiliar command bypass tool mapping.
+                    return True
+            self._logger.info(
+                "Skipping tool mapping for inert control G-code %s", path
+            )
+            return False
+        except Exception:
+            self._logger.debug(
+                "Could not inspect selected job for tool-map preflight",
+                exc_info=True,
+            )
+            return True
+
     def _prepare_toolmap_prompt(self, payload=None):
         """Hold a multi-tool local job before any of its queued G-code is sent."""
         with self._state_lock:
@@ -2061,6 +2114,8 @@ class RmeCompatibilityPlugin(
             count = int(self._state.get("machine", {}).get("logical_tools", 0))
             current_toolmap = copy.deepcopy(self._state.get("toolmap") or {})
         if not supported or count <= 1:
+            return
+        if not self._selected_job_has_executable_gcode():
             return
         configured = current_toolmap.get("mapping") or self._settings.get(
             ["default_toolmap"], merged=True
@@ -2341,12 +2396,33 @@ class RmeCompatibilityPlugin(
 
     def _resume_background_queries(self):
         """Catch up deferred telemetry and provider metadata after a job."""
+        if self._print_job_active():
+            return
         self._refresh_stats_snapshot()
         with self._state_lock:
             synchronize_manufacturers = self._manufacturer_sync_pending
             self._manufacturer_sync_pending = False
+            spool_sync = self._spool_sync_pending
+            self._spool_sync_pending = None
         if synchronize_manufacturers:
             self._schedule_manufacturer_profile_sync()
+        if spool_sync:
+            self._defer(self._sync_spoolmanager, *spool_sync)
+
+    def _defer_spool_sync_until_idle(self, force, push_to_firmware):
+        """Coalesce provider reconciliation while a job owns serial I/O."""
+        with self._state_lock:
+            pending = self._spool_sync_pending or (False, False)
+            self._spool_sync_pending = (
+                bool(pending[0] or force),
+                bool(pending[1] or push_to_firmware),
+            )
+            self._state["spoolmanager"]["status"] = (
+                "synchronization deferred until print is idle"
+            )
+        self._logger.info(
+            "Deferring filament-provider synchronization until print is idle"
+        )
 
     def _sync_spoolmanager(self, force=False, push_to_firmware=True):
         """Reconcile the active inventory provider with eight firmware presets.
@@ -2355,6 +2431,9 @@ class RmeCompatibilityPlugin(
         eight slots. Seven slots receive stable database-ID aliases; slot seven
         is reserved for ``NEW``. Full metadata remains visible in OctoPrint.
         """
+        if self._print_job_active():
+            self._defer_spool_sync_until_idle(force, push_to_firmware)
+            return
         if not self._spool_sync_lock.acquire(False):
             return
         try:
@@ -2448,6 +2527,9 @@ class RmeCompatibilityPlugin(
                 }
                 self._refresh_active_tool_locked()
             should_push = can_send and push_to_firmware and not pending_provider_sync
+            if should_push and self._print_job_active():
+                self._defer_spool_sync_until_idle(force, push_to_firmware)
+                should_push = False
             profile_commands, manufacturer_by_spool = self._provider_profile_commands(
                 published, provider_name
             )

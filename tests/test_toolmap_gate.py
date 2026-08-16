@@ -156,6 +156,104 @@ class _Comm(object):
 
 
 class ToolmapGateTests(unittest.TestCase):
+    def test_comment_only_continuous_print_control_job_skips_toolmap_hold(self):
+        with tempfile.TemporaryDirectory() as directory:
+            control_path = os.path.join(directory, "continuousprint_start_print.gcode")
+            with open(control_path, "w", encoding="utf-8") as control_file:
+                control_file.write("; Continuous Print state transition\n\n(comment only)\n")
+
+            plugin = RmeCompatibilityPlugin()
+            plugin._settings = _Settings()
+            plugin._printer = _Printer()
+            plugin._printer.get_current_data = lambda: {
+                "job": {"file": {
+                    "origin": "local",
+                    "path": "ContinuousPrint/tmp/continuousprint_start_print.gcode",
+                }}
+            }
+            plugin._file_manager = types.SimpleNamespace(
+                path_on_disk=lambda origin, path: control_path
+            )
+            plugin._logger = logging.getLogger("rme-continuous-print-control-test")
+            plugin._state.update(supported=True, machine={"logical_tools": 5})
+
+            plugin.gcode_script_hook(None, "gcode", "beforePrintStarted")
+            plugin.on_event("PrintStarted", {"name": "continuousprint_start_print.gcode"})
+
+            self.assertEqual([], plugin._printer.holds)
+            self.assertIsNone(plugin._state["prompt"])
+
+    def test_executable_gcode_still_acquires_toolmap_hold(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_path = os.path.join(directory, "real.gcode")
+            with open(job_path, "w", encoding="utf-8") as job_file:
+                job_file.write("; sliced job\nG28\n")
+
+            plugin = RmeCompatibilityPlugin()
+            plugin._settings = _Settings()
+            plugin._printer = _Printer()
+            plugin._printer.get_current_data = lambda: {
+                "job": {"file": {"origin": "local", "path": "real.gcode"}}
+            }
+            plugin._file_manager = types.SimpleNamespace(
+                path_on_disk=lambda origin, path: job_path
+            )
+            plugin._logger = logging.getLogger("rme-real-print-preflight-test")
+            plugin._identifier = "rme_compatibility"
+            plugin._plugin_manager = types.SimpleNamespace(
+                plugins={}, send_plugin_message=lambda *args: None,
+            )
+            plugin._state.update(supported=True, machine={"logical_tools": 5})
+            plugin._defer = lambda callback, *args: None
+
+            plugin.gcode_script_hook(None, "gcode", "beforePrintStarted")
+
+            self.assertEqual([True], plugin._printer.holds)
+            self.assertEqual("toolmap", plugin._state["prompt"]["kind"])
+
+    def test_toolmap_hold_is_actionable_and_notified_in_frontend(self):
+        with open(
+            "octoprint_rme_compatibility/static/js/rme_compatibility.js"
+        ) as javascript_file:
+            javascript = javascript_file.read()
+        with open(
+            "octoprint_rme_compatibility/templates/rme_compatibility_navbar.jinja2"
+        ) as template_file:
+            navbar = template_file.read()
+
+        self.assertIn("self.hasToolmapPrompt() ||", javascript)
+        self.assertIn('title: "Tool mapping required"', javascript)
+        self.assertIn("self.updateToolmapNotice(prompt)", javascript)
+        self.assertIn("Use current mapping", navbar)
+        self.assertIn("click: showRmeTab", navbar)
+
+    def test_pausing_state_defers_provider_writes_until_job_is_idle(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-pausing-spool-sync-test")
+        plugin._printer = _Printer()
+        state = {"value": "PAUSING"}
+        plugin._printer.get_state_id = lambda: state["value"]
+        plugin._spoolmanager = types.SimpleNamespace(
+            available=lambda: (_ for _ in ()).throw(
+                AssertionError("provider must not be queried while pausing")
+            )
+        )
+        resumed = []
+        plugin._defer = lambda callback, *args: resumed.append((callback, args))
+
+        plugin._sync_spoolmanager(True, True)
+
+        self.assertEqual((True, True), plugin._spool_sync_pending)
+        self.assertEqual(
+            "synchronization deferred until print is idle",
+            plugin._state["spoolmanager"]["status"],
+        )
+
+        state["value"] = "OPERATIONAL"
+        plugin._resume_background_queries()
+        self.assertIsNone(plugin._spool_sync_pending)
+        self.assertEqual((plugin._sync_spoolmanager, (True, True)), resumed[-1])
+
     def test_mmu_loadout_expands_early_single_tool_profile_to_five(self):
         class ProfileManager(object):
             def __init__(self):

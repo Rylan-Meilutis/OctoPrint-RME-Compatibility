@@ -69,6 +69,8 @@ $(function () {
         });
         self.providerSyncNotice = null;
         self.providerSyncNoticeKey = "";
+        self.toolmapNotice = null;
+        self.toolmapNoticeKey = "";
         self.lightSnapshotKey = "";
         self.persistentLightProfiles = [
             makeLightProfile("screen", "Screen", 20, 20, 100, 60),
@@ -417,10 +419,12 @@ $(function () {
             return self.workflow().workflow === "mmu" && self.workflowVisible();
         });
         self.navbarMmuActionable = ko.pureComputed(function () {
-            return self.navbarMmuActive() && self.hasFirmwarePrompt();
+            return self.hasToolmapPrompt() ||
+                (self.navbarMmuActive() && self.hasFirmwarePrompt());
         });
         self.navbarModeText = ko.pureComputed(function () {
             if (self.transportRecoveryRequired()) return "Printer reboot required";
+            if (self.hasToolmapPrompt()) return "Tool mapping required";
             if (self.navbarTransferActive()) return self.navbarTransfer().title;
             if (!self.state().supported) return "RME Compatibility";
             return self.mmuDetected() ? "RME MMU" : "RME multi-tool";
@@ -438,6 +442,7 @@ $(function () {
         });
         self.navbarCompactText = ko.pureComputed(function () {
             if (self.transportRecoveryRequired()) return "Reboot printer";
+            if (self.hasToolmapPrompt()) return "Map tools to continue";
             if (self.navbarTransferActive()) {
                 // Keep the percentage in its own non-shrinking navbar badge.
                 // The descriptive label may ellipsize on narrow windows.
@@ -462,6 +467,9 @@ $(function () {
             if (self.transportRecoveryRequired()) {
                 return "Printer reboot required; no RME commands will be sent";
             }
+            if (self.hasToolmapPrompt()) {
+                return "Print is waiting for tool mapping confirmation";
+            }
             if (self.navbarTransferActive()) {
                 return self.navbarTransfer().summary + " · " + self.navbarTransfer().detail;
             }
@@ -471,6 +479,7 @@ $(function () {
         });
         self.navbarIconClass = ko.pureComputed(function () {
             if (self.transportRecoveryRequired()) return "fa-exclamation-triangle";
+            if (self.hasToolmapPrompt()) return "fa-exclamation-triangle";
             if (self.navbarTransferActive()) return self.navbarTransfer().icon;
             return self.mmuDetected() ? "fa-random" : "fa-tools";
         });
@@ -619,6 +628,24 @@ $(function () {
                 });
             }
         };
+        self.updateToolmapNotice = function (prompt) {
+            var key = prompt && prompt.kind === "toolmap" ?
+                [prompt.updated, prompt.filename, prompt.count].join(":") : "";
+            if (key === self.toolmapNoticeKey) return;
+            if (self.toolmapNotice && typeof self.toolmapNotice.remove === "function") {
+                self.toolmapNotice.remove();
+            }
+            self.toolmapNotice = null;
+            self.toolmapNoticeKey = key;
+            if (key) {
+                self.toolmapNotice = new PNotify({
+                    title: "Tool mapping required",
+                    text: "The print is waiting. Use the RME top-bar menu to continue with the current mapping or open the RME tab to review it.",
+                    type: "notice",
+                    hide: false
+                });
+            }
+        };
         self.acceptState = function (value) {
             if (!value) return;
             var oldPrompt = self.state().prompt || {};
@@ -663,6 +690,7 @@ $(function () {
                 value.spoolmanager && value.spoolmanager.pending_provider_sync
             );
             var prompt = value.prompt || {};
+            self.updateToolmapNotice(prompt);
             if (prompt.kind === "toolmap" && (oldPrompt.kind !== "toolmap" || self.mappingRows().length !== prompt.count)) {
                 var count = Number(prompt.count || 0);
                 var options = [];

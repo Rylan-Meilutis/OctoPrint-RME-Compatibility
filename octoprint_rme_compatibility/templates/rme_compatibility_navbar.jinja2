@@ -27,7 +27,11 @@
     </li>
     <li class="rme-navbar-actions" data-bind="visible: navbarMmuActionable">
         <strong data-bind="text: promptMessage"></strong>
-        <div data-bind="foreach: promptActions">
+        <div data-bind="visible: hasToolmapPrompt">
+            <button class="btn btn-mini btn-primary" data-bind="click: showRmeTab">Review mapping</button>
+            <button class="btn btn-mini" data-bind="click: resetToolmap">Use current mapping</button>
+        </div>
+        <div data-bind="visible: !hasToolmapPrompt(), foreach: promptActions">
             <button class="btn btn-mini" data-bind="text: $data, click: $parent.respond"></button>
         </div>
     </li>

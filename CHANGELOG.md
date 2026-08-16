@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.0b56 — 2026-08-16
+
+- Do not acquire the multi-tool mapping hold for provably inert, comment-only
+  text G-code jobs such as Continuous Print's
+  `ContinuousPrint/tmp/continuousprint_start_print.gcode` control file.
+- Keep inaccessible, unfamiliar, executable, and binary jobs conservatively
+  protected by the mapping preflight.
+- Make legitimate mapping holds visible immediately through a persistent
+  browser notification and actionable RME top-bar controls instead of leaving
+  OctoPrint apparently stuck in `Starting`.
+- Treat transitional OctoPrint states as exclusive serial-queue ownership and
+  defer provider/filament configuration writes until the job is fully idle.
+  This prevents Continuous Print's immediate pause from interleaving a full
+  synchronization batch with numbered job lines and wedging firmware resends.
+- Add regressions for both inert Continuous Print control jobs and executable
+  multi-tool G-code, plus the `Pausing` synchronization latch.
+
 ## 0.1.0b55 — 2026-08-16
 
 - Correct Core One+ MMU printer profiles when the connection-time machine
