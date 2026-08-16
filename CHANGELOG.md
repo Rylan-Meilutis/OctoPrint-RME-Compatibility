@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0b53 — 2026-08-16
+
+- Validate the same FIFO-safe 512-byte, three-frame binary upload contract on
+  both maintained Buddy RME firmware lines, 6.6.3 and 6.8.1.
+- Replace stale literal transport assertions with checks against the firmware's
+  authoritative shared constants, so future capability drift fails the
+  cross-repository host suite.
+- Revalidate all 103 plugin tests, including fragmented serial transfer,
+  cumulative acknowledgements, recovery, abort, durable resume, fallback,
+  atomic publication, and firmware selection.
+
 ## 0.1.0b52 — 2026-08-16
 
 - Align the fragmented serial firmware peer with Buddy RME 6.8.1's safe

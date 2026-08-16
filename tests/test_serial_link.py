@@ -1009,13 +1009,16 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
             except (OSError, subprocess.CalledProcessError):
                 self.skipTest("firmware ref %s unavailable" % ref)
 
-        refs = ("origin/rme-v6.6.3", "v6.8.1-RME")
+        refs = ("rme-v6.6.3", "v6.8.1-RME")
         protocols = []
         integrations = []
         for ref in refs:
             with self.subTest(ref=ref):
                 file_service = ref_file(
                     ref, "src/marlin_stubs/rme_file_service.cpp"
+                )
+                transfer_contract = ref_file(
+                    ref, "src/common/rme_file_transfer.hpp"
                 )
                 protocols.append(ref_file(
                     ref, "doc/rme_serial_remote_protocol.md"
@@ -1029,12 +1032,25 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
                 self.assertIn("metadata_temp_path", file_service)
                 self.assertIn("durable_resume=1", file_service)
                 self.assertIn("shared_transfer_latch=1", file_service)
-                self.assertRegex(
-                    file_service, r"binary_chunk_size\s*=\s*1024\s*;"
+                self.assertIn(
+                    "binary_chunk_size = "
+                    "rme_file_transfer::binary_payload_size",
+                    file_service,
+                )
+                self.assertIn(
+                    "binary_window_size = "
+                    "rme_file_transfer::binary_window_size",
+                    file_service,
                 )
                 self.assertRegex(
-                    file_service, r"binary_window_size\s*=\s*8\s*;"
+                    transfer_contract,
+                    r"binary_payload_size\s*=\s*512\s*;",
                 )
+                self.assertRegex(
+                    transfer_contract,
+                    r"binary_window_size\s*=\s*3\s*;",
+                )
+                self.assertIn("binary_receive_backlog", transfer_contract)
 
         self.assertEqual(protocols[0], protocols[1])
         self.assertEqual(integrations[0], integrations[1])
