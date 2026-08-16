@@ -116,6 +116,7 @@ class RmeCompatibilityPlugin(
         self._toolmap_hold_active = False
         self._toolmap_timer_generation = 0
         self._preflight_gate_started = False
+        self._toolmap_preflight_decision = None
         self._print_job_gcode_sent = False
         self._skip_cancel_script = False
         self._stats_supported = None
@@ -919,6 +920,8 @@ class RmeCompatibilityPlugin(
                 self._suppressed_refresh_transactions.clear()
                 self._provider_firmware_signature = None
                 self._transfer_conflict_cancel = False
+                self._preflight_gate_started = False
+                self._toolmap_preflight_decision = None
             self._publish()
             if recovery_required:
                 self._logger.warning(
@@ -991,6 +994,8 @@ class RmeCompatibilityPlugin(
                 self._priority_controls_sent.clear()
                 self._firmware_completed_controls.clear()
                 self._transfer_conflict_cancel = False
+                self._preflight_gate_started = False
+                self._toolmap_preflight_decision = None
                 workflow = self._state.get("workflow") or {}
                 if workflow.get("workflow") in EXTRUSION_FAULT_WORKFLOWS:
                     self._state["workflow"] = None
@@ -1204,9 +1209,10 @@ class RmeCompatibilityPlugin(
                 return None
             with self._state_lock:
                 self._preflight_gate_started = True
+                self._toolmap_preflight_decision = None
                 self._print_job_gcode_sent = False
                 self._skip_cancel_script = False
-            self._prepare_toolmap_prompt()
+            self._prepare_toolmap_prompt(record_preflight=True)
         elif script_type == "gcode" and script_name == "afterPrintCancelled":
             with self._state_lock:
                 if self._preflight_gate_started and not self._print_job_gcode_sent:
@@ -2084,7 +2090,7 @@ class RmeCompatibilityPlugin(
 
     def _handle_print_started(self, payload):
         """Backstop older connectors and enrich the pre-start prompt payload."""
-        self._prepare_toolmap_prompt(payload)
+        self._prepare_toolmap_prompt(payload, reuse_preflight=True)
 
     def _selected_job_has_executable_gcode(self):
         """Return false only when the selected text job is provably inert.
@@ -2135,15 +2141,32 @@ class RmeCompatibilityPlugin(
             )
             return True
 
-    def _prepare_toolmap_prompt(self, payload=None):
+    def _prepare_toolmap_prompt(
+        self, payload=None, record_preflight=False, reuse_preflight=False
+    ):
         """Hold a multi-tool local job before any of its queued G-code is sent."""
         with self._state_lock:
             supported = self._state["supported"]
             count = int(self._state.get("machine", {}).get("logical_tools", 0))
             current_toolmap = copy.deepcopy(self._state.get("toolmap") or {})
+            preflight_started = self._preflight_gate_started
+            preflight_decision = self._toolmap_preflight_decision
         if not supported or count <= 1:
             return
-        if not self._selected_job_has_executable_gcode():
+
+        # ``beforePrintStarted`` is the authoritative synchronous boundary.
+        # By the time OctoPrint dispatches PrintStarted asynchronously, another
+        # plugin may have replaced or cleared the selected control job. Reuse
+        # the inspected decision instead of conservatively turning an explicit
+        # opt-out (or inert Continuous Print helper) back into a mapping hold.
+        if reuse_preflight and preflight_started and preflight_decision is not None:
+            has_executable_gcode = preflight_decision
+        else:
+            has_executable_gcode = self._selected_job_has_executable_gcode()
+            if record_preflight:
+                with self._state_lock:
+                    self._toolmap_preflight_decision = has_executable_gcode
+        if not has_executable_gcode:
             return
         configured = current_toolmap.get("mapping") or self._settings.get(
             ["default_toolmap"], merged=True

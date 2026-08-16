@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0b59 — 2026-08-16
+
+- Latch the synchronous `beforePrintStarted` tool-mapping decision through
+  OctoPrint's later asynchronous `PrintStarted` event, so a selected job that
+  changes or disappears during startup cannot undo `; skip-rme-toolmapping`,
+  `; skip-rme-spoolmapping`, or the inert-control-job exemption.
+- Keep `PrintStarted` as a compatibility backstop when an OctoPrint connector
+  does not invoke the synchronous script hook.
+- Add a regression that reproduces the selected-job race between both start
+  callbacks.
+
 ## 0.1.0b58 — 2026-08-16
 
 - Allow an executable G-code file to bypass the RME tool-mapping preflight with

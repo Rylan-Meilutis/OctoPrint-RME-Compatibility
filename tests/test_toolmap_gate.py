@@ -235,6 +235,63 @@ class ToolmapGateTests(unittest.TestCase):
                 self.assertEqual([], plugin._printer.holds)
                 self.assertIsNone(plugin._state["prompt"])
 
+    def test_print_started_reuses_synchronous_skip_decision_after_job_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_path = os.path.join(directory, "opted-out.gcode")
+            with open(job_path, "w", encoding="utf-8") as job_file:
+                job_file.write("; skip-rme-spoolmapping\nG28\n")
+
+            plugin = RmeCompatibilityPlugin()
+            plugin._settings = _Settings()
+            plugin._printer = _Printer()
+            selected_jobs = iter((
+                {"job": {"file": {"origin": "local", "path": "opted-out.gcode"}}},
+                {"job": {"file": {}}},
+            ))
+            plugin._printer.get_current_data = lambda: next(selected_jobs)
+            plugin._file_manager = types.SimpleNamespace(
+                path_on_disk=lambda origin, path: job_path
+            )
+            plugin._logger = logging.getLogger("rme-toolmap-opt-out-race-test")
+            plugin._state.update(supported=True, machine={"logical_tools": 5})
+
+            plugin.gcode_script_hook(None, "gcode", "beforePrintStarted")
+            plugin.on_event("PrintStarted", {"name": "opted-out.gcode"})
+
+            self.assertEqual([], plugin._printer.holds)
+            self.assertIsNone(plugin._state["prompt"])
+            # A second inspection would consume the missing-job value and
+            # conservatively reacquire the mapping hold.
+            self.assertEqual({"job": {"file": {}}}, next(selected_jobs))
+
+    def test_print_started_without_script_preflight_still_checks_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_path = os.path.join(directory, "real.gcode")
+            with open(job_path, "w", encoding="utf-8") as job_file:
+                job_file.write("G28\n")
+
+            plugin = RmeCompatibilityPlugin()
+            plugin._settings = _Settings()
+            plugin._printer = _Printer()
+            plugin._printer.get_current_data = lambda: {
+                "job": {"file": {"origin": "local", "path": "real.gcode"}}
+            }
+            plugin._file_manager = types.SimpleNamespace(
+                path_on_disk=lambda origin, path: job_path
+            )
+            plugin._logger = logging.getLogger("rme-toolmap-event-backstop-test")
+            plugin._identifier = "rme_compatibility"
+            plugin._plugin_manager = types.SimpleNamespace(
+                plugins={}, send_plugin_message=lambda *args: None,
+            )
+            plugin._state.update(supported=True, machine={"logical_tools": 5})
+            plugin._defer = lambda callback, *args: None
+
+            plugin.on_event("PrintStarted", {"name": "real.gcode"})
+
+            self.assertEqual([True], plugin._printer.holds)
+            self.assertEqual("toolmap", plugin._state["prompt"]["kind"])
+
     def test_toolmap_skip_marker_after_first_command_does_not_bypass_hold(self):
         with tempfile.TemporaryDirectory() as directory:
             job_path = os.path.join(directory, "late-marker.gcode")
