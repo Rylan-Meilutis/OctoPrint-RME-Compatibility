@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0b63 — 2026-08-16
+
+- Promote legacy-only RME action notifications such as `Heating hotend 15%`
+  into transient structured workflow state before suppressing their duplicate
+  OctoPrint notification-history entries.
+- Overlay that phase and percentage on the Dashboard plugin's normal GCode
+  progress gauge in both bar and circle layouts. The underlying print
+  completion value is left intact and returns unobscured when the RME phase
+  completes or its legacy status lease expires.
+- Continue rendering the core State-panel workflow strip as a fallback when
+  the third-party Dashboard plugin is not installed.
+
 ## 0.1.0b62 — 2026-08-16
 
 - Suppress legacy `//action:notification` mirrors while a structured RME

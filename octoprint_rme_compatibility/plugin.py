@@ -1020,6 +1020,13 @@ class RmeCompatibilityPlugin(
                 structured_rme_events
                 and not self._settings.get_boolean(["legacy_notifications"])
             ):
+                message = re.sub(
+                    r"^\s*//\s*action:\s*notification\s*",
+                    "",
+                    normalized_line,
+                    flags=re.IGNORECASE,
+                ).strip()
+                self._accept_legacy_workflow_notification(message)
                 # Current RME firmware mirrors workflow/progress events through
                 # legacy Marlin notifications on some paths even after a
                 # legacy=0 session opens. Returning None from the receive hook
@@ -1065,6 +1072,55 @@ class RmeCompatibilityPlugin(
             if record.get("record") == "upload_error" and line.strip().startswith("Error:"):
                 return "echo:" + line.strip()[len("Error:") :].lstrip()
         return line
+
+    def _accept_legacy_workflow_notification(self, message):
+        """Promote a legacy firmware notice into transient workflow state.
+
+        A few current Buddy paths emit only ``//action:notification`` even
+        though an RME session requested structured events. Consuming those
+        lines without first promoting them would remove the only progress
+        signal available to the browser.
+        """
+        message = str(message or "").strip()
+        if not message:
+            return
+        progress_match = re.search(r"(?:^|\s)(\d{1,3})%\s*$", message)
+        progress = None
+        if progress_match:
+            progress = max(0, min(100, int(progress_match.group(1))))
+        now = int(time.time())
+        candidate = {"workflow": "printer", "message": message}
+        workflow = classify_workflow(candidate)
+        with self._state_lock:
+            previous = self._state.get("workflow") or {}
+            if (
+                previous.get("seq") is not None
+                and not previous.get("legacy_expires_at")
+                and now - int(previous.get("received_at", 0)) <= 5
+            ):
+                # A current structured RME_EVENT carries more state than its
+                # legacy notification mirror and remains authoritative.
+                return
+            phase_started = (
+                previous.get("phase_started_at", now)
+                if previous.get("workflow") == workflow else now
+            )
+            promoted = {
+                "record": "event",
+                "type": "progress" if progress is not None else "status",
+                "workflow": workflow,
+                "state": "active",
+                "message": message,
+                "received_at": now,
+                "phase_started_at": phase_started,
+                # Do not let a one-shot Homing/status notice remain forever.
+                # Repeated heater percentages renew this short lease.
+                "legacy_expires_at": now + 15,
+            }
+            if progress is not None:
+                promoted["progress"] = progress
+            self._state["workflow"] = promoted
+        self._schedule_publish()
 
     def action_command_hook(self, comm_instance, line, action, *args, **kwargs):
         """Remember firmware-completed pause states to avoid echoing them back.

@@ -6,6 +6,7 @@ import queue
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 
@@ -748,12 +749,27 @@ class ToolmapGateTests(unittest.TestCase):
     def test_structured_session_suppresses_legacy_progress_notifications(self):
         plugin = RmeCompatibilityPlugin()
         plugin._settings = _Settings()
+        plugin._schedule_publish = lambda: None
         plugin._state.update(supported=True)
         plugin._state["session"]["active"] = True
 
         self.assertIsNone(plugin.gcode_received_hook(
             None, "//action:notification Heating hotend 15%"
         ))
+        self.assertEqual("heating", plugin._state["workflow"]["workflow"])
+        self.assertEqual(15, plugin._state["workflow"]["progress"])
+        self.assertEqual("active", plugin._state["workflow"]["state"])
+        self.assertGreater(plugin._state["workflow"]["legacy_expires_at"], 0)
+
+        plugin._state["workflow"] = {
+            "record": "event", "seq": 9, "workflow": "probing",
+            "state": "active", "message": "Structured probe",
+            "received_at": int(time.time()),
+        }
+        self.assertIsNone(plugin.gcode_received_hook(
+            None, "//action:notification Heating hotend 16%"
+        ))
+        self.assertEqual("probing", plugin._state["workflow"]["workflow"])
         self.assertEqual(
             "//action:pause",
             plugin.gcode_received_hook(None, "//action:pause"),
@@ -1086,6 +1102,8 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("OctoPrint.postForm", javascript)
         self.assertIn('request.upload.addEventListener("progress"', javascript)
         self.assertIn("scheduleCoreWorkflowRender", javascript)
+        self.assertIn("renderDashboardWorkflow", javascript)
+        self.assertIn("rme-dashboard-workflow-gauge", javascript)
         self.assertIn("self.navbarTransfer = ko.pureComputed", javascript)
         self.assertIn("Firmware → printer", javascript)
         self.assertIn("Printer → Pi", javascript)

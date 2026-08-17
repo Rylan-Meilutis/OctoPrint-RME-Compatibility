@@ -162,6 +162,33 @@
     white-space: normal;
 }
 
+#tab_plugin_dashboard .rme-dashboard-workflow-active > svg .dashboardGauge:not(.rme-dashboard-workflow-gauge) {
+    opacity: .2;
+}
+
+#tab_plugin_dashboard .rme-dashboard-workflow-gauge {
+    stroke: #f5a623;
+    transition: stroke-dashoffset .25s linear;
+}
+
+#tab_plugin_dashboard .rme-dashboard-workflow-caption {
+    color: #f5a623;
+    font-size: 11px;
+    font-weight: bold;
+    line-height: 14px;
+    margin-top: 2px;
+    overflow-wrap: anywhere;
+}
+
+#tab_plugin_dashboard .rme-dashboard-workflow-indeterminate .rme-dashboard-workflow-gauge {
+    animation: rme-dashboard-dash 1.2s linear infinite;
+    stroke-dasharray: 70 269.292;
+}
+
+@keyframes rme-dashboard-dash {
+    to { stroke-dashoffset: -339.292; }
+}
+
 @keyframes rme-pulse {
     0%, 100% { opacity: .35; }
     50% { opacity: 1; }

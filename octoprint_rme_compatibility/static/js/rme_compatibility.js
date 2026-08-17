@@ -143,10 +143,12 @@ $(function () {
         };
         self.workflow = ko.pureComputed(function () { return self.state().workflow || {}; });
         self.workflowVisible = ko.pureComputed(function () {
+            self.tick();
             var workflow = self.workflow();
             var state = String(workflow.state || "").toLowerCase();
             var terminal = ["canceled", "cancelled", "closed", "complete", "completed", "idle", "skipped", "stopped"];
             if (!workflow.workflow || terminal.indexOf(state) >= 0) return false;
+            if (Number(workflow.legacy_expires_at || 0) && Date.now() / 1000 > Number(workflow.legacy_expires_at)) return false;
             return !(workflow.workflow === "chamber_vent" && state === "open" && Number(workflow.progress) >= 100);
         });
         self.workflowTitle = ko.pureComputed(function () {
@@ -1298,6 +1300,7 @@ $(function () {
             var strip = $("#rme-workflow-strip");
             var toolIndicator = $("#rme-active-tool-indicator");
             updateCorePrintTiming(active);
+            renderDashboardWorkflow(active, workflow);
             if (!target.length) return;
             if (!strip.length) {
                 strip = $('<div id="rme-workflow-strip"><div class="rme-strip-bar"></div><div class="rme-strip-label"></div></div>');
@@ -1325,6 +1328,48 @@ $(function () {
             if (determinate) label += " · " + progress + "%";
             if (elapsed) label += " · " + elapsed;
             strip.find(".rme-strip-label").text(label).attr("title", label);
+        }
+
+        function renderDashboardWorkflow(active, workflow) {
+            var root = $("#tab_plugin_dashboard");
+            if (!root.length) return;
+            var bar = root.find(".dashboardProgressBar").filter(function () {
+                return $(this).find("[title='GCode Progress']").length > 0;
+            }).first();
+            var circle = root.find(".dashboardProgressContainer").filter(function () {
+                return $(this).find("circle[data-bind*='printerStateModel.progressString']").length > 0;
+            }).first();
+            var targets = bar.add(circle);
+            if (!active) {
+                targets.removeClass("rme-dashboard-workflow-active rme-dashboard-workflow-indeterminate");
+                targets.find(".rme-dashboard-workflow-gauge, .rme-dashboard-workflow-caption").remove();
+                return;
+            }
+            var progress = Number(self.workflowProgress());
+            var determinate = isFinite(progress);
+            var bounded = determinate ? Math.max(0, Math.min(100, progress)) : 50;
+            var offset = 339.292 * (1 - bounded / 100);
+            var label = self.workflowTitle() + " — " + (workflow.message || self.workflowState());
+            if (determinate) label += " · " + Math.round(bounded) + "%";
+            targets.each(function () {
+                var target = $(this);
+                target.addClass("rme-dashboard-workflow-active")
+                    .toggleClass("rme-dashboard-workflow-indeterminate", !determinate);
+                var gauge = target.find(".rme-dashboard-workflow-gauge");
+                if (!gauge.length) {
+                    var source = target.find("path.dashboardGauge, circle.dashboardGauge").first();
+                    if (source.length) {
+                        gauge = source.clone(false)
+                            .removeAttr("data-bind")
+                            .addClass("rme-dashboard-workflow-gauge")
+                            .appendTo(source.parent());
+                    }
+                }
+                gauge.attr("stroke-dashoffset", offset);
+                var caption = target.find(".rme-dashboard-workflow-caption");
+                if (!caption.length) caption = $('<div class="rme-dashboard-workflow-caption"></div>').appendTo(target);
+                caption.text(label).attr("title", label);
+            });
         }
 
         function updateCorePrintTiming(activeWorkflow) {
