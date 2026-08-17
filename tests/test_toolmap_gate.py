@@ -1,5 +1,6 @@
 import ast
 import hashlib
+import importlib.machinery
 import logging
 import os
 import queue
@@ -39,6 +40,7 @@ def _install_octoprint_stubs():
 
     plugin_module.BlueprintPlugin = BlueprintPlugin
     octoprint = types.ModuleType("octoprint")
+    octoprint.__spec__ = importlib.machinery.ModuleSpec("octoprint", loader=None)
     octoprint.plugin = plugin_module
     sys.modules["octoprint"] = octoprint
     sys.modules["octoprint.plugin"] = plugin_module
@@ -136,9 +138,11 @@ class _Printer(object):
 class _Validator(object):
     def __init__(self):
         self.mapping = None
+        self.mapping_calls = []
 
     def set_tool_mapping(self, mapping):
         self.mapping = mapping
+        self.mapping_calls.append(mapping)
 
 
 class _Comm(object):
@@ -1398,6 +1402,26 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIsNone(plugin._state["prompt"])
         self.assertEqual("@RME TOOLMAP SET logical=0 physical=1",
                          plugin._printer.command_batches[0][0])
+
+    def test_validator_mapping_publication_is_idempotent_but_survives_reload(self):
+        plugin = RmeCompatibilityPlugin()
+        first_validator = _Validator()
+        info = types.SimpleNamespace(implementation=first_validator)
+        plugin._plugin_manager = types.SimpleNamespace(
+            plugins={"Nozzle_Filament_Validator": info},
+        )
+
+        self.assertTrue(plugin._configure_validator_mapping({0: 1, 1: 0}))
+        self.assertFalse(plugin._configure_validator_mapping({1: 0, 0: 1}))
+        self.assertEqual([{0: 1, 1: 0}], first_validator.mapping_calls)
+
+        self.assertTrue(plugin._configure_validator_mapping({0: 0, 1: 1}))
+        self.assertEqual(2, len(first_validator.mapping_calls))
+
+        replacement_validator = _Validator()
+        info.implementation = replacement_validator
+        self.assertTrue(plugin._configure_validator_mapping({0: 0, 1: 1}))
+        self.assertEqual([{0: 0, 1: 1}], replacement_validator.mapping_calls)
 
     def test_untouched_timeout_keeps_current_mapping_without_sending_commands(self):
         plugin = RmeCompatibilityPlugin()

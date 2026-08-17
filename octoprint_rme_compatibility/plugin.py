@@ -115,6 +115,9 @@ class RmeCompatibilityPlugin(
         self._expected_spoolman_event_until = 0
         self._toolmap_hold_active = False
         self._toolmap_timer_generation = 0
+        self._validator_mapping_lock = threading.Lock()
+        self._validator_mapping_implementation = None
+        self._validator_mapping_signature = None
         self._preflight_gate_started = False
         self._toolmap_preflight_decision = None
         self._print_job_gcode_sent = False
@@ -2372,11 +2375,28 @@ class RmeCompatibilityPlugin(
         implementation = getattr(info, "implementation", None) if info else None
         setter = getattr(implementation, "set_tool_mapping", None)
         if callable(setter):
-            setter({int(logical): int(physical) for logical, physical in mapping.items()})
+            normalized = {
+                int(logical): int(physical) for logical, physical in mapping.items()
+            }
+            signature = tuple(sorted(normalized.items()))
+            with self._validator_mapping_lock:
+                if (
+                    implementation is self._validator_mapping_implementation
+                    and signature == self._validator_mapping_signature
+                ):
+                    return False
+                setter(normalized)
+                self._validator_mapping_implementation = implementation
+                self._validator_mapping_signature = signature
+            return True
         elif implementation is not None:
             self._logger.warning(
                 "Nozzle Filament Validator does not expose remapped-tool validation support"
             )
+        with self._validator_mapping_lock:
+            self._validator_mapping_implementation = None
+            self._validator_mapping_signature = None
+        return False
 
     def _pause_toolmap_timeout(self):
         """Permanently pause this prompt's expiry after the first interaction."""
