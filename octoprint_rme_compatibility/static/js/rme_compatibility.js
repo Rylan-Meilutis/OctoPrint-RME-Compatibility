@@ -22,7 +22,6 @@ $(function () {
             return !!((self.state().firmware || {}).recovery_required);
         });
         self.tick = ko.observable(Date.now());
-        self.coreTiming = null;
         self.pendingUpload = ko.observable(null);
         self.piUploadActive = ko.observable(false);
         self.piUploadProgress = ko.observable(0);
@@ -1082,7 +1081,9 @@ $(function () {
             OctoPrint.simpleApiGet("rme_compatibility").done(self.acceptState);
             window.setInterval(function () {
                 self.tick(Date.now());
-                if (self.workflowVisible()) scheduleCoreWorkflowRender();
+                if (self.workflowVisible() || $("#rme-workflow-overlay, .rme-dashboard-workflow-active").length) {
+                    scheduleCoreWorkflowRender();
+                }
             }, 1000);
         };
         self.onSettingsShown = function () {
@@ -1297,18 +1298,17 @@ $(function () {
             var workflow = state.workflow || {};
             var active = self.workflowVisible();
             var target = $("#state .progress").first();
-            var strip = $("#rme-workflow-strip");
+            var overlay = target.find("#rme-workflow-overlay");
             var toolIndicator = $("#rme-active-tool-indicator");
-            updateCorePrintTiming(active);
             renderDashboardWorkflow(active, workflow);
             if (!target.length) return;
-            if (!strip.length) {
-                strip = $('<div id="rme-workflow-strip"><div class="rme-strip-bar"></div><div class="rme-strip-label"></div></div>');
-                target.after(strip);
-            }
+            // Remove the separate workflow bar created by older plugin builds.
+            // RME phases now temporarily occupy the normal OctoPrint progress
+            // bar so there is only one progress display to follow.
+            $("#rme-workflow-strip").remove();
             if (!toolIndicator.length) {
                 toolIndicator = $('<div id="rme-active-tool-indicator"><span class="rme-color-dot"></span><span class="rme-active-tool-label"></span></div>');
-                strip.after(toolIndicator);
+                target.after(toolIndicator);
             }
             toolIndicator.toggle(self.activeToolVisible());
             if (self.activeToolVisible()) {
@@ -1316,18 +1316,25 @@ $(function () {
                 toolIndicator.find(".rme-active-tool-label").text(self.activeToolText());
                 toolIndicator.attr("title", self.activeToolText());
             }
-            strip.toggle(active);
-            if (!active) return;
+            if (!active) {
+                target.removeClass("rme-workflow-active rme-workflow-indeterminate");
+                overlay.remove();
+                return;
+            }
+            if (!overlay.length) {
+                overlay = $('<div id="rme-workflow-overlay"><div class="rme-workflow-bar"></div><div class="rme-workflow-label"></div></div>');
+                target.append(overlay);
+            }
             var progress = Number(workflow.progress);
             var determinate = isFinite(progress);
-            strip.toggleClass("rme-indeterminate", !determinate);
-            strip.find(".rme-strip-bar").css("width", determinate ? Math.max(0, Math.min(100, progress)) + "%" : "100%");
+            target.addClass("rme-workflow-active").toggleClass("rme-workflow-indeterminate", !determinate);
+            overlay.find(".rme-workflow-bar").css("width", determinate ? Math.max(0, Math.min(100, progress)) + "%" : "100%");
             var started = Number(workflow.phase_started_at || workflow.received_at || 0) * 1000;
             var elapsed = started ? formatDuration(Math.max(0, Math.floor((Date.now() - started) / 1000))) : "";
             var label = self.workflowTitle() + " — " + (workflow.message || self.workflowState());
             if (determinate) label += " · " + progress + "%";
             if (elapsed) label += " · " + elapsed;
-            strip.find(".rme-strip-label").text(label).attr("title", label);
+            overlay.find(".rme-workflow-label").text(label).attr("title", label);
         }
 
         function renderDashboardWorkflow(active, workflow) {
@@ -1372,38 +1379,6 @@ $(function () {
             });
         }
 
-        function updateCorePrintTiming(activeWorkflow) {
-            var printing = ko.unwrap(self.printerState.isPrinting) || ko.unwrap(self.printerState.isPausing);
-            var reportedTime = Number(ko.unwrap(self.printerState.printTime));
-            if (!activeWorkflow || !printing || !isFinite(reportedTime)) {
-                self.coreTiming = null;
-                return;
-            }
-            var now = Date.now();
-            if (!self.coreTiming) {
-                self.coreTiming = {
-                    at: now,
-                    printTime: reportedTime,
-                    printTimeLeft: Number(ko.unwrap(self.printerState.printTimeLeft))
-                };
-            }
-            var expected = self.coreTiming.printTime + (now - self.coreTiming.at) / 1000;
-            // A newer server value supersedes our local interpolation. A stale
-            // value caused by the blocked command never moves the display back.
-            if (reportedTime > expected + 0.5) {
-                self.coreTiming.at = now;
-                self.coreTiming.printTime = reportedTime;
-                self.coreTiming.printTimeLeft = Number(ko.unwrap(self.printerState.printTimeLeft));
-                expected = reportedTime;
-            }
-            self.printerState.printTime(expected);
-            if (isFinite(self.coreTiming.printTimeLeft)) {
-                self.printerState.printTimeLeft(Math.max(
-                    0,
-                    self.coreTiming.printTimeLeft - (now - self.coreTiming.at) / 1000
-                ));
-            }
-        }
     }
 
     function formatDuration(seconds) {

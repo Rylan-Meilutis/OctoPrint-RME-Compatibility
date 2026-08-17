@@ -125,16 +125,25 @@
     padding: 4px 7px;
 }
 
-#rme-workflow-strip {
-    background: rgba(0, 0, 0, 0.07);
-    border-radius: 0 0 4px 4px;
-    box-sizing: border-box;
-    min-height: 24px;
-    overflow: hidden;
+#state .progress.rme-workflow-active {
     position: relative;
 }
 
-#rme-workflow-strip .rme-strip-bar {
+#state .progress.rme-workflow-active > :not(#rme-workflow-overlay) {
+    visibility: hidden;
+}
+
+#rme-workflow-overlay {
+    background: rgba(0, 0, 0, 0.07);
+    border-radius: inherit;
+    box-sizing: border-box;
+    inset: 0;
+    overflow: hidden;
+    position: absolute;
+    z-index: 4;
+}
+
+#rme-workflow-overlay .rme-workflow-bar {
     background: #2f96b4;
     bottom: 0;
     left: 0;
@@ -144,26 +153,27 @@
     transition: width .25s linear;
 }
 
-#rme-workflow-strip.rme-indeterminate .rme-strip-bar {
+#state .progress.rme-workflow-indeterminate #rme-workflow-overlay .rme-workflow-bar {
     animation: rme-pulse 1.4s ease-in-out infinite;
     width: 100% !important;
 }
 
-#rme-workflow-strip .rme-strip-label {
+#rme-workflow-overlay .rme-workflow-label {
     color: #fff;
     display: block;
     font-size: 11px;
     font-weight: bold;
     line-height: 15px;
-    overflow-wrap: anywhere;
+    overflow: hidden;
     padding: 5px 7px;
     position: relative;
     text-shadow: 0 1px 1px #333;
-    white-space: normal;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 #tab_plugin_dashboard .rme-dashboard-workflow-active > svg .dashboardGauge:not(.rme-dashboard-workflow-gauge) {
-    opacity: .2;
+    opacity: 0;
 }
 
 #tab_plugin_dashboard .rme-dashboard-workflow-gauge {

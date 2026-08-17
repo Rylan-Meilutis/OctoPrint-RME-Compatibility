@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.0b65 — 2026-08-17
+
+- Stop interpolating OctoPrint's core `printTime` and `printTimeLeft`
+  observables from the RME workflow renderer. Core job updates are now the
+  sole timing authority, eliminating rapid switching between stale and actual
+  elapsed time.
+- Render active RME workflow progress inside the normal OctoPrint progress
+  container instead of appending a second bar. The native overall-print bar
+  is restored automatically when the workflow completes or expires; the
+  Dashboard plugin's native gauge is likewise swapped rather than doubled.
+- Suppress and promote all firmware action notifications on a discovered RME
+  printer while legacy notifications are disabled, independent of the
+  transient session lease. Homing, hotend heating, bed heating, heat soak, and
+  future RME phase messages now update workflow progress without filling
+  OctoPrint's notification history.
+- Translate slicer `M976 A` material fields on the serial wire from base names
+  such as `PETG` to the exact firmware-loaded profile alias such as `PET-00L`.
+  The source G-code remains unchanged, while Orca's physical tool, logical MMU
+  slot, and calibration temperature satisfy current firmware's exact-name
+  safety validation.
+
 ## 0.1.0b64 — 2026-08-17
 
 - Deduplicate unchanged logical-to-physical tool mappings before publishing

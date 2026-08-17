@@ -1015,12 +1015,9 @@ class RmeCompatibilityPlugin(
             re.IGNORECASE,
         ):
             with self._state_lock:
-                structured_rme_events = bool(
-                    self._state.get("supported")
-                    and self._state.get("session", {}).get("active")
-                )
+                rme_printer = bool(self._state.get("supported"))
             if (
-                structured_rme_events
+                rme_printer
                 and not self._settings.get_boolean(["legacy_notifications"])
             ):
                 message = re.sub(
@@ -1030,12 +1027,14 @@ class RmeCompatibilityPlugin(
                     flags=re.IGNORECASE,
                 ).strip()
                 self._accept_legacy_workflow_notification(message)
-                # Current RME firmware mirrors workflow/progress events through
-                # legacy Marlin notifications on some paths even after a
-                # legacy=0 session opens. Returning None from the receive hook
-                # prevents OctoPrint's action-command notification plugin from
-                # archiving every progress increment. The structured RME_EVENT
-                # still updates the dashboard workflow bar.
+                # Current RME firmware uses legacy Marlin notifications for
+                # some workflow phases (including homing, heater progress and
+                # heat soak) even when the structured session lease is not
+                # currently active. Once RME support has been discovered,
+                # consume the whole notification channel so OctoPrint's
+                # action-command notification plugin cannot archive each
+                # update. Promotion above keeps the single workflow progress
+                # bar current when no structured RME_EVENT accompanies it.
                 return None
         if re.match(
             r"^echo:\s*invalid extruder\s+-1\s*$",
@@ -1338,6 +1337,16 @@ class RmeCompatibilityPlugin(
         if "rme:priority_control" in tags:
             return self._force_send_rme_control(comm_instance, cmd, gcode)
 
+        # Orca's documented M976 templates describe the sliced polymer using
+        # base names such as PETG. The RME provider bridge may intentionally
+        # assign a richer custom profile alias (for example PET-00L) to that
+        # MMU slot. Current firmware validates the batch manifest against the
+        # assigned name exactly, so translate only the material field while
+        # preserving physical tool, logical slot and slicer temperature.
+        rewritten_m976 = self._rewrite_m976_batch_materials(cmd)
+        if rewritten_m976 != cmd:
+            return (rewritten_m976,)
+
         # OctoPrint has no public hook for replacing its SD file-list backend.
         # Suppress only the native refresh command after positive RME FILE
         # discovery, then repopulate the Files view through the plugin state.
@@ -1361,6 +1370,48 @@ class RmeCompatibilityPlugin(
         # An explicit service command is resent with force=True below; leaving
         # its original copy queued would execute the action twice later.
         return (None,) if command_action else None
+
+    def _rewrite_m976_batch_materials(self, command):
+        command = str(command or "")
+        match = re.match(
+            r"^(\s*M976\s+A\s+)([^;\r\n]*)(.*)$",
+            command,
+            re.IGNORECASE,
+        )
+        if not match:
+            return command
+        with self._state_lock:
+            assigned = {
+                int(item.get("tool")): str(item.get("material") or "").strip()
+                for item in self._state.get("loaded_filaments", [])
+                if item.get("tool") is not None
+            }
+        changed = False
+        manifest = match.group(2)
+        trailing_space = manifest[len(manifest.rstrip()):]
+        rewritten = []
+        for raw_entry in manifest.strip().split(","):
+            fields = raw_entry.strip().split(":")
+            if len(fields) != 4:
+                return command
+            try:
+                logical = int(fields[1])
+            except (TypeError, ValueError):
+                return command
+            material = assigned.get(logical, "")
+            if material and material.lower() not in ("none", "empty", "---"):
+                if fields[2] != material:
+                    fields[2] = material
+                    changed = True
+            rewritten.append(":".join(fields))
+        if not changed:
+            return command
+        result = (
+            match.group(1) + ",".join(rewritten)
+            + trailing_space + match.group(3)
+        )
+        self._logger.info("Translated M976 batch materials to firmware assignments")
+        return result
 
     def gcode_sent_hook(self, comm_instance, phase, cmd, cmd_type, gcode,
                         subcode=None, tags=None, *args, **kwargs):

@@ -789,10 +789,24 @@ class ToolmapGateTests(unittest.TestCase):
 
         plugin._settings.values["legacy_notifications"] = False
         plugin._state["session"]["active"] = False
+        plugin._state["workflow"] = None
+        for message in (
+            "Homing",
+            "Heating hotend 25%",
+            "Heating bed 92%",
+            "Heat soak 40%",
+        ):
+            self.assertIsNone(plugin.gcode_received_hook(
+                None, "//action:notification " + message
+            ))
+            self.assertEqual(message, plugin._state["workflow"]["message"])
+            plugin._state["workflow"] = None
+
+        plugin._state["supported"] = False
         self.assertEqual(
-            "//action:notification Heating hotend 25%",
+            "//action:notification Heating bed 97%",
             plugin.gcode_received_hook(
-                None, "//action:notification Heating hotend 25%"
+                None, "//action:notification Heating bed 97%"
             ),
         )
 
@@ -1108,6 +1122,12 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("scheduleCoreWorkflowRender", javascript)
         self.assertIn("renderDashboardWorkflow", javascript)
         self.assertIn("rme-dashboard-workflow-gauge", javascript)
+        self.assertIn('target.append(overlay)', javascript)
+        self.assertIn('target.removeClass("rme-workflow-active rme-workflow-indeterminate")', javascript)
+        self.assertIn('#rme-workflow-overlay, .rme-dashboard-workflow-active', javascript)
+        self.assertNotIn('target.after(strip)', javascript)
+        self.assertNotIn("self.printerState.printTime(", javascript)
+        self.assertNotIn("self.printerState.printTimeLeft(", javascript)
         self.assertIn("self.navbarTransfer = ko.pureComputed", javascript)
         self.assertIn("Firmware → printer", javascript)
         self.assertIn("Printer → Pi", javascript)
@@ -1951,6 +1971,39 @@ class ToolmapGateTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual([], plugin._printer.forced_commands)
+
+    def test_m976_batch_uses_exact_firmware_material_assignments(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-m976-translation-test")
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["loaded_filaments"] = [
+            {"tool": 0, "material": "PLA-00D"},
+            {"tool": 2, "material": "PET-00L"},
+        ]
+
+        result = plugin.gcode_queuing_hook(
+            None, "queuing", "M976 A 0:2:PETG:255", None, "M976",
+            tags={"source:job"},
+        )
+
+        self.assertEqual(("M976 A 0:2:PET-00L:255",), result)
+        self.assertEqual(
+            ("M976 A 0:0:PLA-00D:215,0:2:PET-00L:255 ; calibrate",),
+            plugin.gcode_queuing_hook(
+                None, "queuing",
+                "M976 A 0:0:PLA:215,0:2:PETG:255 ; calibrate",
+                None, "M976", tags={"source:job"},
+            ),
+        )
+
+    def test_m976_batch_is_untouched_without_an_exact_loaded_assignment(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._state.update(connected=True, supported=True)
+        command = "M976 A 0:2:PETG:255"
+
+        self.assertIsNone(plugin.gcode_queuing_hook(
+            None, "queuing", command, None, "M976", tags={"source:job"},
+        ))
 
     def test_m20_is_replaced_only_after_rme_storage_discovery(self):
         plugin = RmeCompatibilityPlugin()
