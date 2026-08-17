@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0b64 — 2026-08-17
+
+- Deduplicate unchanged logical-to-physical tool mappings before publishing
+  them to Nozzle Filament Validator, preventing repeated mapping callbacks
+  from restarting validation after the user has continued a print.
+- Continue publishing genuinely changed mappings, and republish the current
+  mapping when the validator plugin instance is reloaded.
+- Repair the OctoPrint test stub's module metadata so the documented unittest
+  command exercises the integration suite under Python 3.12.
+
 ## 0.1.0b63 — 2026-08-16
 
 - Promote legacy-only RME action notifications such as `Heating hotend 15%`
