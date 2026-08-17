@@ -248,6 +248,31 @@ class ToolmapGateTests(unittest.TestCase):
                 self.assertEqual([], plugin._printer.holds)
                 self.assertIsNone(plugin._state["prompt"])
 
+    def test_control_prelude_can_precede_toolmap_skip_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_path = os.path.join(directory, "continuous-control.gcode")
+            with open(job_path, "w", encoding="utf-8") as job_file:
+                job_file.write(
+                    "M77\n@pause\n; skip_validation\n; skip-rme-toolmapping\n"
+                )
+
+            plugin = RmeCompatibilityPlugin()
+            plugin._settings = _Settings()
+            plugin._printer = _Printer()
+            plugin._printer.get_current_data = lambda: {
+                "job": {"file": {"origin": "local", "path": "continuous-control.gcode"}}
+            }
+            plugin._file_manager = types.SimpleNamespace(
+                path_on_disk=lambda origin, path: job_path
+            )
+            plugin._logger = logging.getLogger("rme-control-prelude-opt-out-test")
+            plugin._state.update(supported=True, machine={"logical_tools": 5})
+
+            plugin.gcode_script_hook(None, "gcode", "beforePrintStarted")
+
+            self.assertEqual([], plugin._printer.holds)
+            self.assertIsNone(plugin._state["prompt"])
+
     def test_print_started_reuses_synchronous_skip_decision_after_job_changes(self):
         with tempfile.TemporaryDirectory() as directory:
             job_path = os.path.join(directory, "opted-out.gcode")

@@ -2120,8 +2120,11 @@ class RmeCompatibilityPlugin(
         ``beforePrintStarted`` for those files, but they must not acquire the
         multi-tool mapping hold.  A leading standalone
         ``; skip-rme-toolmapping`` (or legacy-friendly ``spoolmapping`` alias)
-        also explicitly opts an executable job out. Unknown, inaccessible, and
-        binary jobs stay gated: skipping is safe only after inspecting text.
+        also explicitly opts an executable job out. Continuous Print may put
+        the marker after its lifecycle-only ``M77`` / ``@pause`` prelude, but
+        a marker after motion, extrusion, or other print G-code is ignored.
+        Unknown, inaccessible, and binary jobs stay gated: skipping is safe
+        only after inspecting text.
         """
         try:
             current = self._printer.get_current_data() or {}
@@ -2133,6 +2136,8 @@ class RmeCompatibilityPlugin(
             if not str(path).lower().endswith((".gcode", ".gco")):
                 return True
             local_path = self._file_manager.path_on_disk(origin, path)
+            safe_control_prelude = {"M77", "@PAUSE"}
+            saw_control_command = False
             with open(local_path, "r", encoding="utf-8", errors="replace") as job_file:
                 for raw_line in job_file:
                     code, separator, comment = raw_line.partition(";")
@@ -2146,10 +2151,16 @@ class RmeCompatibilityPlugin(
                     line = code.strip()
                     if not line or (line.startswith("(") and line.endswith(")")):
                         continue
+                    command = line.split(None, 1)[0].upper()
+                    if command in safe_control_prelude:
+                        saw_control_command = True
+                        continue
                     # Any non-comment content is treated as executable.  This
                     # intentionally favors an unnecessary prompt over letting
                     # an unfamiliar command bypass tool mapping.
                     return True
+            if saw_control_command:
+                return True
             self._logger.info(
                 "Skipping tool mapping for inert control G-code %s", path
             )

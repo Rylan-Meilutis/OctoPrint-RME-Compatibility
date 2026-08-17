@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0b61 — 2026-08-16
+
+- Recognize a standalone `; skip-rme-toolmapping` or
+  `; skip-rme-spoolmapping` marker after Continuous Print's lifecycle-only
+  `M77` / `@pause` prelude. Markers after actual print, motion, extrusion, or
+  unfamiliar G-code remain unable to bypass the tool-mapping hold.
+- Add a regression for the exact `M77`, `@pause`, `; skip_validation`, and RME
+  opt-out control-file layout.
+
 ## 0.1.0b60 — 2026-08-16
 
 - Stop sending the invalid `M865 S"---" L<n>` command for provider tools with
