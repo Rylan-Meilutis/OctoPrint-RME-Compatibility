@@ -1005,8 +1005,48 @@ class RmeCompatibilityPlugin(
 
     def gcode_received_hook(self, comm_instance, line, *args, **kwargs):
         """Observe RME records without blocking or bypassing OctoPrint's queue."""
+        normalized_line = str(line or "").strip()
+        if re.match(
+            r"^\s*//\s*action:\s*notification(?:\s|$)",
+            normalized_line,
+            re.IGNORECASE,
+        ):
+            with self._state_lock:
+                structured_rme_events = bool(
+                    self._state.get("supported")
+                    and self._state.get("session", {}).get("active")
+                )
+            if (
+                structured_rme_events
+                and not self._settings.get_boolean(["legacy_notifications"])
+            ):
+                # Current RME firmware mirrors workflow/progress events through
+                # legacy Marlin notifications on some paths even after a
+                # legacy=0 session opens. Returning None from the receive hook
+                # prevents OctoPrint's action-command notification plugin from
+                # archiving every progress increment. The structured RME_EVENT
+                # still updates the dashboard workflow bar.
+                return None
+        if re.match(
+            r"^echo:\s*invalid extruder\s+-1\s*$",
+            normalized_line,
+            re.IGNORECASE,
+        ):
+            with self._state_lock:
+                rme_shared_nozzle = bool(
+                    self._state.get("supported")
+                    and int(self._state.get("machine", {}).get("single_nozzle", 0))
+                )
+            if rme_shared_nozzle:
+                # Buddy uses -1 as the sentinel for "no tool selected" when
+                # an unload/cleanup command runs after a shared-nozzle print.
+                # OctoPrint interprets the generic Marlin diagnostic as a
+                # rejected T0 and permanently suppresses later T0 commands.
+                # It is not a rejected tool-selection command, so consume only
+                # this exact RME sentinel while leaving real Tn errors visible.
+                return None
         if (
-            str(line or "").strip().lower() == "start"
+            normalized_line.lower() == "start"
             and self._transport_recovery_required()
         ):
             self._clear_transport_recovery("printer startup banner observed")

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.0b62 — 2026-08-16
+
+- Suppress legacy `//action:notification` mirrors while a structured RME
+  session is active with legacy notifications disabled. Workflow and progress
+  updates—including heater percentages—remain on the dashboard workflow bar
+  without filling OctoPrint's notification history.
+- Preserve action-based pause, resume, cancel, transport responses, and the
+  legacy notification fallback when no structured RME session is active.
+- Ignore Buddy's shared-nozzle `Invalid extruder -1` no-tool sentinel after
+  unload/cleanup so OctoPrint does not incorrectly blacklist T0. Real invalid
+  `Tn` reports remain visible.
+- Keep cancel on Buddy's firmware-supported priority `M604` receiver. This is
+  the current RME firmware's immediate streamed-print abort primitive; the
+  numbered terminal display is OctoPrint's wire framing, not queue latency.
+
 ## 0.1.0b61 — 2026-08-16
 
 - Recognize a standalone `; skip-rme-toolmapping` or

@@ -745,6 +745,57 @@ class ToolmapGateTests(unittest.TestCase):
 
         self.assertIsNone(plugin._state["prompt"])
 
+    def test_structured_session_suppresses_legacy_progress_notifications(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._state.update(supported=True)
+        plugin._state["session"]["active"] = True
+
+        self.assertIsNone(plugin.gcode_received_hook(
+            None, "//action:notification Heating hotend 15%"
+        ))
+        self.assertEqual(
+            "//action:pause",
+            plugin.gcode_received_hook(None, "//action:pause"),
+        )
+
+        plugin._settings.values["legacy_notifications"] = True
+        self.assertEqual(
+            "//action:notification Heating hotend 20%",
+            plugin.gcode_received_hook(
+                None, "//action:notification Heating hotend 20%"
+            ),
+        )
+
+        plugin._settings.values["legacy_notifications"] = False
+        plugin._state["session"]["active"] = False
+        self.assertEqual(
+            "//action:notification Heating hotend 25%",
+            plugin.gcode_received_hook(
+                None, "//action:notification Heating hotend 25%"
+            ),
+        )
+
+    def test_shared_nozzle_no_tool_sentinel_does_not_invalidate_t0(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._state.update(supported=True)
+        plugin._state["machine"].update(single_nozzle=1, logical_tools=5)
+
+        self.assertIsNone(plugin.gcode_received_hook(
+            None, "echo: Invalid extruder -1"
+        ))
+        self.assertEqual(
+            "echo: Invalid extruder 3",
+            plugin.gcode_received_hook(None, "echo: Invalid extruder 3"),
+        )
+
+        plugin._state["machine"]["single_nozzle"] = 0
+        self.assertEqual(
+            "echo: Invalid extruder -1",
+            plugin.gcode_received_hook(None, "echo: Invalid extruder -1"),
+        )
+
     def test_one_click_firmware_flash_waits_for_verified_staged_state(self):
         mutations = []
         plugin = RmeCompatibilityPlugin()
