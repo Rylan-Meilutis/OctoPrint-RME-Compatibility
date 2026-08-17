@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0b66 — 2026-08-17
+
+- Support non-blocking firmware-candidate validation. An intermediate
+  `RME_FIRMWARE state=validating` record now keeps the request pending until
+  the asynchronously emitted ready/error result, while retaining the extended
+  status deadline as a secondary compatibility guard.
+
 ## 0.1.0b65 — 2026-08-17
 
 - Stop interpolating OctoPrint's core `printTime` and `printTimeLeft`

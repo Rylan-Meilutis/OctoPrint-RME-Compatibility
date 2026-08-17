@@ -1080,6 +1080,7 @@ class RmeFileService(object):
                 timeout=max(
                     self.response_timeout, FIRMWARE_STATUS_TIMEOUT_SECONDS
                 ),
+                terminal=lambda item: item.get("state") != "validating",
             )
         return self._terminal(records, "firmware_status")
 

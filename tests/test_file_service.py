@@ -89,6 +89,25 @@ class FileServiceTests(unittest.TestCase):
             "@RME FIRMWARE QUERY", "@RME FIRMWARE UNSTAGE",
         ], commands)
 
+    def test_firmware_query_waits_for_async_validation_completion(self):
+        service = None
+
+        def send(command):
+            self.assertEqual("@RME FIRMWARE QUERY", command)
+            service.handle_response(parse_line(
+                "RME_FIRMWARE candidate=1 armed=0 state=validating "
+                "path=FWUPD.RME size=4096 progress=0"
+            ))
+            service.handle_response(parse_line(
+                "RME_FIRMWARE candidate=1 armed=0 state=ready "
+                "path=FWUPD.RME size=4096 sha256=" + "a" * 64
+            ))
+
+        service = RmeFileService(send, response_timeout=1)
+        status = service.firmware_status()
+        self.assertEqual("ready", status["state"])
+        self.assertEqual("a" * 64, status["sha256"])
+
     def test_current_binary_capability_uses_fast_transport_without_old_resync_flag(self):
         service = None
         commands = []
