@@ -5,11 +5,12 @@ An OctoPrint plugin for the custom Prusa RME Buddy firmware in
 `doc/rme_serial_handler_integration.md`, `doc/rme_serial_remote_protocol.md`,
 and `doc/gcode/M998.md`.
 
-The supported firmware baselines are the `v6.5.7-RME` release, the maintained
-`rme-v6.6.3` release branch, and the `v6.8.1-RME` release. The 6.6.3 and 6.8.1
-host protocol documents are checked byte-for-byte, while their RME FILE
-transport, durable-resume, and cause-specific INDX extrusion-recovery contracts
-are exercised independently by the test suite.
+The supported firmware baselines are the `v6.5.7-RME` release and the maintained
+`rme-v6.6.3` and `rme-v6.8.1` release branches. Their RME FILE transport,
+durable-resume, explicit filament material/profile assignment, firmware-update
+handoff, and cause-specific INDX extrusion-recovery contracts are exercised by
+the test suite. Branch-specific acknowledgement detail is accepted where the
+underlying operation and persisted state are equivalent.
 
 ## Features
 
@@ -177,7 +178,11 @@ assignments appear in the OctoPrint RME tab; the printer receives seven-characte
 aliases because that is the RME firmware's preset-name limit. Choosing `NEW` or
 an unlinked built-in material on the printer opens a persistent form in
 OctoPrint. Saving it creates a record in the active provider, selects it for the tool,
-and writes the selected material/color back to firmware with `M865`.
+and writes the selected profile and polymer family independently with
+`@RME FILAMENT ASSIGN`; `M865` remains the compatible color-assignment path.
+Provider profiles use the firmware's preferred `material=` field, are queried
+back before being loaded, and cannot be reported synchronized if the firmware
+did not retain the requested family.
 On connection the plugin first builds the seven-slot alias table, then reads
 the printer's current `M865` assignments into the provider. Provider-originated
 selection changes wait for confirmation rather than silently overwriting the

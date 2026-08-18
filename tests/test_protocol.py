@@ -174,6 +174,12 @@ class ProtocolTests(unittest.TestCase):
             "RME_FIRMWARE_RESTART reconnect=1"
         ), {"record": "firmware_restart", "reconnect": 1})
         self.assertEqual(parse_line(
+            "RME_FILAMENT_ASSIGNED tool=2 material=PETG profile=PET-00L"
+        ), {
+            "record": "filament_assigned", "tool": 2,
+            "material": "PETG", "profile": "PET-00L",
+        })
+        self.assertEqual(parse_line(
             "RME_FIRMWARE candidate=1 armed=0 state=ready path=FWUPD.RME "
             "size=3921020 sha256=" + "a" * 64
         ), {

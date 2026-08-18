@@ -160,6 +160,10 @@ def parse_line(raw_line):
         result = parse_fields(line[len("RME_CHANGE ") :])
         result["record"] = "change"
         return result
+    if line.startswith("RME_FILAMENT_ASSIGNED "):
+        result = parse_fields(line[len("RME_FILAMENT_ASSIGNED ") :])
+        result["record"] = "filament_assigned"
+        return result
     if line.startswith("RME_MANUFACTURER "):
         result = parse_fields(line[len("RME_MANUFACTURER ") :])
         result["record"] = "manufacturer"

@@ -1184,7 +1184,10 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
                 self.assertIn("requested == authoritative_name", m976_material)
                 self.assertIn("query_hash_timeout_ms", firmware_status)
 
-        self.assertEqual(protocols[0], protocols[1])
+        # The 6.8.1 branch emits an immediate assignment detail record while
+        # 6.6.3 confirms through the transaction-tagged RME_CHANGE. Both use
+        # the same explicit command and persistent material/profile semantics.
+        self.assertTrue(all("@RME FILAMENT ASSIGN" in item for item in protocols))
         self.assertEqual(integrations[0], integrations[1])
         self.assertIn("code=resume_failed", protocols[0])
         self.assertIn("retry the identical BEGIN", integrations[0])
@@ -1203,8 +1206,11 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
             / "octoprint_rme_compatibility/plugin.py"
         ).read_text(encoding="utf-8")
         self.assertNotIn("assignments.append('M865 S\"---\"", host_plugin)
-        self.assertIn("base=%s nozzle=%d", host_plugin)
-        self.assertIn('M865 U%d J"%s" L%d O"%s"', host_plugin)
+        self.assertIn("material=%s base=%s nozzle=%d", host_plugin)
+        self.assertIn("@RME FILAMENT ASSIGN tool=%d profile=%s material=%s", host_plugin)
+        self.assertIn('M865 U%d L%d O"%s"', host_plugin)
+        self.assertNotIn('M865 U%d J"%s" L%d O"%s"', host_plugin)
+        self.assertIn('commands.append("@RME FILAMENT QUERY")', host_plugin)
 
     def test_657_release_exposes_the_same_host_workflow_and_transfer_contract(self):
         firmware_root = (

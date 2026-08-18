@@ -181,6 +181,51 @@ class ToolmapGateTests(unittest.TestCase):
                     RmeCompatibilityPlugin._firmware_filament_base(material),
                 )
 
+    def test_provider_assignments_wait_for_verified_profile_materials(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+        plugin._logger = logging.getLogger("rme-provider-profile-barrier-test")
+        plugin._defer = lambda callback, *args: callback(*args)
+        plugin._schedule_publish = lambda *args: None
+        expected = {
+            slot: {
+                "name": "PET-00L" if slot == 2 else "EMPTY",
+                "base": "PETG" if slot == 2 else "none",
+                "nozzle": 260 if slot == 2 else 215,
+                "preheat": 220 if slot == 2 else 170,
+                "bed": 85 if slot == 2 else 60,
+                "visible": 1 if slot == 2 else 0,
+            }
+            for slot in range(8)
+        }
+        expected[7].update(
+            name="NEW", base="PLA", nozzle=215, preheat=170, bed=60,
+            visible=1,
+        )
+        plugin._pending_provider_profile_sync = {
+            "expected": expected,
+            "assignments": ['M865 U2 L2 O"#000000"', "M865 Q"],
+            "signature": ("verified",),
+            "retries": 0,
+            "mismatches": [],
+        }
+
+        for slot in range(8):
+            plugin._handle_record(dict(
+                record="filament", user=1, slot=slot,
+                **{key: value for key, value in expected[slot].items()
+                   if key != "visible"}
+            ))
+
+        commands = [
+            command
+            for batch in plugin._printer.command_batches
+            for command in (batch if isinstance(batch, list) else [batch])
+        ]
+        self.assertIn('M865 U2 L2 O"#000000"', commands)
+        self.assertEqual(("verified",), plugin._provider_firmware_signature)
+        self.assertIsNone(plugin._pending_provider_profile_sync)
+
     def test_comment_only_continuous_print_control_job_skips_toolmap_hold(self):
         with tempfile.TemporaryDirectory() as directory:
             control_path = os.path.join(directory, "continuousprint_start_print.gcode")
@@ -624,7 +669,22 @@ class ToolmapGateTests(unittest.TestCase):
 
         commands = [command for batch in plugin._printer.command_batches
                     for command in (batch if isinstance(batch, list) else [batch])]
-        self.assertIn('M865 U0 J"PETG" L0 O"#193a8a"', commands)
+        self.assertNotIn('M865 U0 L0 O"#193a8a"', commands)
+        self.assertTrue(commands[-1] == "@RME FILAMENT QUERY")
+        pending = plugin._pending_provider_profile_sync
+        self.assertIsNotNone(pending)
+        actual = {
+            slot: dict(profile, user=1, slot=slot)
+            for slot, profile in pending["expected"].items()
+        }
+        pending["mismatches"] = plugin._provider_profile_mismatches(
+            pending["expected"], actual
+        )
+        plugin._complete_provider_profile_sync()
+        commands = [command for batch in plugin._printer.command_batches
+                    for command in (batch if isinstance(batch, list) else [batch])]
+        self.assertIn('M865 U0 L0 O"#193a8a"', commands)
+        self.assertFalse(any(' J"' in command for command in commands if command.startswith("M865 U")))
         self.assertIn('M865 V0 O"#193a8a" N"Blue"', commands)
         self.assertTrue(any(
             command.startswith("@RME MANUFACTURER ASSIGN tool=0 name=Atomic%20Filament tx=")
@@ -638,7 +698,13 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertFalse(any("tool=5" in command for command in commands))
         self.assertTrue(any(
             command.startswith(
-                "@RME FILAMENT SET slot=0 name=PET-007 base=PETG "
+                "@RME FILAMENT SET slot=0 name=PET-007 material=PETG base=PETG "
+            )
+            for command in commands
+        ))
+        self.assertTrue(any(
+            command.startswith(
+                "@RME FILAMENT ASSIGN tool=0 profile=PET-007 material=PETG tx="
             )
             for command in commands
         ))
@@ -742,10 +808,32 @@ class ToolmapGateTests(unittest.TestCase):
             for command in (batch if isinstance(batch, list) else [batch])
         ]
         self.assertTrue(any(
-            command.startswith('@RME FILAMENT SET slot=0 name=PLA-00C base=PLA nozzle=215 preheat=175 bed=60 visible=1 tx=')
+            command.startswith('@RME FILAMENT SET slot=0 name=PLA-00C material=PLA base=PLA nozzle=215 preheat=175 bed=60 visible=1 tx=')
             for command in commands
         ))
-        self.assertIn('M865 U0 J"PLA" L0 O"#ff7700"', commands)
+        self.assertNotIn('M865 U0 L0 O"#ff7700"', commands)
+        pending = plugin._pending_provider_profile_sync
+        actual = {
+            slot: dict(profile, user=1, slot=slot)
+            for slot, profile in pending["expected"].items()
+        }
+        pending["mismatches"] = plugin._provider_profile_mismatches(
+            pending["expected"], actual
+        )
+        plugin._complete_provider_profile_sync()
+        commands = [
+            command
+            for batch in plugin._printer.command_batches
+            for command in (batch if isinstance(batch, list) else [batch])
+        ]
+        self.assertIn('M865 U0 L0 O"#ff7700"', commands)
+        self.assertTrue(any(
+            command.startswith(
+                "@RME FILAMENT ASSIGN tool=0 profile=PLA-00C material=PLA tx="
+            )
+            for command in commands
+        ))
+        self.assertFalse(any(' J"' in command for command in commands if command.startswith("M865 U")))
 
     def test_confirmed_provider_change_stays_cleared_when_print_defers_apply(self):
         plugin = RmeCompatibilityPlugin()
@@ -2223,6 +2311,42 @@ class ToolmapGateTests(unittest.TestCase):
 
         self.assertFalse(plugin._reconcile_firmware_stage())
         self.assertEqual("idle", plugin._state["firmware"]["status"])
+
+    def test_validating_firmware_candidate_remains_verifying(self):
+        plugin = RmeCompatibilityPlugin()
+        with plugin._state_lock:
+            self.assertTrue(plugin._apply_authoritative_firmware_locked({
+                "record": "firmware_status", "candidate": 1, "armed": 0,
+                "state": "validating", "path": "FWUPD.RME",
+                "size": 4000, "progress": 1000,
+            }))
+
+        firmware = plugin._state["firmware"]
+        self.assertEqual("verifying", firmware["status"])
+        self.assertEqual(1000, firmware["offset"])
+        self.assertEqual(25, firmware["progress"])
+
+    def test_flash_disconnect_enters_expected_reconnect_without_409(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-flash-disconnect-test")
+        plugin._printer = _Printer()
+        plugin._file_service = types.SimpleNamespace(
+            mutate=lambda *args: (_ for _ in ()).throw(
+                FileServiceError("Printer disconnected")
+            )
+        )
+        plugin._state["firmware"].update(status="ready", candidate=True)
+        plugin._persist_and_publish = lambda: None
+        reconnects = []
+        plugin._begin_firmware_reconnect = lambda *args, **kwargs: reconnects.append(True)
+
+        try:
+            plugin._flash_firmware()
+            self.assertEqual("restarting", plugin._state["firmware"]["status"])
+            self.assertTrue(plugin._state["firmware"]["reconnect_expected"])
+            self.assertEqual([True], reconnects)
+        finally:
+            plugin._cancel_firmware_reconnect()
 
     def test_current_firmware_unstage_uses_dedicated_command(self):
         calls = []

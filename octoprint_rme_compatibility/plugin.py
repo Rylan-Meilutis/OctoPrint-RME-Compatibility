@@ -146,6 +146,11 @@ class RmeCompatibilityPlugin(
         self._transaction = int(time.time() * 1000) & 0xFFFFFFFF or 1
         self._suppressed_refresh_transactions = {}
         self._provider_firmware_signature = None
+        # Provider profile updates use the RME configuration queue, while
+        # M865 tool assignments use Marlin's normal command path.  Never let
+        # the latter read/rewrite a profile until a FILAMENT QUERY proves the
+        # former has committed every field (especially the material family).
+        self._pending_provider_profile_sync = None
         self._transfer_conflict_cancel = False
         self._firmware_handoff_started_at = 0
         self._firmware_reconnect_lock = threading.Lock()
@@ -624,9 +629,9 @@ class RmeCompatibilityPlugin(
                 flask.abort(400, description="Filament temperatures must be 0 through 500 C")
             base = self._firmware_filament_base(data.get("base") or name)
             self._send_command(self._with_transaction(
-                "@RME FILAMENT SET slot=%d name=%s base=%s nozzle=%d preheat=%d bed=%d visible=%d"
+                "@RME FILAMENT SET slot=%d name=%s material=%s base=%s nozzle=%d preheat=%d bed=%d visible=%d"
                 % (
-                    slot, name, base, temperatures[0], temperatures[1],
+                    slot, name, base, base, temperatures[0], temperatures[1],
                     temperatures[2], visible,
                 )
             ))
@@ -946,6 +951,7 @@ class RmeCompatibilityPlugin(
                 self._state["prompt"] = None
                 self._suppressed_refresh_transactions.clear()
                 self._provider_firmware_signature = None
+                self._pending_provider_profile_sync = None
                 self._transfer_conflict_cancel = False
                 self._preflight_gate_started = False
                 self._toolmap_preflight_decision = None
@@ -981,6 +987,7 @@ class RmeCompatibilityPlugin(
                 )
                 self._suppressed_refresh_transactions.clear()
                 self._provider_firmware_signature = None
+                self._pending_provider_profile_sync = None
                 self._transfer_conflict_cancel = False
             self._publish()
             if event == Events.DISCONNECTED and self._firmware_reconnect_pending():
@@ -1650,6 +1657,39 @@ class RmeCompatibilityPlugin(
                 ]
                 existing.append(filament)
                 existing.sort(key=lambda item: (int(item.get("user", 0)), int(item.get("slot", 0))))
+                if int(filament.get("user", 0)) == 1 and int(filament.get("slot", -1)) == 7:
+                    pending = self._pending_provider_profile_sync
+                    if pending:
+                        actual = {
+                            int(item.get("slot", -1)): item
+                            for item in existing if int(item.get("user", 0)) == 1
+                        }
+                        mismatches = self._provider_profile_mismatches(
+                            pending["expected"], actual
+                        )
+                        pending["mismatches"] = mismatches
+                        follow_up.append(
+                            "retry_provider_profile_sync"
+                            if mismatches else "complete_provider_profile_sync"
+                        )
+            elif kind == "filament_assigned":
+                # Current RME firmware acknowledges the profile and polymer
+                # family as independent values. Fold that acknowledgement
+                # into an existing loadout immediately; the trailing M865 Q
+                # still supplies authoritative color/manufacturer metadata.
+                tool = int(record.get("tool", -1))
+                for item in self._state["loaded_filaments"]:
+                    if int(item.get("tool", -1)) == tool:
+                        material = str(record.get("material", ""))
+                        profile = str(record.get("profile", ""))
+                        item.update(
+                            material=material,
+                            profile=profile,
+                            firmware_material=material,
+                            firmware_profile=profile,
+                            material_family_reported=True,
+                        )
+                        break
             elif kind == "manufacturer":
                 profile = {key: value for key, value in record.items() if key != "record"}
                 profiles = self._state["manufacturers"]["profiles"]
@@ -1813,6 +1853,10 @@ class RmeCompatibilityPlugin(
                 self._defer(self._initialize_storage)
             elif item == "sync_manufacturer_profiles":
                 self._schedule_manufacturer_profile_sync()
+            elif item == "complete_provider_profile_sync":
+                self._defer(self._complete_provider_profile_sync)
+            elif item == "retry_provider_profile_sync":
+                self._defer(self._retry_provider_profile_sync)
             elif item == "probe_stats":
                 self._defer(self._probe_stats)
             elif item == "reconcile_firmware_stage":
@@ -2860,6 +2904,96 @@ class RmeCompatibilityPlugin(
                     ))
         return commands, manufacturer_for_spool
 
+    @staticmethod
+    def _provider_profile_mismatches(expected, actual):
+        """Return profile slots whose committed firmware fields differ."""
+        mismatches = []
+        for slot, wanted in sorted(expected.items()):
+            present = actual.get(slot) or {}
+            if any(
+                str(present.get(key, "")).casefold()
+                != str(value).casefold()
+                # The query does not expose visibility, so it cannot be part
+                # of the persistence barrier.
+                for key, value in wanted.items() if key != "visible"
+            ):
+                mismatches.append(slot)
+        return mismatches
+
+    def _provider_filament_set_command(self, slot, profile):
+        return (
+            "@RME FILAMENT SET slot=%d name=%s material=%s base=%s nozzle=%d "
+            "preheat=%d bed=%d visible=%d"
+            % (
+                slot, profile["name"], profile["base"], profile["base"],
+                profile["nozzle"], profile["preheat"],
+                profile["bed"], profile["visible"],
+            )
+        )
+
+    def _complete_provider_profile_sync(self):
+        """Load tools only after the RME profile snapshot is authoritative."""
+        with self._state_lock:
+            pending = self._pending_provider_profile_sync
+            if not pending or pending.get("mismatches"):
+                return
+            self._pending_provider_profile_sync = None
+        self._send_commands(pending["assignments"])
+        self._provider_firmware_signature = pending["signature"]
+        with self._state_lock:
+            self._state["spoolmanager"]["status"] = "synchronized"
+            self._state["spoolmanager"]["error"] = None
+        self._logger.info(
+            "Filament provider profiles verified; queued %d tool assignments",
+            len(pending["assignments"]),
+        )
+        self._persist_and_publish()
+        with self._state_lock:
+            replay = self._spool_sync_pending
+            self._spool_sync_pending = None
+        if replay:
+            self._defer(self._sync_spoolmanager, *replay)
+
+    def _retry_provider_profile_sync(self):
+        """Retry rejected profile fields, then fail visibly instead of lying."""
+        failure = None
+        with self._state_lock:
+            pending = self._pending_provider_profile_sync
+            if not pending:
+                return
+            mismatches = list(pending.get("mismatches") or [])
+            retries = int(pending.get("retries", 0))
+            if not mismatches:
+                return
+            if retries >= 2:
+                self._pending_provider_profile_sync = None
+                failure = (
+                    "Firmware did not retain provider profile fields for slots %s"
+                    % ", ".join(str(slot) for slot in mismatches)
+                )
+                self._state["spoolmanager"]["status"] = "error"
+                self._state["spoolmanager"]["error"] = failure
+            else:
+                pending["retries"] = retries + 1
+                expected = copy.deepcopy(pending["expected"])
+        if failure:
+            self._logger.error(failure)
+            self._persist_and_publish()
+            return
+        commands = [
+            self._with_transaction(
+                self._provider_filament_set_command(slot, expected[slot]),
+                suppress_refresh=True,
+            )
+            for slot in mismatches
+        ]
+        commands.append("@RME FILAMENT QUERY")
+        self._logger.warning(
+            "Firmware profile verification failed for slots %s; retry %d/2",
+            ",".join(str(slot) for slot in mismatches), retries + 1,
+        )
+        self._send_commands(commands)
+
     def _schedule_manufacturer_profile_sync(self):
         """Reconcile once after the firmware's manufacturer query burst."""
         if self._print_job_active():
@@ -2930,6 +3064,24 @@ class RmeCompatibilityPlugin(
             "Filament synchronization requested: direction=%s force=%s",
             direction, bool(force),
         )
+        with self._state_lock:
+            profile_verification_active = bool(
+                self._pending_provider_profile_sync
+            )
+            if profile_verification_active:
+                pending = self._spool_sync_pending or (False, False)
+                self._spool_sync_pending = (
+                    bool(pending[0] or force),
+                    bool(pending[1] or push_to_firmware),
+                )
+                self._state["spoolmanager"]["status"] = (
+                    "waiting for firmware profile verification"
+                )
+        if profile_verification_active:
+            self._logger.info(
+                "Filament synchronization queued behind firmware profile verification"
+            )
+            return
         if self._print_job_active():
             self._defer_spool_sync_until_idle(force, push_to_firmware)
             return
@@ -3117,32 +3269,36 @@ class RmeCompatibilityPlugin(
             if should_push and metadata_changed:
                 by_slot = {item["slot"]: item for item in published}
                 commands = []
+                expected_profiles = {}
                 for slot in range(7):
                     item = by_slot.get(slot)
                     if item:
                         nozzle = max(0, min(500, int(item["nozzle_temperature"])))
                         bed = max(0, min(500, int(item["bed_temperature"])))
                         base = self._firmware_filament_base(item.get("material"))
-                        commands.append(
-                            "@RME FILAMENT SET slot=%d name=%s base=%s nozzle=%d preheat=%d bed=%d visible=1"
-                            % (
-                                slot, item["alias"], base, nozzle,
-                                max(0, nozzle - 40), bed,
-                            )
-                        )
+                        profile = {
+                            "name": item["alias"], "base": base,
+                            "nozzle": nozzle, "preheat": max(0, nozzle - 40),
+                            "bed": bed, "visible": 1,
+                        }
                     else:
-                        commands.append(
-                            "@RME FILAMENT SET slot=%d name=EMPTY base=none nozzle=215 preheat=170 bed=60 visible=0"
-                            % slot
-                        )
-                commands.append(
-                    "@RME FILAMENT SET slot=7 name=NEW base=PLA nozzle=215 preheat=170 bed=60 visible=1"
-                )
+                        profile = {
+                            "name": "EMPTY", "base": "none", "nozzle": 215,
+                            "preheat": 170, "bed": 60, "visible": 0,
+                        }
+                    expected_profiles[slot] = profile
+                    commands.append(self._provider_filament_set_command(slot, profile))
+                expected_profiles[7] = {
+                    "name": "NEW", "base": "PLA", "nozzle": 215,
+                    "preheat": 170, "bed": 60, "visible": 1,
+                }
+                commands.append(self._provider_filament_set_command(
+                    7, expected_profiles[7]
+                ))
                 commands = [
                     self._with_transaction(command, suppress_refresh=True)
                     for command in commands
                 ]
-                self._send_commands(commands)
             if should_push and metadata_changed:
                 # Reassert selected tool assignments after reconnects and after
                 # inventory edits; publishing a preset alone does not mark it as
@@ -3165,18 +3321,23 @@ class RmeCompatibilityPlugin(
                 for selected_item in selected:
                     item = slot_by_id.get(selected_item["database_id"])
                     if item:
-                        # Persist the authoritative polymer family in the same
-                        # M865 transaction that loads the custom profile.  The
-                        # remote FILAMENT SET normally stores this already, but
-                        # making it atomic here prevents a loaded profile from
-                        # ever being reported as S/P=<alias>/<alias> (and then
-                        # rejected by an unchanged M976 PETG/PLA batch).
+                        # New firmware owns profile and material as independent
+                        # loaded fields. Assign both explicitly before the
+                        # legacy M865 color operation. M865 deliberately omits
+                        # J, so it cannot collapse S/material back into the
+                        # seven-character P/profile alias. Keeping the matching
+                        # M865 load makes this batch usable on older 6.5.7,
+                        # 6.6.3, and early 6.8.1 RME builds as well.
                         base = self._firmware_filament_base(item.get("material"))
+                        assignments.append(self._with_transaction(
+                            "@RME FILAMENT ASSIGN tool=%d profile=%s material=%s"
+                            % (selected_item["tool"], item["alias"], base),
+                            suppress_refresh=True,
+                        ))
                         assignments.append(
-                            'M865 U%d J"%s" L%d O"%s"'
+                            'M865 U%d L%d O"%s"'
                             % (
-                                item["slot"], base, selected_item["tool"],
-                                item["color"],
+                                item["slot"], selected_item["tool"], item["color"],
                             )
                         )
                         manufacturer = manufacturer_by_spool.get(
@@ -3188,18 +3349,27 @@ class RmeCompatibilityPlugin(
                             suppress_refresh=True,
                         ))
                 assignments.append("M865 Q")
-                self._send_commands(assignments)
-                self._provider_firmware_signature = firmware_signature
+                with self._state_lock:
+                    self._pending_provider_profile_sync = {
+                        "expected": expected_profiles,
+                        "assignments": assignments,
+                        "signature": firmware_signature,
+                        "retries": 0,
+                        "mismatches": [],
+                    }
+                    self._state["spoolmanager"]["status"] = "verifying firmware profiles"
+                commands.append("@RME FILAMENT QUERY")
+                self._send_commands(commands)
                 self._logger.info(
-                    "Filament provider-to-printer batch queued: profiles=%d "
-                    "assignments=%d selected_tools=%s",
+                    "Filament provider-to-printer profiles queued for verification: "
+                    "profiles=%d assignments=%d selected_tools=%s",
                     len(commands), len(assignments),
                     ",".join("T%d" % tool for tool in sorted(selected_tools))
                     or "none",
                 )
 
             with self._state_lock:
-                if should_push:
+                if should_push and not metadata_changed:
                     self._state["spoolmanager"]["status"] = "synchronized"
                 elif can_send and pending_provider_sync:
                     self._state["spoolmanager"]["status"] = "provider change awaiting confirmation"
@@ -4630,12 +4800,22 @@ class RmeCompatibilityPlugin(
 
         size = max(0, int(record.get("size", self._state["firmware"].get("size", 0))))
         path = str(record.get("path", "FWUPD.RME"))
-        status = "restarting" if armed or printer_state == "restarting" else "ready"
+        if armed or printer_state == "restarting":
+            status = "restarting"
+        elif printer_state == "validating":
+            status = "verifying"
+        else:
+            status = "ready"
+        verified = status == "ready"
+        reported_offset = max(0, int(record.get("progress", size if verified else 0)))
+        percent = (
+            100 if verified else round(reported_offset * 100.0 / max(1, size), 2)
+        )
         self._state["firmware"].update(
             status=status,
             size=size,
-            offset=size,
-            progress=100,
+            offset=reported_offset,
+            progress=percent,
             sha256=record.get("sha256", self._state["firmware"].get("sha256")),
             error=None,
             staged_path="/usb/" + path.lstrip("/"),
@@ -4765,6 +4945,30 @@ class RmeCompatibilityPlugin(
         self._arm_firmware_reconnect()
         try:
             self._file_service.mutate("FLASH", "FWUPD.RME")
+        except FileServiceError as exc:
+            # A firmware handoff intentionally removes the USB serial device.
+            # Older builds can disappear after accepting FLASH but before the
+            # final line acknowledgement reaches OctoPrint. During the bounded
+            # update-only reconnect window that disconnect is success, not an
+            # HTTP 409 command failure.
+            if "disconnected" in str(exc).lower() and self._firmware_reconnect_pending():
+                self._logger.info(
+                    "Printer disconnected during confirmed firmware handoff; "
+                    "continuing update reconnect"
+                )
+                with self._state_lock:
+                    self._state["firmware"].update(
+                        status="restarting", error=None,
+                        flash_after_stage=False, reconnect_expected=True,
+                        candidate=True, armed=True,
+                        printer_stage_state="restarting",
+                    )
+                    self._firmware_handoff_started_at = time.monotonic()
+                self._persist_and_publish()
+                self._begin_firmware_reconnect()
+                return
+            self._cancel_firmware_reconnect()
+            raise
         except Exception:
             self._cancel_firmware_reconnect()
             raise
