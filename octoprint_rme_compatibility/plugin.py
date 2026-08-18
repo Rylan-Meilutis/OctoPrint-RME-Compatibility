@@ -104,6 +104,8 @@ class RmeCompatibilityPlugin(
         self._manifest_store = None
         self._transfer_directory = None
         self._partial_thread = None
+        self._partial_action_lock = threading.Lock()
+        self._partial_thread_lock = threading.Lock()
         self._uploader = None
         self._file_service = None
         self._firmware_file_thread = None
@@ -128,6 +130,8 @@ class RmeCompatibilityPlugin(
         self._skip_cancel_script = False
         self._stats_supported = None
         self._stats_probe_sent = False
+        self._toolmap_supported = None
+        self._toolmap_probe_sent = False
         self._priority_controls_sent = set()
         self._firmware_completed_controls = set()
         self._firmware_action_lock = threading.Lock()
@@ -928,6 +932,17 @@ class RmeCompatibilityPlugin(
                 recovery_required = bool(
                     self._state["firmware"].get("recovery_required")
                 )
+            if recovery_required:
+                # CONNECTED is emitted only after OctoPrint's line-mode serial
+                # handshake succeeds. That acknowledgement is authoritative
+                # proof that firmware is no longer consuming raw frames, so a
+                # prior unconfirmed writer teardown must not create a permanent
+                # disconnect/reconnect loop.
+                self._clear_transport_recovery(
+                    "OctoPrint line-mode reconnect handshake completed"
+                )
+                recovery_required = False
+            with self._state_lock:
                 self._state["connected"] = True
                 self._state["supported"] = False
                 self._state["session"] = {
@@ -936,6 +951,8 @@ class RmeCompatibilityPlugin(
                 }
                 self._stats_supported = None
                 self._stats_probe_sent = False
+                self._toolmap_supported = None
+                self._toolmap_probe_sent = False
                 self._priority_controls_sent.clear()
                 self._firmware_completed_controls.clear()
                 self._state["stats"] = {"supported": None, "updated": None, "values": {}}
@@ -956,14 +973,8 @@ class RmeCompatibilityPlugin(
                 self._preflight_gate_started = False
                 self._toolmap_preflight_decision = None
             self._publish()
-            if recovery_required:
-                self._logger.warning(
-                    "RME transport remains locked pending a confirmed printer reboot"
-                )
-                self._defer(self._disconnect_for_transport_recovery)
-            else:
-                self._send_command("@RME MACHINE QUERY")
-                self._defer(self._sync_spoolmanager, True)
+            self._send_command("@RME MACHINE QUERY")
+            self._defer(self._sync_spoolmanager, True)
         elif event in (Events.DISCONNECTING, Events.DISCONNECTED):
             if (
                 event == Events.DISCONNECTING
@@ -1457,7 +1468,12 @@ class RmeCompatibilityPlugin(
                 self._state["machine"].update(record)
                 if kind == "limits":
                     apply_profile = self._settings.get_boolean(["auto_machine_profile"])
-                    follow_up.append("@RME TOOLMAP QUERY")
+                    if (
+                        self._toolmap_supported is not False
+                        and not self._toolmap_probe_sent
+                    ):
+                        self._toolmap_probe_sent = True
+                        follow_up.append("@RME TOOLMAP QUERY")
             elif kind == "session":
                 previous_lease = bool(self._state["session"].get("active"))
                 self._state["session"].update({
@@ -1585,6 +1601,8 @@ class RmeCompatibilityPlugin(
                 elif (self._state.get("prompt") or {}).get("kind") == "firmware":
                     self._state["prompt"] = None
             elif kind == "toolmap":
+                self._toolmap_supported = True
+                self._toolmap_probe_sent = False
                 self._state["toolmap"] = {
                     "enabled": record["enabled"],
                     "mapping": record["mapping"],
@@ -1831,12 +1849,25 @@ class RmeCompatibilityPlugin(
                 self._refresh_active_tool_locked()
                 self._defer(self._accept_firmware_spool, dict(record))
             elif kind == "rme_error":
-                if "stats" in record["message"].lower():
+                message = record["message"].lower()
+                unsupported_toolmap = (
+                    "unsupported" in message and "tool_mapping" in message
+                )
+                if "stats" in message:
                     self._stats_supported = False
                     self._state["stats"]["supported"] = False
-                errors = self._state["errors"]
-                errors.append({"message": record["message"], "time": int(time.time())})
-                del errors[:-10]
+                if unsupported_toolmap:
+                    # Tool mapping is optional on current shared-nozzle builds.
+                    # Treat capability discovery as such and stop repeatedly
+                    # injecting a query/error into later configuration batches.
+                    self._toolmap_supported = False
+                    self._toolmap_probe_sent = False
+                else:
+                    errors = self._state["errors"]
+                    errors.append({
+                        "message": record["message"], "time": int(time.time())
+                    })
+                    del errors[:-10]
         # The receive hook must remain memory-only; persistence and websocket
         # publication happen after returning control to OctoPrint's RX loop.
         self._schedule_publish()
@@ -2111,7 +2142,26 @@ class RmeCompatibilityPlugin(
             )
         if not self._printer.is_operational():
             raise RuntimeError("Printer is not connected")
-        self._printer.commands(command, tags={"plugin:rme_compatibility"})
+        command_text = str(command or "")
+        file_transport_command = command_text.startswith(
+            ("@RME FILE ", "@RME FIRMWARE ")
+        )
+        if (
+            self._file_service
+            and self._file_service.busy
+            and not file_transport_command
+        ):
+            raise RuntimeError(
+                "RME configuration traffic is deferred during a file transfer"
+            )
+        binary_marker = command_text.startswith("@RME FILE RAW_SESSION token=")
+        tags = {"plugin:rme_compatibility"}
+        if binary_marker:
+            # READY starts the firmware's raw inactivity deadline. Bypass the
+            # ordinary command backlog so the local writer reservation runs
+            # immediately instead of arriving after that deadline expires.
+            tags.add("rme:binary_session")
+        self._printer.commands(command, tags=tags, force=binary_marker)
 
     def _send_commands(self, commands):
         if self._transport_recovery_required():
@@ -2120,7 +2170,17 @@ class RmeCompatibilityPlugin(
             )
         if not self._printer.is_operational():
             raise RuntimeError("Printer is not connected")
-        self._printer.commands(commands, tags={"plugin:rme_compatibility"})
+        command_list = list(commands)
+        if self._file_service and self._file_service.busy and any(
+            not str(command or "").startswith(("@RME FILE ", "@RME FIRMWARE "))
+            for command in command_list
+        ):
+            raise RuntimeError(
+                "RME configuration traffic is deferred during a file transfer"
+            )
+        self._printer.commands(
+            command_list, tags={"plugin:rme_compatibility"}
+        )
 
     def _with_transaction(self, command, suppress_refresh=False):
         """Attach the firmware's nonzero mutation correlation identifier."""
@@ -2138,9 +2198,17 @@ class RmeCompatibilityPlugin(
                 self._suppressed_refresh_transactions[transaction] = now + 120
         return "%s tx=%d" % (command, transaction)
 
-    @staticmethod
-    def _configuration_queries(domain=None):
+    def _configuration_queries(self, domain=None):
         """Return the minimum snapshot queries for one RME change domain."""
+        toolmap_queries = []
+        with self._state_lock:
+            if (
+                domain in (None, "toolmap")
+                and self._toolmap_supported is not False
+                and not self._toolmap_probe_sent
+            ):
+                self._toolmap_probe_sent = True
+                toolmap_queries = ["@RME TOOLMAP QUERY"]
         queries = {
             "lock": ["@RME LOCK QUERY"],
             "theme": ["@RME THEME QUERY"],
@@ -2148,7 +2216,7 @@ class RmeCompatibilityPlugin(
             "filament": ["@RME FILAMENT QUERY", "M865 Q"],
             "color": ["M865 Q"],
             "manufacturer": ["@RME MANUFACTURER QUERY", "M865 Q"],
-            "toolmap": ["@RME TOOLMAP QUERY"],
+            "toolmap": toolmap_queries,
         }
         if domain in queries:
             return list(queries[domain])
@@ -2167,9 +2235,10 @@ class RmeCompatibilityPlugin(
                 return
 
             def refresh():
-                if self._print_job_active():
+                if self._print_job_active() or self._printer_transfer_active():
                     # Preserve the accumulated domains and retry later without
-                    # placing snapshot traffic ahead of streamed print G-code.
+                    # placing snapshot traffic ahead of streamed print G-code
+                    # or inside a negotiated FILE transport session.
                     with self._configuration_timer_lock:
                         if self._stop.is_set():
                             self._configuration_timer = None
@@ -3973,7 +4042,9 @@ class RmeCompatibilityPlugin(
     # -- RME USB storage ---------------------------------------------------
 
     @staticmethod
-    def _public_manifest(manifest, status=None, error=None):
+    def _public_manifest(
+        manifest, status=None, error=None, recovery_active=False
+    ):
         """Return provenance and recovery state without exposing a Pi path."""
         if not manifest:
             return None
@@ -3985,6 +4056,10 @@ class RmeCompatibilityPlugin(
         }
         value["status"] = status or manifest.get("status") or "interrupted"
         value["error"] = error
+        # Status is durable provenance, not proof that a process-local worker
+        # still exists. The browser must never disable recovery controls from
+        # a stale queued/transferring value after a reload or failed worker.
+        value["recovery_active"] = bool(recovery_active)
         value["source_available"] = bool(
             manifest.get("source_path") and os.path.isfile(manifest["source_path"])
         )
@@ -4049,7 +4124,7 @@ class RmeCompatibilityPlugin(
             self._manifest_store.save(manifest)
             with self._state_lock:
                 self._state["storage"]["partial"] = self._public_manifest(
-                    manifest, status="transferring"
+                    manifest, status="transferring", recovery_active=True
                 )
             self._persist_and_publish()
 
@@ -4102,18 +4177,64 @@ class RmeCompatibilityPlugin(
         manifest = self._manifest_store.get()
         with self._state_lock:
             self._state["storage"]["partial"] = self._public_manifest(
-                manifest, status=status, error=error
+                manifest, status=status, error=error,
+                recovery_active=status in ("queued", "transferring", "discarding"),
             )
         self._persist_and_publish()
+
+    def _start_partial_recovery(self, status, name, callback):
+        """Replace a stale recovery worker without stranding its UI state."""
+        with self._partial_action_lock:
+            with self._partial_thread_lock:
+                previous = self._partial_thread
+            if previous and previous.is_alive():
+                self._logger.warning(
+                    "Replacing active partial-file recovery worker %s", previous.name
+                )
+                self._file_service.cancel()
+                previous.join(timeout=3)
+                if previous.is_alive():
+                    # Keep controls enabled so another request can retry the
+                    # cancellation after the underlying serial exchange wakes.
+                    self._set_partial_status(
+                        "interrupted",
+                        "The previous recovery operation is still stopping; retry shortly",
+                    )
+                    raise FileServiceError(
+                        "The previous partial-file recovery is still stopping; retry shortly"
+                    )
+
+            self._set_partial_status(status)
+
+            def run():
+                try:
+                    callback()
+                finally:
+                    with self._partial_thread_lock:
+                        if self._partial_thread is threading.current_thread():
+                            self._partial_thread = None
+                    manifest = self._manifest_store.get()
+                    with self._state_lock:
+                        partial = self._state["storage"].get("partial") or {}
+                        active_status = partial.get("status") in (
+                            "queued", "transferring", "discarding"
+                        )
+                    if manifest and active_status:
+                        self._set_partial_status(
+                            "interrupted",
+                            "Partial-file recovery stopped before completing",
+                        )
+
+            worker = threading.Thread(target=run, name=name, daemon=True)
+            with self._partial_thread_lock:
+                self._partial_thread = worker
+            worker.start()
 
     def _resume_partial_transfer(self):
         self._require_storage()
         manifest = self._manifest_store.get()
         if not manifest:
             raise FileServiceError("There is no interrupted RME upload to resume")
-        if self._partial_thread and self._partial_thread.is_alive():
-            raise FileServiceError("Partial-file recovery is already active")
-        self._set_partial_status("queued")
 
         def resume():
             try:
@@ -4146,24 +4267,25 @@ class RmeCompatibilityPlugin(
                         self._parent_storage_path(manifest["remote_path"]),
                     )
             except Exception as exc:
-                self._logger.exception("RME partial upload resume failed")
+                if "cancel" in str(exc).lower():
+                    self._logger.info(
+                        "RME partial upload resume stopped for a replacement action"
+                    )
+                else:
+                    self._logger.exception("RME partial upload resume failed")
                 if manifest.get("kind") == "firmware":
                     self._firmware_state_changed(status="error", error=str(exc))
                 self._set_partial_status("interrupted", str(exc))
 
-        self._partial_thread = threading.Thread(
-            target=resume, name="rme-partial-resume", daemon=True
+        self._start_partial_recovery(
+            "queued", "rme-partial-resume", resume
         )
-        self._partial_thread.start()
 
     def _discard_partial_transfer(self):
         self._require_storage()
         manifest = self._manifest_store.get()
         if not manifest:
             raise FileServiceError("There is no interrupted RME upload to discard")
-        if self._partial_thread and self._partial_thread.is_alive():
-            raise FileServiceError("Partial-file recovery is already active")
-        self._set_partial_status("discarding")
 
         def discard():
             try:
@@ -4181,13 +4303,17 @@ class RmeCompatibilityPlugin(
                         self._state["firmware"] = self._empty_state()["firmware"]
                 self._persist_and_publish()
             except Exception as exc:
-                self._logger.exception("RME partial upload discard failed")
+                if "cancel" in str(exc).lower():
+                    self._logger.info(
+                        "RME partial upload discard stopped for a replacement action"
+                    )
+                else:
+                    self._logger.exception("RME partial upload discard failed")
                 self._set_partial_status("interrupted", str(exc))
 
-        self._partial_thread = threading.Thread(
-            target=discard, name="rme-partial-discard", daemon=True
+        self._start_partial_recovery(
+            "discarding", "rme-partial-discard", discard
         )
-        self._partial_thread.start()
 
     def _cleanup_named_partial(self, path):
         self._require_storage()

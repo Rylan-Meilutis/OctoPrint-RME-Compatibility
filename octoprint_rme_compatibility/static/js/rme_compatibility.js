@@ -615,7 +615,7 @@ $(function () {
         });
         self.partialRecoveryActive = ko.pureComputed(function () {
             var partial = self.partialTransfer();
-            return !!partial && ["queued", "transferring", "discarding"].indexOf(partial.status) >= 0;
+            return !!partial && partial.recovery_active === true;
         });
         self.partialTransferSummary = ko.pureComputed(function () {
             var partial = self.partialTransfer();

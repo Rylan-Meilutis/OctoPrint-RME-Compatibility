@@ -1153,6 +1153,97 @@ class ToolmapGateTests(unittest.TestCase):
                 plugin._file_service.calls[0][0], plugin._file_service.calls[1][0]
             )
 
+    def test_stale_partial_status_does_not_claim_recovery_is_active(self):
+        partial = RmeCompatibilityPlugin._public_manifest(
+            {
+                "source_path": "/missing/retained-file",
+                "source_name": "job.bgcode",
+                "remote_path": "jobs/job.bgcode",
+                "kind": "file",
+                "size": 123,
+                "sha256": "0" * 64,
+                "transport": "bulk",
+                "offset": 48,
+                "status": "transferring",
+            }
+        )
+
+        self.assertEqual("transferring", partial["status"])
+        self.assertFalse(partial["recovery_active"])
+
+    def test_discard_replaces_a_stuck_partial_resume_worker(self):
+        class FileService(object):
+            binary_mode_uncertain = False
+
+            def __init__(self):
+                self.resume_started = threading.Event()
+                self.release_resume = threading.Event()
+                self.cancel_calls = 0
+                self.discard_calls = []
+
+            def write_file(self, *args, **kwargs):
+                self.resume_started.set()
+                self.release_resume.wait(timeout=5)
+                raise FileServiceError("Printer USB operation cancelled")
+
+            def cancel(self):
+                self.cancel_calls += 1
+                self.release_resume.set()
+
+            def discard_partial(self, remote_path, size, digest):
+                self.discard_calls.append((remote_path, size, digest))
+
+        with tempfile.TemporaryDirectory() as directory:
+            retained = os.path.join(directory, "retained.bgcode")
+            payload = b"interrupted upload"
+            with open(retained, "wb") as source:
+                source.write(payload)
+            digest = hashlib.sha256(payload).hexdigest()
+            manifest_store = TransferManifestStore(
+                os.path.join(directory, "manifest.json")
+            )
+            manifest_store.load()
+            manifest_store.save(
+                {
+                    "source_path": retained,
+                    "source_name": "job.bgcode",
+                    "remote_path": "jobs/job.bgcode",
+                    "kind": "file",
+                    "size": len(payload),
+                    "sha256": digest,
+                    "transport": "bulk",
+                    "offset": 0,
+                    "status": "interrupted",
+                }
+            )
+
+            plugin = RmeCompatibilityPlugin()
+            plugin._printer = _Printer()
+            plugin._logger = logging.getLogger("rme-partial-replace-test")
+            plugin._file_service = FileService()
+            plugin._manifest_store = manifest_store
+            plugin._persist_and_publish = lambda: None
+            plugin._defer = lambda callback, *args: None
+            plugin._state.update(connected=True, supported=True)
+
+            plugin._resume_partial_transfer()
+            self.assertTrue(plugin._file_service.resume_started.wait(timeout=1))
+
+            plugin._discard_partial_transfer()
+            with plugin._partial_thread_lock:
+                discard_worker = plugin._partial_thread
+            discard_worker.join(timeout=2)
+
+            self.assertFalse(discard_worker.is_alive())
+            self.assertEqual(1, plugin._file_service.cancel_calls)
+            self.assertEqual(
+                [("jobs/job.bgcode", len(payload), digest)],
+                plugin._file_service.discard_calls,
+            )
+            self.assertIsNone(plugin._manifest_store.get())
+            self.assertIsNone(plugin._state["storage"]["partial"])
+            self.assertFalse(os.path.exists(retained))
+
     def test_current_firmware_flashes_through_file_service(self):
         class FileService(object):
             def __init__(self):
@@ -1277,13 +1368,13 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual("idle", persisted["status"])
         self.assertIsNone(persisted["error"])
 
-    def test_uncertain_binary_transport_locks_commands_until_printer_reboot(self):
+    def test_uncertain_binary_transport_unlocks_after_line_mode_reconnect(self):
         plugin = RmeCompatibilityPlugin()
         plugin._printer = _Printer()
         plugin._logger = logging.getLogger("rme-reboot-lock-test")
         plugin._publish = lambda: None
         plugin._persist_and_publish = lambda: None
-        plugin._defer = lambda callback, *args: callback(*args)
+        plugin._defer = lambda callback, *args: None
         plugin._state["firmware"].update(
             status="error", recovery_required=True,
             error="Printer reboot required",
@@ -1292,17 +1383,13 @@ class ToolmapGateTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Printer reboot required"):
             plugin._send_command("@RME MACHINE QUERY")
         plugin.on_event("Connected", {})
-        self.assertEqual([], plugin._printer.command_batches)
-        self.assertEqual(1, plugin._printer.disconnect_calls)
-        self.assertTrue(
-            plugin._persistent_snapshot()["firmware"]["recovery_required"]
-        )
-        self.assertTrue(plugin._printer_transfer_active())
-
-        plugin.gcode_received_hook(None, "start")
-
         self.assertFalse(plugin._state["firmware"]["recovery_required"])
         self.assertEqual(["@RME MACHINE QUERY"], plugin._printer.command_batches)
+        self.assertEqual(0, plugin._printer.disconnect_calls)
+        self.assertFalse(
+            plugin._persistent_snapshot()["firmware"]["recovery_required"]
+        )
+        self.assertFalse(plugin._printer_transfer_active())
 
     def test_update_information_exposes_stable_and_beta_channels(self):
         plugin = RmeCompatibilityPlugin()
@@ -1634,6 +1721,36 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertTrue(session_done.is_set())
         self.assertIsNone(plugin._binary_session)
+
+    def test_binary_marker_bypasses_normal_octoprint_command_backlog(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+
+        marker = "@RME FILE RAW_SESSION token=" + "a" * 32
+        plugin._send_command(marker)
+
+        self.assertEqual(
+            [
+                (
+                    marker,
+                    {"plugin:rme_compatibility", "rme:binary_session"},
+                )
+            ],
+            plugin._printer.forced_commands,
+        )
+
+    def test_configuration_commands_are_blocked_during_file_transfer(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+        plugin._file_service = types.SimpleNamespace(busy=True)
+
+        with self.assertRaisesRegex(RuntimeError, "deferred during a file transfer"):
+            plugin._send_command("M865 Q")
+        with self.assertRaisesRegex(RuntimeError, "deferred during a file transfer"):
+            plugin._send_commands(["@RME FILAMENT QUERY", "M865 Q"])
+
+        plugin._send_command("@RME FILE CAPS")
+        self.assertEqual(["@RME FILE CAPS"], plugin._printer.command_batches)
 
     def test_end_binary_transport_waits_for_writer_release(self):
         plugin = RmeCompatibilityPlugin()
@@ -2262,6 +2379,19 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIsNone(plugin._state["workflow"])
         self.assertEqual([False], plugin._printer.holds)
         self.assertFalse(plugin._printer_transfer_active())
+
+    def test_unsupported_toolmap_probe_is_suppressed_after_capability_reply(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+
+        plugin._handle_record({
+            "record": "rme_error",
+            "message": "echo:RME_ERROR code=unsupported feature=tool_mapping",
+        })
+
+        self.assertFalse(plugin._toolmap_supported)
+        self.assertNotIn("@RME TOOLMAP QUERY", plugin._configuration_queries())
+        self.assertEqual([], plugin._state["errors"])
 
     def test_stage_reconciliation_never_promotes_an_unclaimed_usb_file(self):
         records = [

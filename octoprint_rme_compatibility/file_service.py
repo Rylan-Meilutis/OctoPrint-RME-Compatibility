@@ -419,9 +419,14 @@ class RmeFileService(object):
             try:
                 if starting:
                     starting()
-                if self._capabilities is None:
-                    records = self._exchange("@RME FILE CAPS", "file_caps")
-                    self._capabilities = dict(self._terminal(records, "file_caps"))
+                # This is also an acknowledged queue barrier. Even when the
+                # values are cached, waiting for CAPS proves every older
+                # OctoPrint command has left the writer before BEGIN starts a
+                # line or raw transfer receiver. Without it, reconnect-time
+                # configuration batches can cross the binary boundary and be
+                # decoded as corrupt frame headers.
+                records = self._exchange("@RME FILE CAPS", "file_caps")
+                self._capabilities = dict(self._terminal(records, "file_caps"))
                 use_binary = bool(
                     self.send_binary and self.begin_binary and self.end_binary
                     and int(self._capabilities.get("binary", 0))

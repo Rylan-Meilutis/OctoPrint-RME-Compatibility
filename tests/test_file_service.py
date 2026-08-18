@@ -16,6 +16,48 @@ from octoprint_rme_compatibility.protocol import parse_line
 
 
 class FileServiceTests(unittest.TestCase):
+    def test_upload_repeats_caps_as_a_queue_barrier_when_caps_are_cached(self):
+        service = None
+        commands = []
+
+        def send(command):
+            commands.append(command)
+            if command == "@RME FILE CAPS":
+                service.handle_response(parse_line(
+                    "RME_FILE_CAPS root=/usb write=1 bulk=0 binary=0 chunk=48"
+                ))
+            elif "WRITE_BEGIN" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_WRITE_READY offset=0 chunk=48 resumed=0"
+                ))
+            elif "WRITE_CHUNK" in command:
+                payload = base64.b64decode(command.split("data=", 1)[1])
+                service.handle_response(parse_line(
+                    "RME_FILE_WRITE_OFFSET offset=%d" % len(payload)
+                ))
+            elif "WRITE_END" in command:
+                service.handle_response(parse_line(
+                    "RME_FILE_WRITE_COMPLETE path=barrier.bin"
+                ))
+
+        service = RmeFileService(send, response_timeout=1)
+        service.capabilities()
+        with tempfile.NamedTemporaryFile(delete=False) as source:
+            source.write(b"barrier")
+            source_path = source.name
+        try:
+            service.write_file(source_path, "barrier.bin")
+        finally:
+            os.unlink(source_path)
+
+        self.assertEqual(2, commands.count("@RME FILE CAPS"))
+        second_caps = commands.index("@RME FILE CAPS", 1)
+        begin = next(
+            index for index, command in enumerate(commands)
+            if "WRITE_BEGIN" in command
+        )
+        self.assertLess(second_caps, begin)
+
     def test_current_binary_timeout_capability_enables_fast_transport(self):
         service = None
         commands = []
