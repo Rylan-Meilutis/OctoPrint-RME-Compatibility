@@ -194,6 +194,7 @@ class RmeCompatibilityPlugin(
                 "published": [],
                 "selected": [],
                 "pending_new": None,
+                "pending_new_queue": [],
                 "pending_provider_sync": None,
                 "last_sync": None,
                 "error": None,
@@ -485,6 +486,7 @@ class RmeCompatibilityPlugin(
             "select_spool": ["tool", "database_id"],
             "deselect_spool": ["tool"],
             "begin_new_spool": ["tool"],
+            "activate_pending_spool": ["tool"],
             "create_spool": ["display_name", "material", "color", "total_weight"],
             "cancel_new_spool": [],
             "touch_toolmap": [],
@@ -680,12 +682,12 @@ class RmeCompatibilityPlugin(
             self._deselect_spool_from_octoprint(data["tool"])
         elif command == "begin_new_spool":
             self._begin_new_spool(data["tool"])
+        elif command == "activate_pending_spool":
+            self._activate_pending_spool(data["tool"])
         elif command == "create_spool":
             self._create_spool(data)
         elif command == "cancel_new_spool":
-            with self._state_lock:
-                self._state["spoolmanager"]["pending_new"] = None
-            self._persist_and_publish()
+            self._cancel_pending_spool()
         elif command == "touch_toolmap":
             self._pause_toolmap_timeout()
         elif command == "storage_caps":
@@ -2953,10 +2955,29 @@ class RmeCompatibilityPlugin(
         eight slots. Seven slots receive stable database-ID aliases; slot seven
         is reserved for ``NEW``. Full metadata remains visible in OctoPrint.
         """
+        direction = "provider-to-printer" if push_to_firmware else "read-provider"
+        self._logger.info(
+            "Filament synchronization requested: direction=%s force=%s",
+            direction, bool(force),
+        )
         if self._print_job_active():
             self._defer_spool_sync_until_idle(force, push_to_firmware)
             return
         if not self._spool_sync_lock.acquire(False):
+            with self._state_lock:
+                pending = self._spool_sync_pending or (False, False)
+                self._spool_sync_pending = (
+                    bool(pending[0] or force),
+                    bool(pending[1] or push_to_firmware),
+                )
+                self._state["spoolmanager"]["status"] = (
+                    "waiting for active synchronization"
+                )
+            self._logger.info(
+                "Filament synchronization queued behind active sync: "
+                "force=%s push_to_firmware=%s",
+                bool(force), bool(push_to_firmware),
+            )
             return
         try:
             self._spoolmanager, provider_name = self._active_spool_provider()
@@ -2972,6 +2993,14 @@ class RmeCompatibilityPlugin(
                 dict(self._public_spool_record(record), tool=tool)
                 for tool, record in enumerate(selected_models) if record is not None
             ]
+            self._logger.info(
+                "Filament provider snapshot: provider=%s inventory=%d selected=%s",
+                provider_name, len(inventory),
+                ",".join(
+                    "T%d=#%s" % (int(item["tool"]), item.get("database_id"))
+                    for item in selected
+                ) or "none",
+            )
             records = {record["database_id"]: record for record in inventory}
             for record in selected:
                 records[record["database_id"]] = {
@@ -3041,6 +3070,9 @@ class RmeCompatibilityPlugin(
             # still running, and the receive side must recognize every alias.
             with self._state_lock:
                 pending = self._state["spoolmanager"].get("pending_new")
+                pending_queue = copy.deepcopy(
+                    self._state["spoolmanager"].get("pending_new_queue", [])
+                )
                 pending_provider_sync = self._state["spoolmanager"].get(
                     "pending_provider_sync"
                 )
@@ -3052,6 +3084,7 @@ class RmeCompatibilityPlugin(
                     "published": published,
                     "selected": selected,
                     "pending_new": pending,
+                    "pending_new_queue": pending_queue,
                     "pending_provider_sync": pending_provider_sync,
                     "last_sync": int(time.time()),
                     "error": None,
@@ -3066,6 +3099,14 @@ class RmeCompatibilityPlugin(
             )
             metadata_changed = (
                 force or self._provider_firmware_signature != firmware_signature
+            )
+            self._logger.info(
+                "Filament sync decision: provider=%s connected=%s supported=%s "
+                "pending_confirmation=%s push_requested=%s should_push=%s "
+                "metadata_changed=%s",
+                provider_name, bool(can_send), bool(self._state.get("supported")),
+                bool(pending_provider_sync), bool(push_to_firmware),
+                bool(should_push), bool(metadata_changed),
             )
             if should_push and metadata_changed and profile_commands:
                 self._send_commands(profile_commands)
@@ -3135,6 +3176,13 @@ class RmeCompatibilityPlugin(
                 assignments.append("M865 Q")
                 self._send_commands(assignments)
                 self._provider_firmware_signature = firmware_signature
+                self._logger.info(
+                    "Filament provider-to-printer batch queued: profiles=%d "
+                    "assignments=%d selected_tools=%s",
+                    len(commands), len(assignments),
+                    ",".join("T%d" % tool for tool in sorted(selected_tools))
+                    or "none",
+                )
 
             with self._state_lock:
                 if should_push:
@@ -3155,6 +3203,22 @@ class RmeCompatibilityPlugin(
             self._persist_and_publish()
         finally:
             self._spool_sync_lock.release()
+            # Requests arriving while this synchronization owned the lock are
+            # coalesced rather than discarded.  Replay them immediately when
+            # idle; print-deferred requests remain for the print lifecycle to
+            # resume safely.
+            replay = None
+            if not self._print_job_active():
+                with self._state_lock:
+                    replay = self._spool_sync_pending
+                    self._spool_sync_pending = None
+            if replay:
+                self._logger.info(
+                    "Replaying queued filament synchronization: force=%s "
+                    "push_to_firmware=%s",
+                    bool(replay[0]), bool(replay[1]),
+                )
+                self._defer(self._sync_spoolmanager, *replay)
 
     def _resolve_spool_provider(self):
         """Choose exactly one inventory backend.
@@ -3330,6 +3394,9 @@ class RmeCompatibilityPlugin(
             self._state["spoolmanager"]["status"] = "reading selections from printer"
         if not can_send:
             raise RuntimeError("RME printer is not connected")
+        self._logger.info(
+            "Machine-to-provider filament synchronization requested; querying M865 loadout"
+        )
         self._send_command("M865 Q")
         self._persist_and_publish()
 
@@ -3378,19 +3445,100 @@ class RmeCompatibilityPlugin(
         """Open the persistent creation form without requiring an LCD request."""
         tool = self._tool_index(tool)
         defaults = self.get_settings_defaults()
+        self._enqueue_pending_spool({
+            "tool": tool,
+            "display_name": "New spool on tool %d" % tool,
+            "vendor": "",
+            "material": "PLA",
+            "profile": "",
+            "color": "#808080",
+            "color_name": "",
+            "total_weight": self._settings.get_int(["spoolmanager_default_weight"])
+            or defaults["spoolmanager_default_weight"],
+            "nozzle_temperature": 215,
+            "bed_temperature": 60,
+        }, activate=True)
+        self._persist_and_publish()
+
+    def _pending_spool_queue_locked(self):
+        """Normalize legacy single-draft state into a per-tool durable queue."""
+        spool_state = self._state["spoolmanager"]
+        active = spool_state.get("pending_new")
+        queue = copy.deepcopy(spool_state.get("pending_new_queue") or [])
+        if active:
+            active_tool = int(active["tool"])
+            if not any(int(item.get("tool", -1)) == active_tool for item in queue):
+                queue.insert(0, copy.deepcopy(active))
+        normalized = []
+        positions = {}
+        for item in queue:
+            tool = int(item["tool"])
+            item = copy.deepcopy(item)
+            item["tool"] = tool
+            if tool in positions:
+                normalized[positions[tool]] = item
+            else:
+                positions[tool] = len(normalized)
+                normalized.append(item)
+        normalized.sort(key=lambda item: int(item["tool"]))
+        spool_state["pending_new_queue"] = normalized
+        if active:
+            active_tool = int(active["tool"])
+            spool_state["pending_new"] = next(
+                (copy.deepcopy(item) for item in normalized
+                 if int(item["tool"]) == active_tool),
+                copy.deepcopy(normalized[0]) if normalized else None,
+            )
+        elif normalized:
+            spool_state["pending_new"] = copy.deepcopy(normalized[0])
+        return normalized
+
+    def _enqueue_pending_spool(self, record, activate=False):
+        """Add or replace one tool's draft without discarding other tools."""
+        record = copy.deepcopy(record)
+        record["tool"] = self._tool_index(record["tool"])
         with self._state_lock:
-            self._state["spoolmanager"]["pending_new"] = {
-                "tool": tool,
-                "display_name": "New spool on tool %d" % tool,
-                "vendor": "",
-                "material": "PLA",
-                "color": "#808080",
-                "color_name": "",
-                "total_weight": self._settings.get_int(["spoolmanager_default_weight"])
-                or defaults["spoolmanager_default_weight"],
-                "nozzle_temperature": 215,
-                "bed_temperature": 60,
-            }
+            queue = self._pending_spool_queue_locked()
+            queue = [
+                item for item in queue if int(item["tool"]) != record["tool"]
+            ]
+            queue.append(record)
+            queue.sort(key=lambda item: int(item["tool"]))
+            self._state["spoolmanager"]["pending_new_queue"] = queue
+            active = self._state["spoolmanager"].get("pending_new")
+            if (
+                activate or not active
+                or int(active.get("tool", -1)) == record["tool"]
+            ):
+                self._state["spoolmanager"]["pending_new"] = copy.deepcopy(record)
+
+    def _activate_pending_spool(self, tool):
+        """Choose which queued tool draft the shared editor displays."""
+        tool = self._tool_index(tool)
+        with self._state_lock:
+            queue = self._pending_spool_queue_locked()
+            record = next(
+                (item for item in queue if int(item["tool"]) == tool), None
+            )
+            if record is None:
+                raise ValueError("There is no pending spool for tool %d" % tool)
+            self._state["spoolmanager"]["pending_new"] = copy.deepcopy(record)
+        self._persist_and_publish()
+
+    def _remove_pending_spool_locked(self, tool):
+        queue = self._pending_spool_queue_locked()
+        queue = [item for item in queue if int(item["tool"]) != int(tool)]
+        self._state["spoolmanager"]["pending_new_queue"] = queue
+        self._state["spoolmanager"]["pending_new"] = (
+            copy.deepcopy(queue[0]) if queue else None
+        )
+
+    def _cancel_pending_spool(self):
+        """Dismiss only the active tool draft and advance to the next one."""
+        with self._state_lock:
+            pending = self._state["spoolmanager"].get("pending_new")
+            if pending:
+                self._remove_pending_spool_locked(int(pending["tool"]))
         self._persist_and_publish()
 
     def _accept_firmware_spool(self, record):
@@ -3401,15 +3549,28 @@ class RmeCompatibilityPlugin(
         the material and color that the operator chose locally.
         """
         material = record.get("material", "")
+        profile = record.get("profile") or material
         tool = int(record["tool"])
-        provider, _ = self._active_spool_provider()
+        provider, provider_name = self._active_spool_provider()
         with self._state_lock:
             published = copy.deepcopy(self._state["spoolmanager"].get("published", []))
             selected = copy.deepcopy(self._state["spoolmanager"].get("selected", []))
-        match = next((item for item in published if item["alias"] == material), None)
+        match = next((item for item in published if item["alias"] == profile), None)
         current = next((item for item in selected if int(item.get("tool", -1)) == tool), None)
+        self._logger.info(
+            "Firmware filament report: tool=T%d material=%s profile=%s "
+            "provider=%s alias_match=%s current_spool=%s",
+            tool, material or "none", profile or "none", provider_name,
+            None if match is None else match.get("database_id"),
+            None if current is None else current.get("database_id"),
+        )
         if match:
             if not current or current["database_id"] != match["database_id"]:
+                self._logger.info(
+                    "Applying firmware filament selection to provider: "
+                    "tool=T%d profile=%s spool=#%s",
+                    tool, profile, match["database_id"],
+                )
                 self._mark_expected_provider_event(tool, match["database_id"])
                 provider.select(tool, match["database_id"])
                 self._sync_spoolmanager(True, True)
@@ -3437,9 +3598,19 @@ class RmeCompatibilityPlugin(
                     # linked alias is corrected back to the provider's color
                     # and manufacturer rather than forking a local RME record.
                     self._sync_spoolmanager(True, True)
+                else:
+                    self._logger.info(
+                        "Firmware filament selection already matches provider: "
+                        "tool=T%d profile=%s spool=#%s",
+                        tool, profile, match["database_id"],
+                    )
             return
         if material == "---":
             if current:
+                self._logger.info(
+                    "Clearing provider filament selection from firmware report: tool=T%d",
+                    tool,
+                )
                 self._mark_expected_provider_event(tool, None)
                 provider.deselect(tool)
                 self._sync_spoolmanager(False, False)
@@ -3448,18 +3619,23 @@ class RmeCompatibilityPlugin(
         # This state is intentionally persisted independently of firmware
         # dialogs, so a refresh cannot lose partially entered spool details.
         defaults = self.get_settings_defaults()
-        with self._state_lock:
-            self._state["spoolmanager"]["pending_new"] = {
-                "tool": tool,
-                "display_name": "New spool on tool %d" % tool,
-                "vendor": "" if str(record.get("vendor", "")).lower() == "none" else record.get("vendor", ""),
-                "material": "PLA" if material == "NEW" else material,
-                "color": record.get("color") if self._valid_color(record.get("color")) else "#808080",
-                "color_name": record.get("color_name") if record.get("color_name") != "None" else "",
-                "total_weight": self._settings.get_int(["spoolmanager_default_weight"]) or defaults["spoolmanager_default_weight"],
-                "nozzle_temperature": 215,
-                "bed_temperature": 60,
-            }
+        self._logger.warning(
+            "Firmware filament profile has no published provider alias: "
+            "tool=T%d material=%s profile=%s; opening new-spool workflow",
+            tool, material or "none", profile or "none",
+        )
+        self._enqueue_pending_spool({
+            "tool": tool,
+            "display_name": "New spool on tool %d" % tool,
+            "vendor": "" if str(record.get("vendor", "")).lower() == "none" else record.get("vendor", ""),
+            "material": "PLA" if material == "NEW" else material,
+            "profile": profile,
+            "color": record.get("color") if self._valid_color(record.get("color")) else "#808080",
+            "color_name": record.get("color_name") if record.get("color_name") != "None" else "",
+            "total_weight": self._settings.get_int(["spoolmanager_default_weight"]) or defaults["spoolmanager_default_weight"],
+            "nozzle_temperature": 215,
+            "bed_temperature": 60,
+        })
         if current:
             self._mark_expected_provider_event(tool, None)
             provider.deselect(tool)
@@ -3489,7 +3665,7 @@ class RmeCompatibilityPlugin(
         created = provider.create(values)
         provider.select(int(pending["tool"]), created["database_id"])
         with self._state_lock:
-            self._state["spoolmanager"]["pending_new"] = None
+            self._remove_pending_spool_locked(int(pending["tool"]))
         self._sync_spoolmanager(True)
 
     # -- Machine profile ----------------------------------------------------

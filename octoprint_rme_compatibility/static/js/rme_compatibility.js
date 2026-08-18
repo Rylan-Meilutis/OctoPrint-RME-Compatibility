@@ -220,6 +220,13 @@ $(function () {
         self.selectedSpools = ko.pureComputed(function () { return self.spoolmanager().selected || []; });
         self.loadedFilaments = ko.pureComputed(function () { return self.state().loaded_filaments || []; });
         self.pendingNewSpool = ko.pureComputed(function () { return self.spoolmanager().pending_new || null; });
+        self.pendingNewSpools = ko.pureComputed(function () {
+            var spool = self.spoolmanager();
+            if (spool.pending_new_queue && spool.pending_new_queue.length) {
+                return spool.pending_new_queue;
+            }
+            return spool.pending_new ? [spool.pending_new] : [];
+        });
         self.pendingProviderSync = ko.pureComputed(function () {
             return self.spoolmanager().pending_provider_sync || null;
         });
@@ -944,6 +951,9 @@ $(function () {
         };
         self.beginNewSpool = function () {
             self.command("begin_new_spool", {tool: Number(self.newSpoolTool())});
+        };
+        self.activatePendingSpool = function (item) {
+            self.command("activate_pending_spool", {tool: Number(item.tool)});
         };
         self.createSpool = function () {
             self.command("create_spool", {

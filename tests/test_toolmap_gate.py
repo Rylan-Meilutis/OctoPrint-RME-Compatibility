@@ -86,6 +86,9 @@ class _Settings(object):
     def get_int(self, path):
         return int(self.values.get(path[0], 0))
 
+    def get_float(self, path):
+        return float(self.values.get(path[0], 0))
+
     def get(self, path, **kwargs):
         return self.values.get(path[0])
 
@@ -1188,6 +1191,8 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("Firmware update", settings_template)
         self.assertNotIn("Restart required after installation or update", settings_template)
         self.assertIn("spoolOwnershipText", settings_template)
+        self.assertIn("Pending tools (choose any order)", settings_template)
+        self.assertIn("spoolSelectionRows", settings_template)
         self.assertNotIn('option value="internal"', settings_template)
         self.assertIn("Current theme", settings_template)
         self.assertIn("rme-theme-swatch", settings_template)
@@ -1227,6 +1232,8 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("formatDurationLong", javascript)
         self.assertIn("formatDistance", javascript)
         self.assertIn("applyPersistentLights", javascript)
+        self.assertIn("self.pendingNewSpools = ko.pureComputed", javascript)
+        self.assertIn("self.activatePendingSpool", javascript)
         self.assertIn("stageAndFlashFirmware", javascript)
         self.assertIn("unstageFirmware", javascript)
         self.assertIn("stage_octoprint_firmware", javascript)
@@ -1682,6 +1689,163 @@ class ToolmapGateTests(unittest.TestCase):
         )
         self.assertEqual("PETG", accepted[0]["material"])
         self.assertEqual("PET-00L", accepted[0]["profile"])
+
+    def test_machine_to_provider_sync_matches_current_profile_not_base_material(self):
+        class Provider(object):
+            def __init__(self):
+                self.selections = []
+
+            def select(self, tool, database_id):
+                self.selections.append((tool, database_id))
+
+        provider = Provider()
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-machine-provider-profile-test")
+        plugin._active_spool_provider = lambda: (provider, "spoolmanager")
+        plugin._sync_spoolmanager = lambda *args: syncs.append(args)
+        plugin._state["spoolmanager"].update(
+            published=[{
+                "alias": "PET-00L", "database_id": 13,
+                "display_name": "Black PETG", "material": "PETG",
+                "vendor": "Polymaker", "color": "#000000",
+            }],
+            selected=[],
+        )
+        syncs = []
+
+        plugin._accept_firmware_spool({
+            "tool": 2, "material": "PETG", "profile": "PET-00L",
+            "color_name": "Black", "color": "#000000",
+            "vendor": "Polymaker",
+        })
+
+        self.assertEqual([(2, 13)], provider.selections)
+        self.assertEqual([(True, True)], syncs)
+        self.assertIsNone(plugin._state["spoolmanager"]["pending_new"])
+
+    def test_machine_to_provider_sync_imports_all_five_mmu_tools(self):
+        class Provider(object):
+            def __init__(self):
+                self.selections = []
+
+            def select(self, tool, database_id):
+                self.selections.append((tool, database_id))
+
+        provider = Provider()
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-machine-provider-five-tool-test")
+        plugin._active_spool_provider = lambda: (provider, "spoolmanager")
+        plugin._sync_spoolmanager = lambda *args: None
+        profiles = [
+            ("PLA", "PLA-00D"),
+            ("PLA", "PLA-00C"),
+            ("PETG", "PET-00L"),
+            ("PLA", "PLA-002"),
+            ("PLA", "PLA-00H"),
+        ]
+        plugin._state["spoolmanager"].update(
+            published=[
+                {
+                    "alias": profile, "database_id": 20 + tool,
+                    "display_name": "Spool %d" % tool,
+                    "material": material, "vendor": "Vendor",
+                    "color": "#808080",
+                }
+                for tool, (material, profile) in enumerate(profiles)
+            ],
+            selected=[],
+        )
+
+        for tool, (material, profile) in enumerate(profiles):
+            plugin._accept_firmware_spool({
+                "tool": tool, "material": material, "profile": profile,
+                "color_name": "Grey", "color": "#808080",
+                "vendor": "Vendor",
+            })
+
+        self.assertEqual(
+            [(tool, 20 + tool) for tool in range(5)],
+            provider.selections,
+        )
+        self.assertIsNone(plugin._state["spoolmanager"]["pending_new"])
+
+    def test_unknown_firmware_profiles_queue_every_tool_and_allow_any_order(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._logger = logging.getLogger("rme-machine-provider-pending-queue-test")
+        plugin._active_spool_provider = lambda: (types.SimpleNamespace(), "spoolmanager")
+        plugin._persist_and_publish = lambda: None
+        plugin._state["spoolmanager"].update(published=[], selected=[])
+
+        for tool in range(5):
+            plugin._accept_firmware_spool({
+                "tool": tool,
+                "material": "PETG" if tool == 2 else "PLA",
+                "profile": "PROFILE-%d" % tool,
+                "color_name": "Color %d" % tool,
+                "color": "#808080",
+                "vendor": "Vendor",
+            })
+
+        self.assertEqual(
+            [0, 1, 2, 3, 4],
+            [item["tool"] for item in
+             plugin._state["spoolmanager"]["pending_new_queue"]],
+        )
+        self.assertEqual(0, plugin._state["spoolmanager"]["pending_new"]["tool"])
+
+        plugin._activate_pending_spool(3)
+
+        self.assertEqual(3, plugin._state["spoolmanager"]["pending_new"]["tool"])
+        self.assertEqual(
+            [0, 1, 2, 3, 4],
+            [item["tool"] for item in
+             plugin._state["spoolmanager"]["pending_new_queue"]],
+        )
+
+    def test_completing_or_skipping_pending_spool_preserves_other_tools(self):
+        class Provider(object):
+            def __init__(self):
+                self.created = []
+                self.selected = []
+
+            def create(self, values):
+                self.created.append(values)
+                return {"database_id": 91}
+
+            def select(self, tool, database_id):
+                self.selected.append((tool, database_id))
+
+        provider = Provider()
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._active_spool_provider = lambda: (provider, "spoolmanager")
+        plugin._persist_and_publish = lambda: None
+        plugin._sync_spoolmanager = lambda *args: None
+        for tool in range(3):
+            plugin._begin_new_spool(tool)
+
+        plugin._activate_pending_spool(1)
+        plugin._create_spool({
+            "display_name": "Middle spool", "material": "PLA",
+            "color": "#808080", "total_weight": 1000,
+        })
+
+        self.assertEqual([(1, 91)], provider.selected)
+        self.assertEqual(
+            [0, 2],
+            [item["tool"] for item in
+             plugin._state["spoolmanager"]["pending_new_queue"]],
+        )
+        self.assertEqual(0, plugin._state["spoolmanager"]["pending_new"]["tool"])
+
+        plugin._cancel_pending_spool()
+
+        self.assertEqual([2], [
+            item["tool"] for item in
+            plugin._state["spoolmanager"]["pending_new_queue"]
+        ])
+        self.assertEqual(2, plugin._state["spoolmanager"]["pending_new"]["tool"])
 
     def test_legacy_loaded_profile_provider_enrichment_stays_exact_for_m976(self):
         plugin = RmeCompatibilityPlugin()

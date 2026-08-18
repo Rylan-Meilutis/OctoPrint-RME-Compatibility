@@ -64,17 +64,26 @@
                 <ul data-bind="foreach: publishedSpools">
                     <li><span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span> <span data-bind="text: $parent.spoolLabel($data)"></span></li>
                 </ul>
-                <table class="table table-condensed" data-bind="visible: spoolSelectionRows().length">
-                    <thead><tr><th>Printer tool</th><th>Selected spool</th></tr></thead>
-                    <tbody data-bind="foreach: spoolSelectionRows"><tr>
-                        <td data-bind="text: 'T' + tool"></td>
-                        <td><select data-bind="options: $parent.inventorySpools, optionsText: $parent.spoolLabel, optionsValue: 'database_id', optionsCaption: 'Unassigned', value: selected, event: {change: function() { $parent.changeSpoolSelection($data); }}"></select></td>
-                    </tr></tbody>
-                </table>
             </div>
+            <table class="table table-condensed" data-bind="visible: spoolSelectionRows().length">
+                <thead><tr><th>Printer tool</th><th>Selected spool</th></tr></thead>
+                <tbody data-bind="foreach: spoolSelectionRows"><tr>
+                    <td data-bind="text: 'T' + tool"></td>
+                    <td><select data-bind="options: $parent.inventorySpools, optionsText: $parent.spoolLabel, optionsValue: 'database_id', optionsCaption: 'Unassigned', value: selected, event: {change: function() { $parent.changeSpoolSelection($data); }}"></select></td>
+                </tr></tbody>
+            </table>
             <div class="alert alert-info" data-bind="visible: pendingNewSpool">
                 <strong>Configure new printer filament</strong>
-                <p>Tool <span data-bind="text: pendingNewSpool() && pendingNewSpool().tool"></span>; this draft persists across refreshes.</p>
+                <p data-bind="visible: pendingNewSpools().length > 1">
+                    Pending tools (choose any order):
+                    <span data-bind="foreach: pendingNewSpools">
+                        <button type="button" class="btn btn-mini"
+                                data-bind="click: $parent.activatePendingSpool,
+                                           css: {'btn-primary': $parent.pendingNewSpool() && Number($parent.pendingNewSpool().tool) === Number(tool)},
+                                           text: 'T' + tool"></button>
+                    </span>
+                </p>
+                <p>Editing tool T<span data-bind="text: pendingNewSpool() && pendingNewSpool().tool"></span>; every tool draft persists across refreshes.</p>
                 <div class="form-inline rme-spool-form">
                     <label>Name <input class="input-medium" data-bind="value: newSpoolName"></label>
                     <label>Vendor <input class="input-small" data-bind="value: newSpoolVendor"></label>

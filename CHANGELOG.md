@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.0b71 — 2026-08-18
+
+- Match current firmware loadouts by their separate profile alias instead of
+  comparing the provider alias with the base material family. Printer-to-
+  provider synchronization now imports every reported MMU tool rather than
+  repeatedly treating known profiles as unknown.
+- Coalesce filament synchronization requests that arrive while another sync
+  owns the bridge, then replay the combined request instead of silently
+  dropping it. Add tool-by-tool provider snapshots, match decisions, queued
+  batches, and machine-import details to the OctoPrint log.
+- Show the manual tool-assignment table for SpoolManager and Spoolman as well
+  as the built-in provider, with one independent selector for every logical
+  tool reported by the machine.
+- Persist unknown firmware profiles in a per-tool queue. All affected tools
+  remain visible, may be configured in any order, and creating or dismissing
+  one draft no longer discards the others.
+
 ## 0.1.0b70 — 2026-08-18
 
 - Preserve whether Buddy explicitly reported separate material-family and
