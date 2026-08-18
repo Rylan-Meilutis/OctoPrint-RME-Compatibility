@@ -558,14 +558,48 @@ $(function () {
         self.loadedFilamentLabel = function (filament) {
             if (!filament) return "Nothing reported";
             var profile = filament.firmware_profile || filament.profile || filament.firmware_alias || "";
-            var material = filament.firmware_material || filament.material || "Unassigned";
+            var material = filament.material || filament.firmware_material || "Unassigned";
             var details = [];
-            if (profile && profile !== material) details.push(profile);
+            // A resolved RME alias is transport metadata, not the spool name
+            // or material. Prefer the inventory provider's native name and
+            // retain the short profile only as a fallback for unknown records.
+            if (filament.display_name) details.push(filament.display_name);
+            else if (profile && profile !== material) details.push(profile);
             details.push(material);
             var manufacturer = filament.manufacturer || filament.vendor;
             if (manufacturer) details.push("Manufacturer: " + manufacturer);
             if (filament.color_name && filament.color_name !== "None") details.push(filament.color_name);
             return details.join(" · ");
+        };
+        self.openNativeSpoolSelector = function (row) {
+            var provider = String(self.spoolmanager().provider || "").toLowerCase();
+            var tool = Number(row && row.tool);
+            if (provider === "spoolmanager") {
+                var spoolManagerElement = document.getElementById("sidebar_spool_select");
+                var spoolManager = spoolManagerElement && ko.dataFor(spoolManagerElement);
+                if (spoolManager && typeof spoolManager.sidebarOpenSelectSpoolDialog === "function") {
+                    var current = null;
+                    var selected = typeof spoolManager.selectedSpoolsForSidebar === "function" ?
+                        spoolManager.selectedSpoolsForSidebar() : [];
+                    if (selected[tool]) current = ko.unwrap(selected[tool]);
+                    spoolManager.sidebarOpenSelectSpoolDialog(tool, current || null);
+                    return;
+                }
+            }
+            if (provider === "spoolman") {
+                var spoolmanElement = document.getElementById("sidebar_spoolman");
+                var spoolman = spoolmanElement && ko.dataFor(spoolmanElement);
+                if (spoolman && spoolman.templateApi &&
+                        typeof spoolman.templateApi.handleOpenSpoolSelector === "function") {
+                    spoolman.templateApi.handleOpenSpoolSelector(tool);
+                    return;
+                }
+            }
+            new PNotify({
+                title: "Native spool selector unavailable",
+                text: "Open the provider sidebar and use its spool selector, or choose a spool from this mapping row.",
+                type: "notice"
+            });
         };
         self.hasDirtySpoolSelections = ko.pureComputed(function () {
             return !!self.pendingProviderSync() || ko.utils.arrayFirst(self.spoolSelectionRows(), function (row) {
@@ -1359,7 +1393,8 @@ $(function () {
                 '<td data-bind="text: \'T\' + tool"></td><td><span class="rme-color-dot" data-bind="visible: loaded, style: {backgroundColor: loaded && loaded.color}"></span> ' +
                 '<span data-bind="text: $parent.loadedFilamentLabel(loaded)"></span></td>' +
                 '<td><select data-bind="options: availableSpools, optionsText: $parent.spoolLabel, optionsValue: \'database_id\', optionsCaption: \'Unassigned\', value: selected, event: {change: function() { $parent.changeSpoolSelection($data); }}"></select></td>' +
-                '<td class="rme-spool-mapping-actions"><button class="btn btn-mini" data-bind="click: $parent.createSpoolInSpoolManager"><i class="fa fa-plus"></i> Create new…</button></td>' +
+                '<td class="rme-spool-mapping-actions"><button class="btn btn-mini" data-bind="click: $parent.openNativeSpoolSelector"><i class="fa fa-ellipsis-h"></i> Native select…</button> ' +
+                '<button class="btn btn-mini" data-bind="click: $parent.createSpoolInSpoolManager"><i class="fa fa-plus"></i> Create new…</button></td>' +
                 '</tr></tbody></table><p class="help-block">Create new opens SpoolManager’s native spool editor with the printer’s known material, vendor, color, and temperatures prefilled.</p></div>'
             );
             tab.prepend(panel);
@@ -1383,7 +1418,8 @@ $(function () {
                 '<td data-bind="text: \'T\' + tool"></td><td><span class="rme-color-dot" data-bind="visible: loaded, style: {backgroundColor: loaded && loaded.color}"></span> ' +
                 '<span data-bind="text: $parent.loadedFilamentLabel(loaded)"></span></td>' +
                 '<td><select data-bind="options: availableSpools, optionsText: $parent.spoolLabel, optionsValue: \'database_id\', optionsCaption: \'Unassigned\', value: selected, event: {change: function() { $parent.changeSpoolSelection($data); }}"></select></td>' +
-                '<td><button class="btn btn-mini" data-bind="click: $parent.createSpoolForMappingRow"><i class="fa fa-plus"></i> Create new…</button></td>' +
+                '<td class="rme-spool-mapping-actions"><button class="btn btn-mini" data-bind="click: $parent.openNativeSpoolSelector"><i class="fa fa-ellipsis-h"></i> Native select…</button> ' +
+                '<button class="btn btn-mini" data-bind="click: $parent.createSpoolForMappingRow"><i class="fa fa-plus"></i> Create new…</button></td>' +
                 '</tr></tbody></table></div>' +
                 '<p class="help-block">The complete provider inventory is shown by default, with material matches first. Clear Show all materials only when you want a compatible-material-only list. Printer manufacturer, profile, color, and temperature data prefill new spools.</p></div>' +
                 '<div class="modal-footer"><button class="btn" data-dismiss="modal">Close</button>' +

@@ -165,6 +165,30 @@ class SpoolManagerBridge(object):
             raise SpoolManagerUnavailable("Installed SpoolManager has no compatible selection API")
         implementation._selectSpool(int(tool), -1)
 
+    def refresh_clients(self):
+        """Refresh SpoolManager's cached table and global tool assignments.
+
+        Its native HTTP selector updates the calling browser from the response,
+        but integrations calling ``_selectSpool`` only persist the settings and
+        emit events. Broadcast the same supported reload action SpoolManager
+        uses after database changes so every open client reflects the mapping
+        immediately instead of waiting for a later sidebar refresh.
+        """
+        implementation = self._implementation()
+        sender = getattr(implementation, "_sendDataToClient", None)
+        if not callable(sender):
+            return False
+        try:
+            sender({"action": "reloadTable and sidebarSpools"})
+            return True
+        except Exception as exc:
+            if self.logger is not None:
+                self.logger.warning(
+                    "Could not refresh SpoolManager clients after selection: %s",
+                    exc,
+                )
+            return False
+
     def create(self, values):
         """Create a concrete (non-template) spool from the persistent RME form."""
         implementation = self._implementation()

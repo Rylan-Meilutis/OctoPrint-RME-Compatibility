@@ -1282,6 +1282,11 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("self.pendingNewSpools = ko.pureComputed", javascript)
         self.assertIn("self.activatePendingSpool", javascript)
         self.assertIn("self.loadedFilamentLabel", javascript)
+        self.assertIn("self.openNativeSpoolSelector", javascript)
+        self.assertIn("sidebarOpenSelectSpoolDialog", javascript)
+        self.assertIn("handleOpenSpoolSelector", javascript)
+        self.assertIn("Native select…", javascript)
+        self.assertIn("if (filament.display_name) details.push(filament.display_name)", javascript)
         self.assertIn("installSpoolManagerPanel", javascript)
         self.assertIn("ensureRmeSpoolMappingDialog", javascript)
         self.assertIn("rme-spool-mapping-dialog", javascript)
@@ -1754,6 +1759,38 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual("PETG", accepted[0]["material"])
         self.assertEqual("PET-00L", accepted[0]["profile"])
 
+    def test_current_firmware_duplicate_alias_recovers_provider_base_family(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-duplicate-alias-base-test")
+        plugin._schedule_publish = lambda: None
+        plugin._defer = lambda callback, *args: None
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["spoolmanager"].update(
+            provider="spoolmanager",
+            published=[{
+                "alias": "PET-00O", "database_id": 24,
+                "display_name": "Black PETG", "vendor": "Polymaker",
+                "material": "PETG", "color": "#000000",
+            }],
+        )
+
+        plugin._handle_record(parse_line(
+            'loaded_filament T2 S"PET-00O" P"PET-00O" '
+            'O"Black" H"#000000" M"Polymaker"'
+        ))
+
+        loaded = plugin._state["loaded_filaments"][0]
+        self.assertEqual("PET-00O", loaded["firmware_reported_material"])
+        self.assertEqual("PET-00O", loaded["firmware_profile"])
+        self.assertEqual("PETG", loaded["firmware_material"])
+        self.assertEqual("PETG", loaded["material"])
+        self.assertEqual("Black PETG", loaded["display_name"])
+        self.assertTrue(loaded["material_family_reported"])
+        self.assertEqual(
+            "M976 A 0:2:PETG:255",
+            plugin._rewrite_m976_batch_materials("M976 A 0:2:PLA:255"),
+        )
+
     def test_machine_manufacturer_is_retained_regardless_of_query_order(self):
         plugin = RmeCompatibilityPlugin()
         plugin._schedule_publish = lambda: None
@@ -1967,6 +2004,7 @@ class ToolmapGateTests(unittest.TestCase):
             def __init__(self):
                 self.selected = []
                 self.deselected = []
+                self.refreshes = 0
 
             def get(self, database_id):
                 return {"database_id": database_id} if database_id in (41, 44) else None
@@ -1976,6 +2014,9 @@ class ToolmapGateTests(unittest.TestCase):
 
             def deselect(self, tool):
                 self.deselected.append(tool)
+
+            def refresh_clients(self):
+                self.refreshes += 1
 
         provider = Provider()
         plugin = RmeCompatibilityPlugin()
@@ -2000,6 +2041,7 @@ class ToolmapGateTests(unittest.TestCase):
 
         self.assertEqual([(0, 41), (2, 44)], provider.selected)
         self.assertEqual([1], provider.deselected)
+        self.assertEqual(1, provider.refreshes)
         self.assertEqual([(True,)], sync_calls)
         self.assertIsNone(plugin._state["spoolmanager"]["pending_provider_sync"])
         self.assertEqual(

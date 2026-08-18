@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0b76 — 2026-08-18
+
+- Broadcast SpoolManager's native table-and-sidebar reload after RME mapping
+  changes so persisted multi-tool selections appear immediately in every open
+  SpoolManager panel instead of waiting for its eventual background refresh.
+- Show the native provider spool name and material for resolved firmware
+  aliases, and recover the provider-backed base family when affected 6.8.1-RME
+  builds incorrectly echo a custom profile into both loaded-filament fields.
+- Let every mapping row open SpoolManager or Spoolman's own native spool
+  selector while retaining the all-tools staged mapping workflow.
+
 ## 0.1.0b75 — 2026-08-18
 
 - Keep SpoolManager profiles marked as templates selectable in filament

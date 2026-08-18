@@ -52,6 +52,7 @@ class _Implementation(object):
         self._databaseManager = _Database(models)
         self._settings = _Settings([models[0].databaseId])
         self.selection = [models[0]]
+        self.client_messages = []
 
     def loadSelectedSpools(self):
         return self.selection
@@ -61,6 +62,9 @@ class _Implementation(object):
                                     if model.databaseId == database_id)
         self._settings.database_ids[tool] = database_id
         return self.selection[tool]
+
+    def _sendDataToClient(self, payload):
+        self.client_messages.append(payload)
 
 
 class _PluginInfo(object):
@@ -100,6 +104,11 @@ class SpoolManagerTests(unittest.TestCase):
         self.assertTrue(bridge.get(3)["is_template"])
         self.assertEqual(bridge.select(0, 3)["database_id"], 3)
         self.assertEqual(bridge.selected()[0]["database_id"], 3)
+        self.assertTrue(bridge.refresh_clients())
+        self.assertEqual(
+            [{"action": "reloadTable and sidebarSpools"}],
+            implementation.client_messages,
+        )
         self.assertEqual(bridge.selected()[0]["color"], "#193a8a")
         self.assertEqual(bridge.select(0, 1)["display_name"], "Galaxy Blue")
 

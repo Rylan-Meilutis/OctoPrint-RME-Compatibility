@@ -1803,6 +1803,30 @@ class RmeCompatibilityPlugin(
                     None,
                 )
                 if provider_match:
+                    # Some 6.8.1-RME builds echo the seven-character custom
+                    # profile into both S and P even though FILAMENT SET was
+                    # published with an explicit base= family.  The alias is
+                    # ours, so its provider record is the authoritative and
+                    # unambiguous source for the persisted base association.
+                    # Keep the raw values for diagnostics, but do not let the
+                    # duplicated alias become the UI material or M976 input.
+                    reported_material = loadout.get("firmware_material", "")
+                    reported_profile = loadout.get("firmware_profile", "")
+                    if (
+                        loadout.get("material_family_reported") is True
+                        and reported_profile
+                        and reported_material == reported_profile
+                        and reported_profile == provider_match.get("alias")
+                    ):
+                        inferred_base = self._firmware_filament_base(
+                            provider_match.get("material")
+                        )
+                        if inferred_base != "none":
+                            loadout.update(
+                                firmware_reported_material=reported_material,
+                                firmware_material=inferred_base,
+                                material_family_reported=True,
+                            )
                     loadout.update(
                         firmware_alias=loadout.get("profile", ""),
                         material=provider_match.get("material", loadout.get("material", "")),
@@ -3490,6 +3514,7 @@ class RmeCompatibilityPlugin(
         provider, _ = self._active_spool_provider()
         self._mark_expected_provider_event(tool, database_id)
         provider.select(tool, database_id)
+        self._refresh_provider_clients(provider)
         with self._state_lock:
             queue = self._pending_spool_queue_locked()
             if any(int(item["tool"]) == tool for item in queue):
@@ -3502,7 +3527,15 @@ class RmeCompatibilityPlugin(
         provider, _ = self._active_spool_provider()
         self._mark_expected_provider_event(tool, None)
         provider.deselect(tool)
+        self._refresh_provider_clients(provider)
         self._sync_spoolmanager(True)
+
+    @staticmethod
+    def _refresh_provider_clients(provider):
+        """Ask an external provider to invalidate any open frontend caches."""
+        refresh = getattr(provider, "refresh_clients", None)
+        if callable(refresh):
+            refresh()
 
     def _apply_spool_selections(self, selections):
         """Apply several tool assignments, then publish one coherent batch.
@@ -3543,6 +3576,7 @@ class RmeCompatibilityPlugin(
                     queue = self._pending_spool_queue_locked()
                     if any(int(item["tool"]) == tool for item in queue):
                         self._remove_pending_spool_locked(tool)
+        self._refresh_provider_clients(provider)
         with self._state_lock:
             # Saving the complete integration page is itself explicit consent
             # to reconcile the provider with the printer. Do not leave an old
@@ -3698,6 +3732,7 @@ class RmeCompatibilityPlugin(
                 )
                 self._mark_expected_provider_event(tool, match["database_id"])
                 provider.select(tool, match["database_id"])
+                self._refresh_provider_clients(provider)
                 self._sync_spoolmanager(True, True)
             else:
                 expected_vendor = self._gcode_text(match.get("vendor"), 23)
@@ -3738,6 +3773,7 @@ class RmeCompatibilityPlugin(
                 )
                 self._mark_expected_provider_event(tool, None)
                 provider.deselect(tool)
+                self._refresh_provider_clients(provider)
                 self._sync_spoolmanager(False, False)
             return
 
@@ -3764,6 +3800,7 @@ class RmeCompatibilityPlugin(
         if current:
             self._mark_expected_provider_event(tool, None)
             provider.deselect(tool)
+            self._refresh_provider_clients(provider)
         self._persist_and_publish()
 
     def _create_spool(self, data):
@@ -3789,6 +3826,7 @@ class RmeCompatibilityPlugin(
         provider, _ = self._active_spool_provider()
         created = provider.create(values)
         provider.select(int(pending["tool"]), created["database_id"])
+        self._refresh_provider_clients(provider)
         with self._state_lock:
             self._remove_pending_spool_locked(int(pending["tool"]))
         self._sync_spoolmanager(True)
