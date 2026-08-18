@@ -684,6 +684,9 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual([], plugin._printer.command_batches)
 
         plugin._sync_filaments_to_printer()
+        self.assertIsNone(
+            plugin._state["spoolmanager"]["pending_provider_sync"]
+        )
         commands = [
             command
             for batch in plugin._printer.command_batches
@@ -694,6 +697,43 @@ class ToolmapGateTests(unittest.TestCase):
             for command in commands
         ))
         self.assertIn('M865 U0 L0 O"#ff7700"', commands)
+
+    def test_confirmed_provider_change_stays_cleared_when_print_defers_apply(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-provider-deferred-confirm-test")
+        plugin._state["spoolmanager"]["pending_provider_sync"] = {
+            "tool": 2, "database_id": 12, "message": "Apply?",
+        }
+        plugin._provider_firmware_signature = ("stale",)
+        plugin._print_job_active = lambda: True
+        persisted = []
+        plugin._persist_and_publish = lambda: persisted.append(True)
+
+        plugin._sync_filaments_to_printer()
+
+        self.assertIsNone(
+            plugin._state["spoolmanager"]["pending_provider_sync"]
+        )
+        self.assertIsNone(plugin._provider_firmware_signature)
+        self.assertEqual([True], persisted)
+        self.assertEqual((True, True), plugin._spool_sync_pending)
+
+    def test_provider_prompt_accumulates_changes_for_multiple_tools(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._persist_and_publish = lambda: None
+        plugin._state["spoolmanager"]["selected"] = [
+            {"tool": 0, "database_id": 10, "display_name": "Grey PLA"},
+            {"tool": 2, "database_id": 12, "display_name": "Black PETG"},
+        ]
+
+        plugin._queue_provider_sync_prompt(0, 10)
+        plugin._queue_provider_sync_prompt(2, 12)
+
+        pending = plugin._state["spoolmanager"]["pending_provider_sync"]
+        self.assertEqual([0, 2], [entry["tool"] for entry in pending["changes"]])
+        self.assertIn("T0 to Grey PLA", pending["message"])
+        self.assertIn("T2 to Black PETG", pending["message"])
+        self.assertIn("Apply all 2 changes", pending["message"])
 
     def test_identical_spoolmanager_read_event_is_a_noop(self):
         plugin = RmeCompatibilityPlugin()
@@ -1637,8 +1677,39 @@ class ToolmapGateTests(unittest.TestCase):
 
         self.assertEqual("Polymaker", plugin._state["loaded_filaments"][0]["vendor"])
         self.assertEqual("#000000", plugin._state["loaded_filaments"][0]["color"])
+        self.assertTrue(
+            plugin._state["loaded_filaments"][0]["material_family_reported"]
+        )
         self.assertEqual("PETG", accepted[0]["material"])
         self.assertEqual("PET-00L", accepted[0]["profile"])
+
+    def test_legacy_loaded_profile_provider_enrichment_stays_exact_for_m976(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-m976-provider-legacy-test")
+        plugin._schedule_publish = lambda: None
+        plugin._defer = lambda callback, *args: None
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["spoolmanager"].update(
+            provider="spoolmanager",
+            published=[{
+                "alias": "PET-00L", "database_id": 13,
+                "display_name": "Black PETG", "vendor": "Polymaker",
+                "material": "PETG", "color": "#000000",
+            }],
+        )
+
+        plugin._handle_record(parse_line(
+            'loaded_filament T2 S"PET-00L" O"Black" H"#000000" M"Polymaker"'
+        ))
+
+        loaded = plugin._state["loaded_filaments"][0]
+        self.assertEqual("PETG", loaded["material"])
+        self.assertEqual("PET-00L", loaded["firmware_material"])
+        self.assertFalse(loaded["material_family_reported"])
+        self.assertEqual(
+            "M976 A 0:2:PET-00L:255",
+            plugin._rewrite_m976_batch_materials("M976 A 0:2:PETG:255"),
+        )
 
     def test_stats_use_connection_and_print_lifecycle_snapshots_without_polling(self):
         plugin = RmeCompatibilityPlugin()
@@ -2060,12 +2131,27 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._state.update(connected=True, supported=True)
         plugin._state["loaded_filaments"] = [{
             "tool": 2, "material": "PETG", "profile": "PET-00L",
+            "firmware_material": "PETG", "firmware_profile": "PET-00L",
+            "material_family_reported": True,
         }]
         command = "M976 A 0:2:PETG:255"
 
         self.assertEqual(command, plugin._rewrite_m976_batch_materials(command))
         self.assertIsNone(plugin.gcode_queuing_hook(
             None, "queuing", command, None, "M976", tags={"source:job"},
+        ))
+
+    def test_motors_enabled_m117_is_not_mirrored_to_rme_printer(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._state.update(connected=True, supported=True)
+
+        self.assertEqual((None,), plugin.gcode_queuing_hook(
+            None, "queuing", "M117 Motors enabled.", None, "M117",
+            tags={"source:plugin"},
+        ))
+        self.assertIsNone(plugin.gcode_queuing_hook(
+            None, "queuing", "M117 Heating bed", None, "M117",
+            tags={"source:plugin"},
         ))
 
     def test_m976_batch_is_untouched_without_an_exact_loaded_assignment(self):

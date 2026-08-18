@@ -618,9 +618,13 @@ class RmeCompatibilityPlugin(
                 flask.abort(400, description="Filament needs slot 0-7 and a 1-7 character name without spaces")
             if any(value < 0 or value > 500 for value in temperatures):
                 flask.abort(400, description="Filament temperatures must be 0 through 500 C")
+            base = self._firmware_filament_base(data.get("base") or name)
             self._send_command(self._with_transaction(
-                "@RME FILAMENT SET slot=%d name=%s nozzle=%d preheat=%d bed=%d visible=%d"
-                % (slot, name, temperatures[0], temperatures[1], temperatures[2], visible)
+                "@RME FILAMENT SET slot=%d name=%s base=%s nozzle=%d preheat=%d bed=%d visible=%d"
+                % (
+                    slot, name, base, temperatures[0], temperatures[1],
+                    temperatures[2], visible,
+                )
             ))
         elif command == "stage_firmware":
             self._start_firmware_upload(data["filename"])
@@ -1352,6 +1356,17 @@ class RmeCompatibilityPlugin(
         if "rme:priority_control" in tags:
             return self._force_send_rme_control(comm_instance, cmd, gcode)
 
+        # Some progress/display plugins mirror this Marlin status onto the
+        # printer with M117.  Buddy already owns its on-printer motor-state UI,
+        # and this informational text otherwise obscures the useful printer
+        # status.  Keep every other M117 untouched.
+        if re.match(
+            r"^\s*M117\s+motors\s+enabled\.?\s*$",
+            str(cmd or ""),
+            re.IGNORECASE,
+        ):
+            return (None,)
+
         # Current firmware reports and validates the base polymer independently
         # from its custom profile, so current S"PETG" P"PET-00L" records leave
         # Orca's M976 material untouched. Older firmware exposed only the
@@ -1396,7 +1411,7 @@ class RmeCompatibilityPlugin(
             return command
         with self._state_lock:
             assigned = {
-                int(item.get("tool")): str(item.get("material") or "").strip()
+                int(item.get("tool")): self._m976_assignment_material(item)
                 for item in self._state.get("loaded_filaments", [])
                 if item.get("tool") is not None
             }
@@ -1426,6 +1441,34 @@ class RmeCompatibilityPlugin(
         )
         self._logger.info("Translated M976 batch materials to firmware assignments")
         return result
+
+    @staticmethod
+    def _m976_assignment_material(item):
+        """Return the material identifier this firmware can validate safely.
+
+        A current M865 record explicitly carries ``S`` (base family) and ``P``
+        (profile).  A legacy record carries only ``S`` and therefore must use
+        that exact profile identifier.  Provider enrichment changes the
+        display material, so it must never be used to infer that a firmware
+        profile has a persisted base association.
+        """
+        family_reported = item.get("material_family_reported")
+        firmware_material = str(
+            item.get("firmware_material") or item.get("material") or ""
+        ).strip()
+        firmware_profile = str(
+            item.get("firmware_profile") or item.get("profile") or firmware_material
+        ).strip()
+        if family_reported is True:
+            return firmware_material
+        if family_reported is False:
+            return firmware_profile
+        # Compatibility for in-memory state produced before this marker was
+        # introduced: differing material/profile values are safest as the
+        # exact profile, which current and legacy M976 both accept.
+        if firmware_profile and firmware_profile != firmware_material:
+            return firmware_profile
+        return firmware_material
 
     def gcode_sent_hook(self, comm_instance, phase, cmd, cmd_type, gcode,
                         subcode=None, tags=None, *args, **kwargs):
@@ -1712,6 +1755,17 @@ class RmeCompatibilityPlugin(
                 loadout = {
                     key: value for key, value in record.items() if key != "record"
                 }
+                # Preserve the firmware's raw protocol identities before
+                # provider metadata enriches the human-facing material field.
+                # M976 validation must follow firmware state, not a provider's
+                # best-effort interpretation of a seven-character alias.
+                loadout.update(
+                    firmware_material=loadout.get("material", ""),
+                    firmware_profile=loadout.get("profile") or loadout.get("material", ""),
+                    material_family_reported=bool(
+                        loadout.get("material_family_reported", False)
+                    ),
+                )
                 if str(loadout.get("vendor", "")).lower() == "none":
                     loadout["vendor"] = ""
                 # Provider metadata remains authoritative when the firmware's
@@ -3209,17 +3263,59 @@ class RmeCompatibilityPlugin(
                 None,
             )
             if tool is None:
-                message = "The filament provider configuration changed. Apply it to the printer?"
+                change_message = "filament provider configuration"
             elif database_id is None:
-                message = "SpoolManager cleared tool T%d. Clear it on the printer?" % int(tool)
+                change_message = "T%d cleared" % int(tool)
             else:
                 name = (item or {}).get("display_name", "spool %s" % database_id)
-                message = "SpoolManager selected %s for T%d. Apply it to the printer?" % (
-                    name, int(tool)
+                change_message = "T%d to %s" % (int(tool), name)
+            pending = self._state["spoolmanager"].get("pending_provider_sync") or {}
+            changes = list(pending.get("changes") or [])
+            # Upgrade an older persisted single-change prompt without losing it.
+            if not changes and pending and "tool" in pending:
+                changes.append({
+                    "tool": pending.get("tool"),
+                    "database_id": pending.get("database_id"),
+                    "message": pending.get("change_message") or pending.get(
+                        "message", "Filament selection changed"
+                    ),
+                })
+            change = {
+                "tool": tool, "database_id": database_id,
+                "message": change_message,
+            }
+            change_key = "all" if tool is None else int(tool)
+            changes = [
+                entry for entry in changes
+                if (
+                    "all" if entry.get("tool") is None
+                    else int(entry.get("tool"))
+                ) != change_key
+            ]
+            changes.append(change)
+            changes.sort(
+                key=lambda entry: (
+                    -1 if entry.get("tool") is None else int(entry.get("tool"))
+                )
+            )
+            if len(changes) == 1:
+                if tool is None:
+                    message = "The filament provider configuration changed. Apply it to the printer?"
+                elif database_id is None:
+                    message = "SpoolManager cleared tool T%d. Clear it on the printer?" % int(tool)
+                else:
+                    message = "SpoolManager selected %s for T%d. Apply it to the printer?" % (
+                        name, int(tool)
+                    )
+            else:
+                summary = "; ".join(entry["message"] for entry in changes)
+                message = "SpoolManager changed %s. Apply all %d changes to the printer?" % (
+                    summary, len(changes)
                 )
             self._state["spoolmanager"]["pending_provider_sync"] = {
                 "tool": tool,
                 "database_id": database_id,
+                "changes": changes,
                 "message": message,
                 "updated": int(time.time()),
             }
@@ -3250,6 +3346,15 @@ class RmeCompatibilityPlugin(
         """Publish provider presets and assignments after explicit acceptance."""
         with self._state_lock:
             self._state["spoolmanager"]["pending_provider_sync"] = None
+            self._state["spoolmanager"]["status"] = "applying provider selections"
+            # Applying is an explicit repair request too.  Do not let an old
+            # content signature suppress republishing profiles that predate
+            # Buddy's persistent base-material association.
+            self._provider_firmware_signature = None
+        # Make acceptance durable before synchronization.  A print can defer
+        # the serial batch and another sync can briefly own its lock; neither
+        # condition should resurrect a prompt the user already accepted.
+        self._persist_and_publish()
         self._sync_spoolmanager(True, True)
 
     def _select_spool_from_octoprint(self, tool, database_id):

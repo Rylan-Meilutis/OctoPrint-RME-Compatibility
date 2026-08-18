@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.0b70 — 2026-08-18
+
+- Preserve whether Buddy explicitly reported separate material-family and
+  profile fields. Provider enrichment can no longer make a legacy
+  `S"PET-00L"` assignment look like authoritative `S"PETG" P"PET-00L"`
+  firmware state.
+- Make `M976 A` use the authoritative base family on current profiles and the
+  exact profile alias on legacy or not-yet-migrated profiles, preventing
+  `invalid batch or loaded-material mismatch` print cancellations.
+- Make provider-change acceptance durable before serial synchronization,
+  force-republish accepted profiles with `base=PETG`-style associations, and
+  defer the accepted batch safely when a print owns the connection.
+- Accumulate simultaneous SpoolManager changes for every affected tool and
+  apply the full changed loadout instead of replacing the prompt with only the
+  last tool event.
+- Stop forwarding the informational `M117 Motors enabled.` message to RME
+  printer displays.
+
+## 0.1.0b69 — 2026-08-17
+
+- Reorganize firmware and USB-storage actions into responsive button groups.
+- Gracefully disconnect for plugin-initiated firmware update restarts and
+  retry expected reconnects for a bounded three-minute window.
+- Reset and retry OctoPrint connections that stall during an expected update
+  handshake while leaving ordinary printer disconnects untouched.
+
 ## 0.1.0b68 — 2026-08-17
 
 - Follow the maintained 6.6.3/6.8.1 asynchronous firmware-validation

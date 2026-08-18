@@ -104,6 +104,7 @@ class ProtocolTests(unittest.TestCase):
         ), {
             "record": "loaded_filament", "tool": 2, "material": "PLA-00A",
             "profile": "PLA-00A",
+            "material_family_reported": False,
             "color_name": "Orange", "color": "#ff8000",
         })
         self.assertEqual(parse_line(
@@ -111,6 +112,7 @@ class ProtocolTests(unittest.TestCase):
         ), {
             "record": "loaded_filament", "tool": 0, "material": "PLA-00D",
             "profile": "PLA-00D",
+            "material_family_reported": False,
             "color_name": "Custom", "color": "#808080",
             "vendor": "Prusa / Prusament",
         })
@@ -119,6 +121,7 @@ class ProtocolTests(unittest.TestCase):
         ), {
             "record": "loaded_filament", "tool": 0, "material": "PLA",
             "profile": "PLA-00D", "color_name": "Custom", "color": "#808080",
+            "material_family_reported": True,
             "vendor": "Polymaker",
         })
         self.assertEqual(parse_line(

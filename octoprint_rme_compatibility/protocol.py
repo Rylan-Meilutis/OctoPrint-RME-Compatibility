@@ -230,6 +230,12 @@ def parse_line(raw_line):
     loaded_filament = LOADED_FILAMENT_RE.match(line)
     if loaded_filament:
         result = loaded_filament.groupdict()
+        # ``P`` was added when Buddy separated the authoritative material
+        # family from the selected custom profile.  Retain whether it was
+        # actually present: filling the legacy fallback below must not make an
+        # old S"PET-00L" record look like a current S"PETG" P"PET-00L"
+        # record to safety-sensitive consumers such as M976 rewriting.
+        result["material_family_reported"] = result.get("profile") is not None
         if result.get("profile") is None:
             result["profile"] = result["material"]
         if result.get("vendor") is None:
