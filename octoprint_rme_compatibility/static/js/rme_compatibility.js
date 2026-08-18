@@ -309,7 +309,7 @@ $(function () {
             var storage = state.storage || {};
             var partial = storage.partial || null;
             var download = storage.download || {};
-            var firmwareStatuses = ["queued", "canceling", "starting", "uploading", "verifying", "flash_queued", "flashing", "restarting"];
+            var firmwareStatuses = ["queued", "canceling", "starting", "uploading", "verifying", "flash_queued", "flashing", "restarting", "reconnected"];
             var progress;
             function numericProgress(value) {
                 if (value === null || value === undefined || value === "") return null;
@@ -331,7 +331,8 @@ $(function () {
                     starting: "Starting firmware transfer", uploading: "Firmware → printer",
                     verifying: "Verifying firmware", flash_queued: "Firmware flash queued",
                     flashing: "Flashing firmware",
-                    restarting: "Printer restarting"
+                    restarting: "Printer restarting",
+                    reconnected: "Printer reconnected"
                 };
                 var firmwareLabel = firmwareLabels[firmware.status] || "Firmware update";
                 return {
@@ -561,7 +562,9 @@ $(function () {
         self.firmwareBusy = ko.pureComputed(function () {
             return ["queued", "canceling", "starting", "uploading", "verifying"].indexOf(self.firmware().status) >= 0;
         });
-        self.firmwareActive = ko.pureComputed(function () { return self.firmwareBusy() || self.firmware().status === "ready"; });
+        self.firmwareActive = ko.pureComputed(function () {
+            return self.firmwareBusy() || ["ready", "flash_queued", "flashing", "restarting", "reconnected"].indexOf(self.firmware().status) >= 0;
+        });
         self.firmwareError = ko.pureComputed(function () {
             return self.firmware().status === "error" ? (self.firmware().error || "") : "";
         });
@@ -574,7 +577,9 @@ $(function () {
             if (fw.status === "ready") return "Firmware candidate verified as protected FWUPD.RME. It is not armed for the bootloader; use Flash and reboot to request installation.";
             if (fw.status === "flash_queued") return "Flash command queued; waiting for the printer to confirm the bootloader restart.";
             if (fw.status === "flashing") return "Bootloader handoff requested; the printer should reboot.";
-            if (fw.status === "restarting") return "Printer confirmed the firmware restart; waiting for USB to reconnect.";
+            if (fw.status === "restarting") return "Printer confirmed the firmware restart. OctoPrint disconnected cleanly and will retry the connection automatically for three minutes.";
+            if (fw.status === "reconnected") return "Printer reconnected after the firmware update. Refreshing firmware state…";
+            if (fw.status === "reconnect_timeout") return "The firmware restart reconnect window ended. Use OctoPrint's Connect button to reconnect manually.";
             if (fw.status === "uploading") return "Sending " + formatBytes(fw.offset || 0) + " of " + formatBytes(fw.size || 0) +
                 (fw.flash_after_stage ? "; flashing automatically after verification." : ".");
             if (fw.status === "verifying" && fw.flash_after_stage) return "Verifying on printer; flash will start automatically after success.";

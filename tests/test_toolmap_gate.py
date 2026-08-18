@@ -109,6 +109,7 @@ class _Printer(object):
         self.forced_commands = []
         self.cancel_calls = []
         self.disconnect_calls = 0
+        self.connect_calls = 0
 
     def set_job_on_hold(self, value, blocking=True):
         self.holds.append(value)
@@ -133,6 +134,9 @@ class _Printer(object):
 
     def disconnect(self):
         self.disconnect_calls += 1
+
+    def connect(self):
+        self.connect_calls += 1
 
 
 class _Validator(object):
@@ -995,6 +999,55 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual([], plugin._printer.command_batches)
         self.assertEqual("flash_queued", plugin._state["firmware"]["status"])
 
+    def test_firmware_flash_uses_bounded_update_only_reconnect(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+        plugin._logger = logging.getLogger("rme-firmware-reconnect-test")
+        plugin._file_service = types.SimpleNamespace(mutate=lambda action, path: None)
+        plugin._persist_and_publish = lambda: None
+        plugin._publish = lambda: None
+        plugin._defer = lambda callback, *args: callback(*args)
+        scheduled = []
+        plugin._schedule_firmware_reconnect = (
+            lambda delay: scheduled.append(delay) or True
+        )
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["firmware"]["status"] = "ready"
+
+        plugin._flash_firmware()
+        self.assertTrue(plugin._firmware_reconnect_pending())
+        plugin._handle_record(parse_line("RME_FIRMWARE_RESTART reconnect=1"))
+
+        self.assertEqual(1, plugin._printer.disconnect_calls)
+        self.assertEqual([2.0], scheduled)
+        self.assertEqual("restarting", plugin._state["firmware"]["status"])
+
+        plugin._state["connected"] = False
+        scheduled[:] = []
+        plugin._attempt_firmware_reconnect()
+        self.assertEqual(1, plugin._printer.connect_calls)
+        self.assertEqual([15.0], scheduled)
+
+        # If CONNECTED never arrives, the next watchdog pass must tear down
+        # OctoPrint's stuck Connecting state before scheduling another try.
+        scheduled[:] = []
+        plugin._attempt_firmware_reconnect()
+        self.assertEqual(2, plugin._printer.disconnect_calls)
+        self.assertEqual(1, plugin._printer.connect_calls)
+        self.assertEqual([2.0], scheduled)
+
+        self.assertTrue(plugin._complete_firmware_reconnect())
+        self.assertFalse(plugin._firmware_reconnect_pending())
+        self.assertEqual("reconnected", plugin._state["firmware"]["status"])
+
+        ordinary_disconnect = RmeCompatibilityPlugin()
+        ordinary_disconnect._printer = _Printer()
+        ordinary_disconnect._logger = logging.getLogger(
+            "rme-ordinary-disconnect-test"
+        )
+        self.assertFalse(ordinary_disconnect._attempt_firmware_reconnect())
+        self.assertEqual(0, ordinary_disconnect._printer.connect_calls)
+
     def test_sd_upload_hook_uses_verified_rme_file_transfer(self):
         class FileService(object):
             def __init__(self):
@@ -1152,6 +1205,10 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("Download to Pi", settings_template)
         self.assertIn("Download to device", settings_template)
         self.assertIn('class="rme-storage-actions"', settings_template)
+        self.assertIn('class="rme-action-group"', settings_template)
+        self.assertIn('class="rme-firmware-controls"', settings_template)
+        self.assertIn('class="rme-firmware-action-row"', settings_template)
+        self.assertIn("Flash verified candidate…", settings_template)
         self.assertIn("storageDownloadWidth", settings_template)
         self.assertIn("Schema 2 firmware", settings_template)
         self.assertIn('"plugin/rme_compatibility/storage/upload"', javascript)

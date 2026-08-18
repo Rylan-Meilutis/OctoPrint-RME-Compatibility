@@ -56,6 +56,10 @@ STUCK_ACTION_WORKFLOWS = frozenset((
     "extrusion_flow_limit",
     "stuck_filament",
 ))
+FIRMWARE_RECONNECT_INITIAL_DELAY_SECONDS = 2.0
+FIRMWARE_RECONNECT_INTERVAL_SECONDS = 5.0
+FIRMWARE_RECONNECT_HANDSHAKE_TIMEOUT_SECONDS = 15.0
+FIRMWARE_RECONNECT_TIMEOUT_SECONDS = 180.0
 
 
 def _retain_extrusion_fault(previous, incoming):
@@ -144,6 +148,12 @@ class RmeCompatibilityPlugin(
         self._provider_firmware_signature = None
         self._transfer_conflict_cancel = False
         self._firmware_handoff_started_at = 0
+        self._firmware_reconnect_lock = threading.Lock()
+        self._firmware_reconnect_timer = None
+        self._firmware_reconnect_armed = False
+        self._firmware_reconnect_deadline = 0
+        self._firmware_reconnect_disconnect_requested = False
+        self._firmware_reconnect_connecting = False
 
     @staticmethod
     def _empty_state():
@@ -327,6 +337,7 @@ class RmeCompatibilityPlugin(
         # hold. In-flight prints remain under OctoPrint's normal control.
         self._release_toolmap_hold()
         self._stop.set()
+        self._cancel_firmware_reconnect()
         with self._publish_timer_lock:
             if self._publish_timer:
                 self._publish_timer.cancel()
@@ -895,6 +906,7 @@ class RmeCompatibilityPlugin(
             self._defer(self._handle_spoolman_event)
             return
         if event == Events.CONNECTED:
+            self._complete_firmware_reconnect()
             with self._state_lock:
                 recovery_required = bool(
                     self._state["firmware"].get("recovery_required")
@@ -939,6 +951,7 @@ class RmeCompatibilityPlugin(
                 event == Events.DISCONNECTING
                 and self._state.get("supported")
                 and not self._transport_recovery_required()
+                and not self._firmware_reconnect_pending()
             ):
                 try:
                     self._send_command("@RME SESSION CLOSE")
@@ -958,6 +971,8 @@ class RmeCompatibilityPlugin(
                 self._provider_firmware_signature = None
                 self._transfer_conflict_cancel = False
             self._publish()
+            if event == Events.DISCONNECTED and self._firmware_reconnect_pending():
+                self._begin_firmware_reconnect()
         elif event == Events.PRINT_STARTED:
             if self._printer_transfer_active():
                 self._stop_print_started_during_transfer()
@@ -1642,6 +1657,11 @@ class RmeCompatibilityPlugin(
                     candidate=True, armed=True,
                     printer_stage_state="restarting",
                 )
+                if (
+                    bool(record.get("reconnect", 0))
+                    and self._firmware_reconnect_pending()
+                ):
+                    follow_up.append("begin_firmware_reconnect")
             elif kind == "firmware_status":
                 self._apply_authoritative_firmware_locked(record)
             elif kind == "firmware_unstaged":
@@ -1773,6 +1793,8 @@ class RmeCompatibilityPlugin(
                 self._defer(self._reconcile_firmware_stage)
             elif item == "release_transfer_conflict":
                 self._defer(self._release_transfer_conflict_hold)
+            elif item == "begin_firmware_reconnect":
+                self._defer(self._begin_firmware_reconnect, True)
             elif item.startswith("refresh_configuration:"):
                 self._schedule_configuration_refresh(item.split(":", 1)[1])
             else:
@@ -1803,6 +1825,183 @@ class RmeCompatibilityPlugin(
     def _transport_recovery_required(self):
         with self._state_lock:
             return bool(self._state["firmware"].get("recovery_required"))
+
+    def _firmware_reconnect_pending(self):
+        """Return whether a plugin-requested update is awaiting a USB reboot."""
+        with self._firmware_reconnect_lock:
+            if (
+                self._firmware_reconnect_armed
+                and self._firmware_reconnect_deadline
+                and time.monotonic() >= self._firmware_reconnect_deadline
+            ):
+                self._firmware_reconnect_armed = False
+                self._firmware_reconnect_deadline = 0
+                self._firmware_reconnect_disconnect_requested = False
+                self._firmware_reconnect_connecting = False
+                if self._firmware_reconnect_timer:
+                    self._firmware_reconnect_timer.cancel()
+                    self._firmware_reconnect_timer = None
+            return bool(self._firmware_reconnect_armed)
+
+    def _arm_firmware_reconnect(self):
+        """Scope automatic reconnect to one explicit plugin flash request."""
+        with self._firmware_reconnect_lock:
+            if self._firmware_reconnect_timer:
+                self._firmware_reconnect_timer.cancel()
+                self._firmware_reconnect_timer = None
+            self._firmware_reconnect_armed = True
+            self._firmware_reconnect_deadline = (
+                time.monotonic() + FIRMWARE_RECONNECT_TIMEOUT_SECONDS
+            )
+            self._firmware_reconnect_disconnect_requested = False
+            self._firmware_reconnect_connecting = False
+
+    def _cancel_firmware_reconnect(self):
+        """Cancel the update-only retry window without affecting normal links."""
+        with self._firmware_reconnect_lock:
+            self._firmware_reconnect_armed = False
+            self._firmware_reconnect_deadline = 0
+            self._firmware_reconnect_disconnect_requested = False
+            self._firmware_reconnect_connecting = False
+            if self._firmware_reconnect_timer:
+                self._firmware_reconnect_timer.cancel()
+                self._firmware_reconnect_timer = None
+
+    def _complete_firmware_reconnect(self):
+        """Finish an expected update reconnect when OctoPrint reports CONNECTED."""
+        if not self._firmware_reconnect_pending():
+            return False
+        self._cancel_firmware_reconnect()
+        self._firmware_handoff_started_at = 0
+        with self._state_lock:
+            self._state["firmware"].update(
+                status="reconnected", error=None, reconnect_expected=False,
+            )
+        self._logger.info("Printer reconnected after the firmware update restart")
+        return True
+
+    def _begin_firmware_reconnect(self, disconnect_first=False):
+        """Gracefully hand off a firmware reboot and start bounded retries."""
+        if not self._firmware_reconnect_pending() or self._stop.is_set():
+            return False
+        with self._state_lock:
+            self._state["firmware"].update(
+                status="restarting", error=None, reconnect_expected=True,
+            )
+            connected = bool(self._state.get("connected"))
+        self._publish()
+
+        should_disconnect = False
+        if disconnect_first and connected:
+            with self._firmware_reconnect_lock:
+                if not self._firmware_reconnect_disconnect_requested:
+                    self._firmware_reconnect_disconnect_requested = True
+                    should_disconnect = True
+        if should_disconnect:
+            disconnect = getattr(self._printer, "disconnect", None)
+            if callable(disconnect):
+                try:
+                    # Leaving before the USB device disappears prevents normal
+                    # serial timeouts from being presented as a printer error.
+                    disconnect()
+                except Exception:
+                    self._logger.warning(
+                        "Could not gracefully disconnect for firmware restart",
+                        exc_info=True,
+                    )
+        self._schedule_firmware_reconnect(
+            FIRMWARE_RECONNECT_INITIAL_DELAY_SECONDS
+        )
+        return True
+
+    def _schedule_firmware_reconnect(self, delay):
+        with self._firmware_reconnect_lock:
+            if (
+                not self._firmware_reconnect_armed
+                or self._stop.is_set()
+                or self._firmware_reconnect_timer is not None
+            ):
+                return False
+            timer = threading.Timer(delay, self._attempt_firmware_reconnect)
+            timer.daemon = True
+            self._firmware_reconnect_timer = timer
+            timer.start()
+        return True
+
+    def _attempt_firmware_reconnect(self):
+        """Make one OctoPrint reconnect attempt and reschedule if necessary."""
+        with self._firmware_reconnect_lock:
+            self._firmware_reconnect_timer = None
+            armed = self._firmware_reconnect_armed
+            expired = time.monotonic() >= self._firmware_reconnect_deadline
+            connecting = self._firmware_reconnect_connecting
+        if not armed or self._stop.is_set():
+            return False
+        with self._state_lock:
+            connected = bool(self._state.get("connected"))
+        if connected:
+            self._complete_firmware_reconnect()
+            return True
+        if expired:
+            self._cancel_firmware_reconnect()
+            with self._state_lock:
+                self._state["firmware"].update(
+                    status="reconnect_timeout", error=None,
+                    reconnect_expected=False,
+                )
+            self._logger.warning(
+                "Firmware update reconnect window expired; manual connection is available"
+            )
+            self._persist_and_publish()
+            return False
+
+        if connecting:
+            # OctoPrint can remain in Connecting indefinitely when the serial
+            # device exists but never answers its handshake. Tear down that
+            # attempt before retrying so connect() is not a permanent no-op.
+            disconnect = getattr(self._printer, "disconnect", None)
+            if callable(disconnect):
+                try:
+                    self._logger.warning(
+                        "Firmware update reconnect handshake stalled; resetting it"
+                    )
+                    disconnect()
+                except Exception:
+                    self._logger.info(
+                        "Could not reset stalled firmware reconnect attempt",
+                        exc_info=True,
+                    )
+            with self._firmware_reconnect_lock:
+                if self._firmware_reconnect_armed:
+                    self._firmware_reconnect_connecting = False
+            self._schedule_firmware_reconnect(
+                FIRMWARE_RECONNECT_INITIAL_DELAY_SECONDS
+            )
+            return True
+
+        connect = getattr(self._printer, "connect", None)
+        connect_started = False
+        if callable(connect):
+            try:
+                self._logger.info("Trying to reconnect after firmware update restart")
+                connect()
+                connect_started = True
+                with self._firmware_reconnect_lock:
+                    if self._firmware_reconnect_armed:
+                        self._firmware_reconnect_connecting = True
+            except Exception:
+                self._logger.info(
+                    "Firmware update reconnect attempt was not ready",
+                    exc_info=True,
+                )
+                with self._firmware_reconnect_lock:
+                    self._firmware_reconnect_connecting = False
+        self._schedule_firmware_reconnect(
+            FIRMWARE_RECONNECT_HANDSHAKE_TIMEOUT_SECONDS
+            if connect_started
+            else FIRMWARE_RECONNECT_INTERVAL_SECONDS
+        )
+        return True
 
     def _clear_transport_recovery(self, evidence):
         """Unlock RME traffic only after observed or user-confirmed reboot."""
@@ -3600,6 +3799,8 @@ class RmeCompatibilityPlugin(
         """Apply a guarded USB action and refresh the affected directory."""
         self._require_storage()
         self._set_storage_status(action.lower(), progress=None, error=None)
+        if action == "FLASH":
+            self._arm_firmware_reconnect()
         try:
             self._file_service.mutate(action, path, destination)
             if action in ("PRINT", "FLASH"):
@@ -3609,6 +3810,8 @@ class RmeCompatibilityPlugin(
                 self._refresh_storage(refresh)
                 self._refresh_native_storage_files()
         except Exception as exc:
+            if action == "FLASH":
+                self._cancel_firmware_reconnect()
             self._set_storage_status("error", progress=None, error=str(exc))
             raise
 
@@ -4184,7 +4387,12 @@ class RmeCompatibilityPlugin(
         with self._state_lock:
             if self._state["firmware"].get("status") not in ("ready", "staged"):
                 raise UploadError("Upload and verify firmware on the printer before flashing")
-        self._file_service.mutate("FLASH", "FWUPD.RME")
+        self._arm_firmware_reconnect()
+        try:
+            self._file_service.mutate("FLASH", "FWUPD.RME")
+        except Exception:
+            self._cancel_firmware_reconnect()
+            raise
         with self._state_lock:
             self._state["firmware"].update(
                 status="flash_queued", error=None, flash_after_stage=False,

@@ -218,12 +218,44 @@
 .rme-storage-table .rme-storage-actions {
     align-content: flex-start;
     display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.rme-action-group,
+.rme-firmware-action-row {
+    display: flex;
     flex-wrap: wrap;
     gap: 4px;
 }
 
-.rme-storage-table .rme-storage-actions .btn {
+.rme-storage-table .rme-storage-actions .btn,
+.rme-firmware-action-row .btn {
     flex: 0 0 auto;
     margin: 0;
     max-width: 100%;
+}
+
+.rme-action-group-secondary {
+    padding-top: 2px;
+}
+
+.rme-firmware-controls {
+    align-items: flex-start;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.rme-firmware-select {
+    box-sizing: border-box;
+    margin: 0;
+    max-width: 34em;
+    width: 100%;
+}
+
+.rme-firmware-secondary-actions {
+    border-top: 1px solid rgba(127, 127, 127, .25);
+    padding-top: 8px;
+    width: 100%;
 }

@@ -133,19 +133,23 @@
     <table class="table table-condensed rme-storage-table" data-bind="visible: storage().supported">
         <thead><tr><th>Name</th><th>Type/size</th><th>Actions</th></tr></thead>
         <tbody data-bind="foreach: storageEntries"><tr>
-            <td><div class="rme-storage-actions">
+            <td>
                 <a href="#" data-bind="visible: type === 'dir', text: name, click: $parent.storageOpen"></a>
                 <span data-bind="visible: type !== 'dir', text: name"></span>
             </td>
             <td data-bind="text: $parent.storageFileSize($data)"></td>
-            <td>
-                <button type="button" class="btn btn-mini" data-bind="visible: type === 'file', click: $parent.storageDownloadToPi">Download to Pi</button>
-                <button type="button" class="btn btn-mini" data-bind="visible: type === 'file', click: $parent.storageDownloadToDevice">Download to device</button>
-                <button type="button" class="btn btn-mini" data-bind="visible: $parent.storageCanPrint($data), click: $parent.storagePrint">Print…</button>
-                <button type="button" class="btn btn-mini btn-danger" data-bind="visible: $parent.storageCanFlash($data), click: $parent.storageFlash">Flash…</button>
-                <button type="button" class="btn btn-mini" data-bind="click: $parent.storageRename">Rename…</button>
-                <button type="button" class="btn btn-mini" data-bind="click: $parent.storageMove">Move…</button>
-                <button type="button" class="btn btn-mini btn-danger" data-bind="click: $parent.storageDelete">Delete…</button>
+            <td><div class="rme-storage-actions">
+                <div class="rme-action-group">
+                    <button type="button" class="btn btn-mini" data-bind="visible: type === 'file', click: $parent.storageDownloadToPi">Download to Pi</button>
+                    <button type="button" class="btn btn-mini" data-bind="visible: type === 'file', click: $parent.storageDownloadToDevice">Download to device</button>
+                    <button type="button" class="btn btn-mini" data-bind="visible: $parent.storageCanPrint($data), click: $parent.storagePrint">Print…</button>
+                    <button type="button" class="btn btn-mini btn-danger" data-bind="visible: $parent.storageCanFlash($data), click: $parent.storageFlash">Flash…</button>
+                </div>
+                <div class="rme-action-group rme-action-group-secondary">
+                    <button type="button" class="btn btn-mini" data-bind="click: $parent.storageRename">Rename…</button>
+                    <button type="button" class="btn btn-mini" data-bind="click: $parent.storageMove">Move…</button>
+                    <button type="button" class="btn btn-mini btn-danger" data-bind="click: $parent.storageDelete">Delete…</button>
+                </div>
             </div></td>
         </tr></tbody>
     </table>
@@ -276,13 +280,19 @@
     <div class="control-group">
         <label class="control-label">Firmware on Pi</label>
         <div class="controls">
-            <select data-bind="options: firmwareFiles, optionsText: firmwareLabel, optionsValue: 'name', value: selectedFirmware, optionsCaption: 'Choose firmware on Pi'"></select>
-            <button type="button" class="btn btn-primary" data-bind="click: stageFirmware, enable: canStage">Upload candidate</button>
-            <button type="button" class="btn btn-danger" data-bind="click: stageAndFlashFirmware, enable: canStage">Upload and flash…</button>
-            <button type="button" class="btn btn-danger" data-bind="click: flashFirmware, enable: canFlash">Flash and reboot…</button>
-            <button type="button" class="btn" data-bind="click: unstageFirmware, enable: canUnstage">Unstage from printer…</button>
-            <button type="button" class="btn" data-bind="click: deleteFirmware, enable: selectedFirmware() && !firmwareBusy()">Delete from Pi…</button>
-            <button type="button" class="btn" data-bind="click: cancelFirmware, visible: firmwareBusy">Cancel transfer</button>
+            <div class="rme-firmware-controls">
+                <select class="rme-firmware-select" data-bind="options: firmwareFiles, optionsText: firmwareLabel, optionsValue: 'name', value: selectedFirmware, optionsCaption: 'Choose firmware on Pi'"></select>
+                <div class="rme-firmware-action-row">
+                    <button type="button" class="btn btn-primary" data-bind="click: stageFirmware, enable: canStage">Upload candidate</button>
+                    <button type="button" class="btn btn-danger" data-bind="click: stageAndFlashFirmware, enable: canStage">Upload and flash…</button>
+                    <button type="button" class="btn btn-danger" data-bind="click: flashFirmware, enable: canFlash">Flash verified candidate…</button>
+                </div>
+                <div class="rme-firmware-action-row rme-firmware-secondary-actions">
+                    <button type="button" class="btn" data-bind="click: unstageFirmware, enable: canUnstage">Unstage from printer…</button>
+                    <button type="button" class="btn" data-bind="click: deleteFirmware, enable: selectedFirmware() && !firmwareBusy()">Delete Pi copy…</button>
+                    <button type="button" class="btn" data-bind="click: cancelFirmware, visible: firmwareBusy">Cancel transfer</button>
+                </div>
+            </div>
             <div class="progress" data-bind="visible: firmwareActive">
                 <div class="bar" data-bind="style: {width: firmwareProgress}"></div>
             </div>
