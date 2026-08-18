@@ -182,6 +182,13 @@ On connection the plugin first builds the seven-slot alias table, then reads
 the printer's current `M865` assignments into the provider. Provider-originated
 selection changes wait for confirmation rather than silently overwriting the
 printer; both synchronization directions are also available as manual buttons.
+SpoolManager uses an injected panel on its native Spools tab. Spoolman and the
+built-in provider use RME's full-width mapping dialog. Both workflows display
+all tools in order, filter choices by the printer-reported material family,
+offer an explicit all-materials view, show the machine manufacturer, stage all
+changes for one batch apply, and prefill new-spool creation from printer data.
+Empty and inactive concrete spools remain visible for deliberate manual mapping
+but do not consume firmware preset slots unless selected.
 
 Only one inventory backend is active at a time. SpoolManager and Spoolman each
 disable the built-in RME inventory when selected, and events from an inactive

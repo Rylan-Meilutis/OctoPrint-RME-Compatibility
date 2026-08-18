@@ -1,5 +1,6 @@
 import unittest
 import threading
+from unittest import mock
 
 from octoprint_rme_compatibility.spoolmanager import (
     InternalSpoolBridge,
@@ -85,6 +86,10 @@ class SpoolManagerTests(unittest.TestCase):
         implementation = _Implementation(models)
         bridge = SpoolManagerBridge(_PluginManager(implementation))
         self.assertEqual([record["database_id"] for record in bridge.inventory()], [1])
+        self.assertEqual(
+            [record["database_id"] for record in bridge.inventory(include_unavailable=True)],
+            [1, 2],
+        )
         self.assertEqual(bridge.selected()[0]["color"], "#193a8a")
         self.assertEqual(bridge.select(0, 1)["display_name"], "Galaxy Blue")
 
@@ -119,6 +124,55 @@ class SpoolManagerTests(unittest.TestCase):
 
         self.assertEqual("PETG", bridge.inventory()[0]["material"])
         self.assertEqual("#193a8a", bridge.selected()[0]["color"])
+
+    @mock.patch("octoprint_rme_compatibility.spoolmanager.requests.get")
+    def test_spoolman_full_inventory_includes_archived_and_empty_spools(self, request_get):
+        raw = [
+            {
+                "id": 7, "remaining_weight": 640, "archived": False,
+                "filament": {"name": "Blue PETG", "material": "PETG"},
+            },
+            {
+                "id": 8, "remaining_weight": 0, "archived": True,
+                "filament": {"name": "Old PETG", "material": "PETG"},
+            },
+        ]
+        response = mock.Mock(status_code=200)
+        response.json.return_value = raw
+        request_get.return_value = response
+
+        class Settings(object):
+            def get(self, path):
+                return {}
+
+        class Connector(object):
+            verifyConfig = True
+
+            def _createSpoolmanEndpointUrl(self, endpoint):
+                return "https://spoolman.example/api/v1" + endpoint
+
+            def _buildRequestHeaders(self):
+                return {"Authorization": "Bearer secret"}
+
+        implementation = type("SpoolmanImplementation", (), {
+            "_settings": Settings(),
+            "getSpoolmanConnector": lambda self: Connector(),
+        })()
+        manager = type("Manager", (), {
+            "plugins": {"Spoolman": _PluginInfo(implementation)},
+        })()
+        bridge = SpoolmanBridge(manager)
+
+        inventory = bridge.inventory(include_unavailable=True)
+
+        self.assertEqual([7, 8], [item["database_id"] for item in inventory])
+        self.assertFalse(inventory[1]["is_active"])
+        request_get.assert_called_once_with(
+            "https://spoolman.example/api/v1/spool",
+            headers={"Authorization": "Bearer secret"},
+            verify=True,
+            timeout=(3.05, 30),
+        )
 
     def test_internal_provider_persists_inventory_and_selection(self):
         state = {"internal_spools": {"next_id": 1, "inventory": [], "selected": {}}}

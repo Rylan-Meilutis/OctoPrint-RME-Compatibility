@@ -30,10 +30,19 @@
 .rme-spoolmanager-heading { align-items: flex-start; display: flex; gap: 12px; justify-content: space-between; }
 .rme-spoolmanager-heading h4 { margin: 0 0 3px; }
 .rme-spoolmanager-heading p { margin-bottom: 8px; }
+.rme-spoolmanager-heading > div:last-child { text-align: right; }
+.rme-spool-show-all { margin-bottom: 6px; white-space: nowrap; }
 .rme-spoolmanager-mapping table { margin-bottom: 8px; }
 .rme-spoolmanager-mapping select { box-sizing: border-box; margin-bottom: 0; max-width: 100%; width: 100%; }
 .rme-spoolmanager-mapping .rme-spool-mapping-actions { white-space: nowrap; }
 .rme-spoolmanager-mapping tr.rme-spool-mapping-dirty td { background: rgba(248, 148, 6, .12); }
+.rme-spool-mapping-dialog { left: 5%; margin-left: 0; width: 90%; }
+.rme-spool-mapping-dialog .modal-body { max-height: 65vh; }
+.rme-spool-mapping-table { overflow-x: auto; }
+.rme-spool-mapping-table table { min-width: 760px; }
+.rme-spool-mapping-table select { box-sizing: border-box; margin-bottom: 0; width: 100%; }
+.rme-spool-mapping-table tr.rme-spool-mapping-dirty td { background: rgba(248, 148, 6, .12); }
+.rme-mapping-toolbar { align-items: flex-start; display: flex; justify-content: space-between; }
 
 #navbar_plugin_rme_compatibility > a {
     align-items: center;

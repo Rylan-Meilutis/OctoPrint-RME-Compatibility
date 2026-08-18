@@ -1756,10 +1756,19 @@ class RmeCompatibilityPlugin(
                 for item in self._state["loaded_filaments"]:
                     if int(item.get("tool", -1)) == loaded_manufacturer["tool"]:
                         item["vendor"] = loaded_manufacturer["name"]
+                        item["manufacturer"] = loaded_manufacturer["name"]
             elif kind == "loaded_filament":
                 loadout = {
                     key: value for key, value in record.items() if key != "record"
                 }
+                machine_manufacturer = next(
+                    (
+                        item.get("name", "")
+                        for item in self._state["manufacturers"].get("loaded", [])
+                        if int(item.get("tool", -1)) == int(loadout["tool"])
+                    ),
+                    "",
+                )
                 # Preserve the firmware's raw protocol identities before
                 # provider metadata enriches the human-facing material field.
                 # M976 validation must follow firmware state, not a provider's
@@ -1773,6 +1782,14 @@ class RmeCompatibilityPlugin(
                 )
                 if str(loadout.get("vendor", "")).lower() == "none":
                     loadout["vendor"] = ""
+                # Manufacturer assignments and M865 loadout lines are separate
+                # streams and may arrive in either order. Retain the explicit
+                # machine value so every reconciliation UI can show it.
+                loadout["manufacturer"] = machine_manufacturer or loadout.get(
+                    "vendor", ""
+                )
+                if machine_manufacturer:
+                    loadout["vendor"] = machine_manufacturer
                 # Provider metadata remains authoritative when the firmware's
                 # seven-character alias identifies a published spool.
                 provider_match = next(
@@ -1791,6 +1808,8 @@ class RmeCompatibilityPlugin(
                         database_id=provider_match.get("database_id"),
                         provider=self._state["spoolmanager"].get("provider"),
                     )
+                    if machine_manufacturer:
+                        loadout["vendor"] = machine_manufacturer
                 else:
                     loadout.update(
                         vendor=loadout.get("vendor", ""),
@@ -2987,9 +3006,17 @@ class RmeCompatibilityPlugin(
             if not self._spoolmanager or not self._spoolmanager.available():
                 raise SpoolManagerUnavailable("No filament inventory provider is available")
 
+            try:
+                provider_inventory = self._spoolmanager.inventory(
+                    include_unavailable=True
+                )
+            except TypeError:
+                # Preserve the original adapter contract for third-party
+                # providers and test doubles which only accept no arguments.
+                provider_inventory = self._spoolmanager.inventory()
             inventory = [
                 self._public_spool_record(record)
-                for record in self._spoolmanager.inventory()
+                for record in provider_inventory
             ]
             selected_models = self._spoolmanager.selected()
             selected = [
@@ -3026,12 +3053,36 @@ class RmeCompatibilityPlugin(
                     if int(item.get("tool", -1)) < tool_capacity
                 ]
 
-            # Selected spools have priority, then prior slots, then the remaining
-            # inventory. This minimizes menu churn while keeping all active tools.
+            selected_ids = {
+                record.get("database_id") for record in selected
+                if record.get("database_id") is not None
+            }
+            publishable_inventory = [
+                record for record in inventory
+                if (
+                    record.get("database_id") in selected_ids
+                    or (
+                        record.get("is_active", True)
+                        and (
+                            record.get("remaining_weight") is None
+                            or float(record.get("remaining_weight")) > 0
+                        )
+                    )
+                )
+            ]
+            publishable_ids = {
+                record.get("database_id") for record in publishable_inventory
+            } | selected_ids
+
+            # Selected spools have priority, then prior slots, then remaining
+            # usable inventory. The mapping UI still receives every concrete
+            # spool above, without consuming scarce firmware preset slots.
             ordered_ids = []
-            for record in selected + old_published + inventory:
+            for record in selected + old_published + publishable_inventory:
                 database_id = record.get("database_id")
-                if database_id in records and database_id not in ordered_ids:
+                if (database_id in records
+                        and database_id in publishable_ids
+                        and database_id not in ordered_ids):
                     ordered_ids.append(database_id)
             ordered_ids = ordered_ids[:7]
             prior_slots = {
@@ -3487,6 +3538,12 @@ class RmeCompatibilityPlugin(
                     queue = self._pending_spool_queue_locked()
                     if any(int(item["tool"]) == tool for item in queue):
                         self._remove_pending_spool_locked(tool)
+        with self._state_lock:
+            # Saving the complete integration page is itself explicit consent
+            # to reconcile the provider with the printer. Do not leave an old
+            # one-tool confirmation blocking the coherent publish below.
+            self._state["spoolmanager"]["pending_provider_sync"] = None
+            self._provider_firmware_signature = None
         self._logger.info(
             "Applied staged filament-provider mapping: %s",
             ", ".join(

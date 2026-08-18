@@ -215,6 +215,12 @@ $(function () {
             if (provider === "spoolman") return "Spools managed by Spoolman";
             return "Spools managed by RME Compatibility";
         });
+        self.mappingProviderName = ko.pureComputed(function () {
+            var provider = String(self.spoolmanager().provider || "internal").toLowerCase();
+            if (provider === "spoolmanager") return "SpoolManager";
+            if (provider === "spoolman") return "Spoolman";
+            return "RME inventory";
+        });
         self.spoolmanagerStatus = ko.pureComputed(function () {
             var spool = self.spoolmanager();
             var provider = spool.provider ? spool.provider + ": " : "";
@@ -222,13 +228,16 @@ $(function () {
         });
         self.publishedSpools = ko.pureComputed(function () { return self.spoolmanager().published || []; });
         self.inventorySpools = ko.pureComputed(function () { return self.spoolmanager().inventory || []; });
+        self.showAllMappingSpools = ko.observable(false);
         self.selectedSpools = ko.pureComputed(function () { return self.spoolmanager().selected || []; });
         self.loadedFilaments = ko.pureComputed(function () { return self.state().loaded_filaments || []; });
         self.pendingNewSpool = ko.pureComputed(function () { return self.spoolmanager().pending_new || null; });
         self.pendingNewSpools = ko.pureComputed(function () {
             var spool = self.spoolmanager();
             if (spool.pending_new_queue && spool.pending_new_queue.length) {
-                return spool.pending_new_queue;
+                return spool.pending_new_queue.slice().sort(function (left, right) {
+                    return Number(left.tool) - Number(right.tool);
+                });
             }
             return spool.pending_new ? [spool.pending_new] : [];
         });
@@ -534,9 +543,13 @@ $(function () {
         });
         self.spoolLabel = function (spool) {
             var remaining = spool.remaining_weight;
+            var availability = [];
+            if (spool.is_active === false) availability.push("inactive");
+            if (remaining !== null && remaining !== undefined && Number(remaining) <= 0) availability.push("empty");
             return (spool.alias ? spool.alias + " — " : "") + spool.display_name +
                 (spool.vendor ? " · " + spool.vendor : "") + " · " + spool.material +
-                (remaining === null || remaining === undefined ? "" : " · " + Number(remaining).toFixed(0) + " g left");
+                (remaining === null || remaining === undefined ? "" : " · " + Number(remaining).toFixed(0) + " g left") +
+                (availability.length ? " · " + availability.join(", ") : "");
         };
         self.loadedFilamentLabel = function (filament) {
             if (!filament) return "Nothing reported";
@@ -545,12 +558,13 @@ $(function () {
             var details = [];
             if (profile && profile !== material) details.push(profile);
             details.push(material);
-            if (filament.vendor) details.push(filament.vendor);
+            var manufacturer = filament.manufacturer || filament.vendor;
+            if (manufacturer) details.push("Manufacturer: " + manufacturer);
             if (filament.color_name && filament.color_name !== "None") details.push(filament.color_name);
             return details.join(" · ");
         };
         self.hasDirtySpoolSelections = ko.pureComputed(function () {
-            return ko.utils.arrayFirst(self.spoolSelectionRows(), function (row) {
+            return !!self.pendingProviderSync() || ko.utils.arrayFirst(self.spoolSelectionRows(), function (row) {
                 return row.dirty();
             }) !== null;
         });
@@ -649,9 +663,16 @@ $(function () {
             self.providerSyncNotice = null;
             self.providerSyncNoticeKey = key;
             if (pending) {
+                // Reconciliation always uses the complete per-tool mapper:
+                // SpoolManager's native page when installed, otherwise RME's
+                // provider-aware dialog for Spoolman or internal inventory.
+                window.setTimeout(self.showFilamentMapping, 0);
                 self.providerSyncNotice = new PNotify({
                     title: "Filament resynchronization required",
-                    text: (pending.message || "Filament selections changed.") + " Use the RME top-bar menu or RME Compatibility Settings to choose.",
+                    text: (pending.message || "Filament selections changed.") +
+                        (self.spoolManagerProvider() ?
+                            " Review every tool on the SpoolManager mapping page." :
+                            " Review every tool in the RME mapping page."),
                     type: "notice",
                     hide: false
                 });
@@ -977,7 +998,10 @@ $(function () {
             var changed = self.spoolSelectionRows().filter(function (row) {
                 return row.dirty();
             });
-            if (!changed.length) return;
+            if (!changed.length) {
+                if (self.pendingProviderSync()) self.confirmProviderSync();
+                return;
+            }
             self.command("apply_spool_selections", {
                 selections: changed.map(function (row) {
                     return {tool: row.tool, database_id: normalizeDatabaseId(row.selected())};
@@ -990,8 +1014,19 @@ $(function () {
             });
         };
         self.showSpoolManagerTab = function () {
+            // This action is commonly invoked from RME Compatibility Settings.
+            // Dismiss that modal before activating SpoolManager's native page.
+            $("#settings_dialog").modal("hide");
             $("a[href='#tab_plugin_SpoolManager']").tab("show");
             installSpoolManagerPanel();
+        };
+        self.showFilamentMapping = function () {
+            if (self.spoolManagerProvider()) {
+                self.showSpoolManagerTab();
+                return;
+            }
+            $("#settings_dialog").modal("hide");
+            ensureRmeSpoolMappingDialog().modal("show");
         };
         self.createSpoolInSpoolManager = function (row) {
             var tab = document.getElementById("tab_spoolOverview");
@@ -1020,6 +1055,26 @@ $(function () {
             setSpoolManagerField(item, "totalCombinedWeight", values.weight);
             setSpoolManagerField(item, "usedWeight", 0);
             setSpoolManagerField(item, "selectedForTool", row.tool);
+        };
+        self.createSpoolForMappingRow = function (row) {
+            if (self.spoolManagerProvider()) {
+                self.createSpoolInSpoolManager(row);
+                return;
+            }
+            var values = spoolDefaultsForTool(row);
+            self.newSpoolTool(Number(row.tool));
+            self.command("begin_new_spool", {tool: Number(row.tool)}).done(function () {
+                self.newSpoolName(values.displayName);
+                self.newSpoolVendor(values.vendor);
+                self.newSpoolMaterial(values.material);
+                self.newSpoolColor(values.color);
+                self.newSpoolColorName(values.colorName);
+                self.newSpoolWeight(values.weight);
+                self.newSpoolNozzle(values.nozzle);
+                self.newSpoolBed(values.bed);
+                $("#rme-spool-mapping-dialog").modal("hide");
+                self.showRmeTab();
+            });
         };
         self.beginNewSpool = function () {
             self.command("begin_new_spool", {tool: Number(self.newSpoolTool())});
@@ -1192,15 +1247,52 @@ $(function () {
             return value === null || value === undefined || value === "" ? null : Number(value);
         }
 
+        function materialFamily(value) {
+            var material = String(value || "").trim().toUpperCase();
+            var aliases = {
+                "PET": "PETG", "PLA+": "PLA", "PLA_PLUS": "PLA",
+                "PLAPLUS": "PLA", "TPU": "FLEX", "TPE": "FLEX",
+                "NYLON": "PA"
+            };
+            if (aliases[material]) return aliases[material];
+            var families = ["PETG", "PLA", "ASA", "ABS", "PC", "PVB", "HIPS", "PP", "FLEX", "PA"];
+            for (var index = 0; index < families.length; index++) {
+                var family = families[index];
+                if (material === family || material.indexOf(family + "-") === 0 || material.indexOf(family + "_") === 0) {
+                    return family;
+                }
+            }
+            return material;
+        }
+
         function makeSpoolSelectionRow(tool, loaded, selected) {
             var original = normalizeDatabaseId(selected);
-            return {
+            var row = {
                 tool: tool,
                 loaded: loaded,
                 original: original,
                 selected: ko.observable(original),
                 dirty: ko.observable(false)
             };
+            row.material = materialFamily(loaded && (loaded.firmware_material || loaded.material));
+            row.availableSpools = ko.pureComputed(function () {
+                var inventory = self.inventorySpools();
+                if (self.showAllMappingSpools() || !row.material) return inventory;
+                var matching = inventory.filter(function (spool) {
+                    return materialFamily(spool.material) === row.material;
+                });
+                var selectedId = normalizeDatabaseId(row.selected());
+                var selectedSpool = ko.utils.arrayFirst(inventory, function (spool) {
+                    return normalizeDatabaseId(spool.database_id) === selectedId;
+                });
+                if (selectedSpool && !ko.utils.arrayFirst(matching, function (spool) {
+                    return normalizeDatabaseId(spool.database_id) === selectedId;
+                })) matching.push(selectedSpool);
+                // An unfamiliar printer material must never make all provider
+                // spools disappear; expose the full inventory as the fallback.
+                return matching.length ? matching : inventory;
+            });
+            return row;
         }
 
         function spoolDefaultsForTool(row) {
@@ -1218,7 +1310,7 @@ $(function () {
             configuredWeight = ko.unwrap(configuredWeight);
             return {
                 displayName: displayName,
-                vendor: (queued.vendor || loaded.vendor || "").replace(/^none$/i, ""),
+                vendor: (queued.vendor || loaded.manufacturer || loaded.vendor || "").replace(/^none$/i, ""),
                 material: material,
                 color: queued.color || loaded.color || "#808080",
                 colorName: colorName || "Printer color",
@@ -1240,18 +1332,45 @@ $(function () {
                 '<div id="rme-spoolmanager-mapping" class="well rme-spoolmanager-mapping" data-bind="visible: spoolManagerProvider">' +
                 '<div class="rme-spoolmanager-heading"><div><h4>Printer loadout mapping <small>RME</small></h4>' +
                 '<p>Map every loaded printer tool to a SpoolManager profile, then apply all changes together.</p></div>' +
-                '<button class="btn btn-primary" data-bind="click: applySpoolSelections, enable: hasDirtySpoolSelections">Apply mappings</button></div>' +
+                '<div><label class="checkbox rme-spool-show-all"><input type="checkbox" data-bind="checked: showAllMappingSpools"> Show all materials</label>' +
+                '<button class="btn btn-primary" data-bind="click: applySpoolSelections, enable: hasDirtySpoolSelections">Apply mappings</button></div></div>' +
                 '<table class="table table-condensed"><thead><tr><th>Tool</th><th>Loaded on printer</th><th>SpoolManager profile</th><th></th></tr></thead>' +
                 '<tbody data-bind="foreach: spoolSelectionRows"><tr data-bind="css: {\'rme-spool-mapping-dirty\': dirty}">' +
                 '<td data-bind="text: \'T\' + tool"></td><td><span class="rme-color-dot" data-bind="visible: loaded, style: {backgroundColor: loaded && loaded.color}"></span> ' +
                 '<span data-bind="text: $parent.loadedFilamentLabel(loaded)"></span></td>' +
-                '<td><select data-bind="options: $parent.inventorySpools, optionsText: $parent.spoolLabel, optionsValue: \'database_id\', optionsCaption: \'Unassigned\', value: selected, event: {change: function() { $parent.changeSpoolSelection($data); }}"></select></td>' +
+                '<td><select data-bind="options: availableSpools, optionsText: $parent.spoolLabel, optionsValue: \'database_id\', optionsCaption: \'Unassigned\', value: selected, event: {change: function() { $parent.changeSpoolSelection($data); }}"></select></td>' +
                 '<td class="rme-spool-mapping-actions"><button class="btn btn-mini" data-bind="click: $parent.createSpoolInSpoolManager"><i class="fa fa-plus"></i> Create new…</button></td>' +
                 '</tr></tbody></table><p class="help-block">Create new opens SpoolManager’s native spool editor with the printer’s known material, vendor, color, and temperatures prefilled.</p></div>'
             );
             tab.prepend(panel);
             ko.applyBindings(self, panel[0]);
             self.spoolManagerPanelInstalled = true;
+        }
+
+        function ensureRmeSpoolMappingDialog() {
+            var dialog = $("#rme-spool-mapping-dialog");
+            if (dialog.length) return dialog;
+            dialog = $(
+                '<div id="rme-spool-mapping-dialog" class="modal hide fade rme-spool-mapping-dialog" tabindex="-1">' +
+                '<div class="modal-header"><button type="button" class="close" data-dismiss="modal">&times;</button>' +
+                '<h3>Printer loadout mapping</h3><p data-bind="text: spoolOwnershipText"></p></div>' +
+                '<div class="modal-body"><div class="rme-mapping-toolbar">' +
+                '<p>Map all printer tools to <strong data-bind="text: mappingProviderName"></strong> spools. Changes are staged until Apply mappings.</p>' +
+                '<label class="checkbox"><input type="checkbox" data-bind="checked: showAllMappingSpools"> Show all materials</label></div>' +
+                '<div class="rme-spool-mapping-table"><table class="table table-condensed"><thead><tr>' +
+                '<th>Tool</th><th>Loaded on printer</th><th>Provider spool</th><th></th></tr></thead>' +
+                '<tbody data-bind="foreach: spoolSelectionRows"><tr data-bind="css: {\'rme-spool-mapping-dirty\': dirty}">' +
+                '<td data-bind="text: \'T\' + tool"></td><td><span class="rme-color-dot" data-bind="visible: loaded, style: {backgroundColor: loaded && loaded.color}"></span> ' +
+                '<span data-bind="text: $parent.loadedFilamentLabel(loaded)"></span></td>' +
+                '<td><select data-bind="options: availableSpools, optionsText: $parent.spoolLabel, optionsValue: \'database_id\', optionsCaption: \'Unassigned\', value: selected, event: {change: function() { $parent.changeSpoolSelection($data); }}"></select></td>' +
+                '<td><button class="btn btn-mini" data-bind="click: $parent.createSpoolForMappingRow"><i class="fa fa-plus"></i> Create new…</button></td>' +
+                '</tr></tbody></table></div>' +
+                '<p class="help-block">Material matching is applied per tool. Enable Show all materials to choose any concrete provider spool. Printer manufacturer, profile, color, and temperature data prefill new spools.</p></div>' +
+                '<div class="modal-footer"><button class="btn" data-dismiss="modal">Close</button>' +
+                '<button class="btn btn-primary" data-bind="click: applySpoolSelections, enable: hasDirtySpoolSelections">Apply mappings</button></div></div>'
+            ).appendTo(document.body);
+            ko.applyBindings(self, dialog[0]);
+            return dialog;
         }
 
         function ensureDownloadChoiceDialog() {

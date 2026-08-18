@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0b73 — 2026-08-18
+
+- Close RME Settings before opening SpoolManager's mapping panel, and route
+  provider-change prompts directly to the appropriate complete mapping UI.
+- Add an all-tool RME mapping dialog for Spoolman and built-in inventory with
+  material-family filtering, an explicit all-materials view, ordered tools,
+  printer manufacturer details, batch apply, and prefilled spool creation.
+- Retrieve SpoolManager and Spoolman concrete inventories for mapping, including
+  empty/inactive records, without allowing unavailable spools to displace usable
+  entries in the firmware's limited preset slots.
+
 ## 0.1.0b72 — 2026-08-18
 
 - Move loaded-filament mapping into a dedicated panel on SpoolManager's native

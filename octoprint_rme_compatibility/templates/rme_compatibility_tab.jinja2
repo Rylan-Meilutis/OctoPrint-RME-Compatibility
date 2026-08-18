@@ -27,6 +27,14 @@
     <div class="rme-card rme-prompt" data-bind="visible: pendingNewSpool">
         <h4>Configure filament selected on printer</h4>
         <p>The printer selected a new or unlinked material for tool <strong data-bind="text: pendingNewSpool() && pendingNewSpool().tool"></strong>. This form survives refreshes.</p>
+        <p data-bind="visible: pendingNewSpools().length > 1">Pending tools, in order:
+            <span data-bind="foreach: pendingNewSpools">
+                <button class="btn btn-mini"
+                        data-bind="click: $parent.activatePendingSpool,
+                                   css: {'btn-primary': $parent.pendingNewSpool() && Number($parent.pendingNewSpool().tool) === Number(tool)},
+                                   text: 'T' + tool"></button>
+            </span>
+        </p>
         <div class="form-inline rme-spool-form">
             <label>Name <input class="input-medium" data-bind="value: newSpoolName"></label>
             <label>Vendor <input class="input-small" data-bind="value: newSpoolVendor"></label>
@@ -44,7 +52,7 @@
     <div class="rme-card rme-prompt" data-bind="visible: pendingProviderSync">
         <h4>Filament provider changed</h4>
         <p data-bind="text: pendingProviderSync() && pendingProviderSync().message"></p>
-        <button class="btn btn-primary" data-bind="click: confirmProviderSync">Apply provider selections to printer</button>
+        <button class="btn btn-primary" data-bind="click: showFilamentMapping">Review all tool mappings</button>
         <button class="btn" data-bind="click: cancelProviderSync">Keep printer selections</button>
         <p class="help-block">This prompt persists across refreshes. Keeping the printer selections reads them back into the active provider.</p>
     </div>
@@ -62,7 +70,8 @@
         <p data-bind="visible: loadedFilaments().length"><strong>Printer-reported loadout:</strong>
             <span data-bind="foreach: loadedFilaments"><span class="rme-assignment"><span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span> <span data-bind="text: $parent.loadedFilamentLabel($data)"></span></span></span>
         </p>
-        <p><small>Inventory management and synchronization controls are in RME Compatibility Settings.</small></p>
+        <p><button class="btn" data-bind="click: showFilamentMapping"><i class="fa fa-random"></i> Map printer tools to spools</button></p>
+        <p><small>All tools can be staged together; material filtering and complete inventory access are available in the mapping page.</small></p>
     </div>
 
     <div class="rme-card rme-prompt" data-bind="visible: hasToolmapPrompt, event: {focusin: touchToolmap, mousedown: touchToolmap, keydown: touchToolmap}">

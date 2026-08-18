@@ -650,6 +650,46 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._sync_spoolmanager(False, True)
         self.assertEqual(batch_count, len(plugin._printer.command_batches))
 
+    def test_spoolmanager_mapping_lists_all_spools_without_publishing_unavailable(self):
+        active = {
+            "database_id": 7, "display_name": "Active PETG", "vendor": "Vendor",
+            "material": "PETG", "color_name": "Blue", "color": "#193a8a",
+            "nozzle_temperature": 245, "bed_temperature": 85,
+            "remaining_weight": 600, "is_active": True, "is_template": False,
+        }
+        empty = dict(active, database_id=8, display_name="Empty PETG", remaining_weight=0)
+
+        class Provider(object):
+            def available(self):
+                return True
+
+            def inventory(self, include_unavailable=False):
+                return [dict(active), dict(empty)] if include_unavailable else [dict(active)]
+
+            def selected(self):
+                return []
+
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._settings.values["spool_provider"] = "spoolmanager"
+        plugin._spoolmanager_bridge = Provider()
+        plugin._spoolman_bridge = None
+        plugin._internal_spool_bridge = None
+        plugin._printer = _Printer()
+        plugin._logger = logging.getLogger("rme-full-mapping-inventory-test")
+        plugin._state.update(connected=False, supported=True, machine={"logical_tools": 1})
+
+        plugin._sync_spoolmanager(True, False)
+
+        self.assertEqual(
+            [7, 8],
+            [item["database_id"] for item in plugin._state["spoolmanager"]["inventory"]],
+        )
+        self.assertEqual(
+            [7],
+            [item["database_id"] for item in plugin._state["spoolmanager"]["published"]],
+        )
+
     def test_pending_provider_change_waits_for_confirmation(self):
         record = {
             "database_id": 12, "display_name": "Orange PLA", "vendor": "",
@@ -1192,10 +1232,8 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertNotIn("Restart required after installation or update", settings_template)
         self.assertIn("spoolOwnershipText", settings_template)
         self.assertIn("Pending tools (choose any order)", settings_template)
-        self.assertIn("spoolSelectionRows", settings_template)
-        self.assertIn("Loaded on printer", settings_template)
-        self.assertIn("Mapped provider spool", settings_template)
         self.assertIn("Open SpoolManager mapping", settings_template)
+        self.assertIn("Open filament mapping", settings_template)
         self.assertNotIn('option value="internal"', settings_template)
         self.assertIn("Current theme", settings_template)
         self.assertIn("rme-theme-swatch", settings_template)
@@ -1239,7 +1277,15 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("self.activatePendingSpool", javascript)
         self.assertIn("self.loadedFilamentLabel", javascript)
         self.assertIn("installSpoolManagerPanel", javascript)
+        self.assertIn("ensureRmeSpoolMappingDialog", javascript)
+        self.assertIn("rme-spool-mapping-dialog", javascript)
+        self.assertIn("Loaded on printer", javascript)
+        self.assertIn("Provider spool", javascript)
         self.assertIn("Printer loadout mapping", javascript)
+        self.assertIn('$("#settings_dialog").modal("hide")', javascript)
+        self.assertIn("showAllMappingSpools", javascript)
+        self.assertIn("options: availableSpools", javascript)
+        self.assertIn("Manufacturer: ", javascript)
         self.assertIn("spoolManager.addNewSpool()", javascript)
         self.assertIn('self.command("apply_spool_selections"', javascript)
         self.assertIn("stageAndFlashFirmware", javascript)
@@ -1698,6 +1744,29 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual("PETG", accepted[0]["material"])
         self.assertEqual("PET-00L", accepted[0]["profile"])
 
+    def test_machine_manufacturer_is_retained_regardless_of_query_order(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        plugin._defer = lambda callback, *args: None
+
+        plugin._handle_record({
+            "record": "manufacturer_loaded", "tool": 2, "name": "Polymaker",
+        })
+        plugin._handle_record(parse_line(
+            'loaded_filament T2 S"PETG" P"PET-00L" O"Black" H"#000000"'
+        ))
+
+        loaded = plugin._state["loaded_filaments"][0]
+        self.assertEqual("Polymaker", loaded["manufacturer"])
+        self.assertEqual("Polymaker", loaded["vendor"])
+
+        plugin._handle_record({
+            "record": "manufacturer_loaded", "tool": 2, "name": "Prusament",
+        })
+        loaded = plugin._state["loaded_filaments"][0]
+        self.assertEqual("Prusament", loaded["manufacturer"])
+        self.assertEqual("Prusament", loaded["vendor"])
+
     def test_machine_to_provider_sync_matches_current_profile_not_base_material(self):
         class Provider(object):
             def __init__(self):
@@ -1907,6 +1976,9 @@ class ToolmapGateTests(unittest.TestCase):
         sync_calls = []
         plugin._sync_spoolmanager = lambda *args: sync_calls.append(args)
         plugin._mark_expected_provider_event = lambda *args: None
+        plugin._state["spoolmanager"]["pending_provider_sync"] = {
+            "tool": 2, "database_id": 44, "message": "Apply?",
+        }
         for tool in range(3):
             plugin._begin_new_spool(tool)
 
@@ -1919,6 +1991,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual([(0, 41), (2, 44)], provider.selected)
         self.assertEqual([1], provider.deselected)
         self.assertEqual([(True,)], sync_calls)
+        self.assertIsNone(plugin._state["spoolmanager"]["pending_provider_sync"])
         self.assertEqual(
             [1],
             [item["tool"] for item in

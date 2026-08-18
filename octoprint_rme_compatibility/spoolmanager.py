@@ -65,17 +65,24 @@ class SpoolManagerBridge(object):
     def available(self):
         return self._implementation(required=False) is not None
 
-    def inventory(self):
-        """Return active, non-template spools that have filament remaining."""
+    def inventory(self, include_unavailable=False):
+        """Return concrete spools, optionally including empty/inactive ones.
+
+        Firmware publication only needs usable spools, but an operator mapping
+        page must be able to display every real SpoolManager spool. Templates
+        are definitions rather than physical spools and are never selectable.
+        """
         implementation = self._implementation()
         manager = getattr(implementation, "_databaseManager", None)
         if manager is None or not hasattr(manager, "loadAllSpoolsByQuery"):
             raise SpoolManagerUnavailable("Installed SpoolManager has no compatible inventory API")
         models = manager.loadAllSpoolsByQuery(None)
         records = [self._record(model) for model in models]
-        return [record for record in records if (
-            not record["is_template"]
-            and record["is_active"]
+        concrete = [record for record in records if not record["is_template"]]
+        if include_unavailable:
+            return concrete
+        return [record for record in concrete if (
+            record["is_active"]
             and (record["remaining_weight"] is None or record["remaining_weight"] > 0)
         )]
 
@@ -215,8 +222,27 @@ class SpoolmanBridge(object):
     def available(self):
         return self._implementation(required=False) is not None
 
-    def inventory(self):
-        result = self._connector().handleGetSpoolsAvailable()
+    def inventory(self, include_unavailable=False):
+        connector = self._connector()
+        if include_unavailable:
+            try:
+                raw = self._request(connector, "get", "/spool", None)
+                if isinstance(raw, dict):
+                    raw = raw.get("spools", raw.get("data", []))
+                records = [self._record(item) for item in (raw or [])]
+                return records
+            except (
+                AttributeError,
+                requests.RequestException,
+                SpoolManagerUnavailable,
+                ValueError,
+            ) as exc:
+                if self.logger:
+                    self.logger.warning(
+                        "Spoolman full inventory unavailable; using available spools: %s",
+                        exc,
+                    )
+        result = connector.handleGetSpoolsAvailable()
         if result.get("error"):
             raise SpoolManagerUnavailable("Spoolman inventory request failed: %s" % result["error"])
         records = [self._record(item) for item in result.get("data", {}).get("spools", [])]
@@ -227,7 +253,10 @@ class SpoolmanBridge(object):
     def selected(self):
         implementation = self._implementation()
         selected = implementation._settings.get(["selectedSpoolIds"]) or {}
-        inventory = {item["database_id"]: item for item in self.inventory()}
+        inventory = {
+            item["database_id"]: item
+            for item in self.inventory(include_unavailable=True)
+        }
         indices = [int(key) for key in selected.keys()] if selected else []
         result = [None] * (max(indices) + 1 if indices else 0)
         for key, value in selected.items():
@@ -278,7 +307,7 @@ class SpoolmanBridge(object):
         return self._record(spool)
 
     def get(self, database_id):
-        return next((item for item in self.inventory()
+        return next((item for item in self.inventory(include_unavailable=True)
                      if item["database_id"] == int(database_id)), None)
 
     def _set_selection(self, tool, spool_id):
@@ -319,13 +348,14 @@ class SpoolmanBridge(object):
     @staticmethod
     def _request(connector, method, endpoint, payload):
         url = connector._createSpoolmanEndpointUrl(endpoint)
-        response = getattr(requests, method)(
-            url,
-            json=payload,
-            headers=connector._buildRequestHeaders(),
-            verify=connector.verifyConfig,
-            timeout=(3.05, 30),
-        )
+        request_options = {
+            "headers": connector._buildRequestHeaders(),
+            "verify": connector.verifyConfig,
+            "timeout": (3.05, 30),
+        }
+        if payload is not None:
+            request_options["json"] = payload
+        response = getattr(requests, method)(url, **request_options)
         if response.status_code < 200 or response.status_code >= 300:
             raise SpoolManagerUnavailable(
                 "Spoolman %s failed with HTTP %d" % (endpoint, response.status_code)
@@ -365,7 +395,7 @@ class InternalSpoolBridge(object):
     def available(self):
         return True
 
-    def inventory(self):
+    def inventory(self, include_unavailable=False):
         with self.lock:
             return [dict(item) for item in self.state["internal_spools"]["inventory"]]
 

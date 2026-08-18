@@ -51,7 +51,7 @@
                 <strong>Filament provider changed.</strong>
                 <span data-bind="text: pendingProviderSync() && pendingProviderSync().message"></span>
                 <p>
-                    <button type="button" class="btn btn-primary" data-bind="click: confirmProviderSync">Apply to printer</button>
+                    <button type="button" class="btn btn-primary" data-bind="click: showFilamentMapping">Review all tool mappings</button>
                     <button type="button" class="btn" data-bind="click: cancelProviderSync">Keep printer selections</button>
                 </p>
             </div>
@@ -59,6 +59,10 @@
             <div data-bind="visible: spoolManagerProvider">
                 <button type="button" class="btn" data-bind="click: showSpoolManagerTab"><i class="fa fa-database"></i> Open SpoolManager mapping</button>
                 <p class="help-block">Loaded-tool mapping and new-profile creation use SpoolManager’s native Spools page and editor.</p>
+            </div>
+            <div data-bind="visible: !spoolManagerProvider()">
+                <button type="button" class="btn" data-bind="click: showFilamentMapping"><i class="fa fa-random"></i> Open filament mapping</button>
+                <p class="help-block">Review every tool together, filter spools by printer material, or create a prefilled provider spool.</p>
             </div>
             <div data-bind="visible: internalSpoolProvider">
                 <div class="form-inline">
@@ -69,21 +73,7 @@
                     <li><span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span> <span data-bind="text: $parent.spoolLabel($data)"></span></li>
                 </ul>
             </div>
-            <div data-bind="visible: spoolSelectionRows().length && !spoolManagerProvider()">
-            <table class="table table-condensed">
-                <thead><tr><th>Printer tool</th><th>Loaded on printer</th><th>Mapped provider spool</th></tr></thead>
-                <tbody data-bind="foreach: spoolSelectionRows"><tr>
-                    <td data-bind="text: 'T' + tool"></td>
-                    <td>
-                        <span class="rme-color-dot" data-bind="visible: loaded, style: {backgroundColor: loaded && loaded.color}"></span>
-                        <span data-bind="text: $parent.loadedFilamentLabel(loaded)"></span>
-                    </td>
-                    <td><select data-bind="options: $parent.inventorySpools, optionsText: $parent.spoolLabel, optionsValue: 'database_id', optionsCaption: 'Unassigned', value: selected, event: {change: function() { $parent.changeSpoolSelection($data); }}"></select></td>
-                </tr></tbody>
-            </table>
-            <button type="button" class="btn btn-primary" data-bind="click: applySpoolSelections, enable: hasDirtySpoolSelections">Apply mappings</button>
-            </div>
-            <p class="help-block" data-bind="visible: externalSpoolProvider">Choose a provider spool beside each loaded printer filament to link and synchronize that tool.</p>
+            <p class="help-block">The mapping page stages every tool and synchronizes them as one coherent update.</p>
             <div class="alert alert-info" data-bind="visible: pendingNewSpool() && !spoolManagerProvider()">
                 <strong>Configure new printer filament</strong>
                 <p data-bind="visible: pendingNewSpools().length > 1">
