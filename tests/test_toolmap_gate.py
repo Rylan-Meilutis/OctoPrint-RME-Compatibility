@@ -1193,6 +1193,9 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("spoolOwnershipText", settings_template)
         self.assertIn("Pending tools (choose any order)", settings_template)
         self.assertIn("spoolSelectionRows", settings_template)
+        self.assertIn("Loaded on printer", settings_template)
+        self.assertIn("Mapped provider spool", settings_template)
+        self.assertIn("Open SpoolManager mapping", settings_template)
         self.assertNotIn('option value="internal"', settings_template)
         self.assertIn("Current theme", settings_template)
         self.assertIn("rme-theme-swatch", settings_template)
@@ -1234,6 +1237,11 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("applyPersistentLights", javascript)
         self.assertIn("self.pendingNewSpools = ko.pureComputed", javascript)
         self.assertIn("self.activatePendingSpool", javascript)
+        self.assertIn("self.loadedFilamentLabel", javascript)
+        self.assertIn("installSpoolManagerPanel", javascript)
+        self.assertIn("Printer loadout mapping", javascript)
+        self.assertIn("spoolManager.addNewSpool()", javascript)
+        self.assertIn('self.command("apply_spool_selections"', javascript)
         self.assertIn("stageAndFlashFirmware", javascript)
         self.assertIn("unstageFirmware", javascript)
         self.assertIn("stage_octoprint_firmware", javascript)
@@ -1846,6 +1854,76 @@ class ToolmapGateTests(unittest.TestCase):
             plugin._state["spoolmanager"]["pending_new_queue"]
         ])
         self.assertEqual(2, plugin._state["spoolmanager"]["pending_new"]["tool"])
+
+    def test_mapping_loaded_tool_to_existing_spool_clears_only_that_draft(self):
+        class Provider(object):
+            def __init__(self):
+                self.selected = []
+
+            def select(self, tool, database_id):
+                self.selected.append((tool, database_id))
+
+        provider = Provider()
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._active_spool_provider = lambda: (provider, "spoolmanager")
+        plugin._persist_and_publish = lambda: None
+        plugin._sync_spoolmanager = lambda *args: None
+        for tool in range(3):
+            plugin._begin_new_spool(tool)
+        plugin._activate_pending_spool(1)
+
+        plugin._select_spool_from_octoprint(2, 47)
+
+        self.assertEqual([(2, 47)], provider.selected)
+        self.assertEqual(
+            [0, 1],
+            [item["tool"] for item in
+             plugin._state["spoolmanager"]["pending_new_queue"]],
+        )
+        self.assertEqual(1, plugin._state["spoolmanager"]["pending_new"]["tool"])
+
+    def test_staged_spool_mapping_applies_all_tools_with_one_firmware_sync(self):
+        class Provider(object):
+            def __init__(self):
+                self.selected = []
+                self.deselected = []
+
+            def get(self, database_id):
+                return {"database_id": database_id} if database_id in (41, 44) else None
+
+            def select(self, tool, database_id):
+                self.selected.append((tool, database_id))
+
+            def deselect(self, tool):
+                self.deselected.append(tool)
+
+        provider = Provider()
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._logger = logging.getLogger("rme-staged-provider-mapping-test")
+        plugin._active_spool_provider = lambda: (provider, "spoolmanager")
+        plugin._persist_and_publish = lambda: None
+        sync_calls = []
+        plugin._sync_spoolmanager = lambda *args: sync_calls.append(args)
+        plugin._mark_expected_provider_event = lambda *args: None
+        for tool in range(3):
+            plugin._begin_new_spool(tool)
+
+        plugin._apply_spool_selections([
+            {"tool": 0, "database_id": 41},
+            {"tool": 1, "database_id": None},
+            {"tool": 2, "database_id": 44},
+        ])
+
+        self.assertEqual([(0, 41), (2, 44)], provider.selected)
+        self.assertEqual([1], provider.deselected)
+        self.assertEqual([(True,)], sync_calls)
+        self.assertEqual(
+            [1],
+            [item["tool"] for item in
+             plugin._state["spoolmanager"]["pending_new_queue"]],
+        )
 
     def test_legacy_loaded_profile_provider_enrichment_stays_exact_for_m976(self):
         plugin = RmeCompatibilityPlugin()

@@ -26,6 +26,15 @@
 .rme-assignment { display: inline-block; margin-left: 8px; }
 .rme-light-table .input-mini { width: 52px; }
 
+.rme-spoolmanager-mapping { margin: 0 0 18px; }
+.rme-spoolmanager-heading { align-items: flex-start; display: flex; gap: 12px; justify-content: space-between; }
+.rme-spoolmanager-heading h4 { margin: 0 0 3px; }
+.rme-spoolmanager-heading p { margin-bottom: 8px; }
+.rme-spoolmanager-mapping table { margin-bottom: 8px; }
+.rme-spoolmanager-mapping select { box-sizing: border-box; margin-bottom: 0; max-width: 100%; width: 100%; }
+.rme-spoolmanager-mapping .rme-spool-mapping-actions { white-space: nowrap; }
+.rme-spoolmanager-mapping tr.rme-spool-mapping-dirty td { background: rgba(248, 148, 6, .12); }
+
 #navbar_plugin_rme_compatibility > a {
     align-items: center;
     display: flex;

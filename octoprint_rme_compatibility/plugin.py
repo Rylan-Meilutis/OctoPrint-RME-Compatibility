@@ -485,6 +485,7 @@ class RmeCompatibilityPlugin(
             "cancel_provider_sync": [],
             "select_spool": ["tool", "database_id"],
             "deselect_spool": ["tool"],
+            "apply_spool_selections": ["selections"],
             "begin_new_spool": ["tool"],
             "activate_pending_spool": ["tool"],
             "create_spool": ["display_name", "material", "color", "total_weight"],
@@ -680,6 +681,8 @@ class RmeCompatibilityPlugin(
             self._select_spool_from_octoprint(data["tool"], data["database_id"])
         elif command == "deselect_spool":
             self._deselect_spool_from_octoprint(data["tool"])
+        elif command == "apply_spool_selections":
+            self._apply_spool_selections(data["selections"])
         elif command == "begin_new_spool":
             self._begin_new_spool(data["tool"])
         elif command == "activate_pending_spool":
@@ -3431,6 +3434,10 @@ class RmeCompatibilityPlugin(
         provider, _ = self._active_spool_provider()
         self._mark_expected_provider_event(tool, database_id)
         provider.select(tool, database_id)
+        with self._state_lock:
+            queue = self._pending_spool_queue_locked()
+            if any(int(item["tool"]) == tool for item in queue):
+                self._remove_pending_spool_locked(tool)
         self._sync_spoolmanager(True)
 
     def _deselect_spool_from_octoprint(self, tool):
@@ -3439,6 +3446,54 @@ class RmeCompatibilityPlugin(
         provider, _ = self._active_spool_provider()
         self._mark_expected_provider_event(tool, None)
         provider.deselect(tool)
+        self._sync_spoolmanager(True)
+
+    def _apply_spool_selections(self, selections):
+        """Apply several tool assignments, then publish one coherent batch.
+
+        The SpoolManager page lets an operator stage every tool before saving.
+        Validate the complete request before mutating SpoolManager so an invalid
+        row cannot leave a half-applied mapping, and synchronize Buddy only once
+        after all provider selections have changed.
+        """
+        if not isinstance(selections, list) or not selections:
+            raise ValueError("At least one spool selection is required")
+        provider, _ = self._active_spool_provider()
+        normalized = []
+        seen_tools = set()
+        for selection in selections:
+            if not isinstance(selection, dict) or "tool" not in selection:
+                raise ValueError("Each spool selection requires a tool")
+            tool = self._tool_index(selection["tool"])
+            if tool in seen_tools:
+                raise ValueError("Tool %d was included more than once" % tool)
+            seen_tools.add(tool)
+            database_id = selection.get("database_id")
+            if database_id in (None, ""):
+                database_id = None
+            else:
+                database_id = int(database_id)
+                if provider.get(database_id) is None:
+                    raise ValueError("Spool %d does not exist" % database_id)
+            normalized.append((tool, database_id))
+
+        for tool, database_id in sorted(normalized):
+            self._mark_expected_provider_event(tool, database_id)
+            if database_id is None:
+                provider.deselect(tool)
+            else:
+                provider.select(tool, database_id)
+                with self._state_lock:
+                    queue = self._pending_spool_queue_locked()
+                    if any(int(item["tool"]) == tool for item in queue):
+                        self._remove_pending_spool_locked(tool)
+        self._logger.info(
+            "Applied staged filament-provider mapping: %s",
+            ", ".join(
+                "T%d=%s" % (tool, "none" if database_id is None else "#%d" % database_id)
+                for tool, database_id in sorted(normalized)
+            ),
+        )
         self._sync_spoolmanager(True)
 
     def _begin_new_spool(self, tool):
@@ -3527,10 +3582,18 @@ class RmeCompatibilityPlugin(
 
     def _remove_pending_spool_locked(self, tool):
         queue = self._pending_spool_queue_locked()
+        active = self._state["spoolmanager"].get("pending_new")
+        active_tool = None if not active else int(active["tool"])
         queue = [item for item in queue if int(item["tool"]) != int(tool)]
         self._state["spoolmanager"]["pending_new_queue"] = queue
-        self._state["spoolmanager"]["pending_new"] = (
-            copy.deepcopy(queue[0]) if queue else None
+        next_active = None
+        if active_tool is not None and active_tool != int(tool):
+            next_active = next(
+                (item for item in queue if int(item["tool"]) == active_tool),
+                None,
+            )
+        self._state["spoolmanager"]["pending_new"] = copy.deepcopy(
+            next_active or (queue[0] if queue else None)
         )
 
     def _cancel_pending_spool(self):

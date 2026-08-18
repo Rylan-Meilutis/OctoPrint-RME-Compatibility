@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.0b72 — 2026-08-18
+
+- Move loaded-filament mapping into a dedicated panel on SpoolManager's native
+  Spools tab instead of requiring operators to manage profiles in RME settings.
+- Keep an independent staged spool choice for every printer tool and apply all
+  changed assignments as one validated provider update and one firmware sync.
+- Add a per-tool **Create new** action that opens SpoolManager's own spool
+  editor with the printer-reported material family, vendor, color,
+  temperatures, and configured starting weight prefilled.
+- Expand mapping rows from the reported printer loadout while machine discovery
+  is still settling, clear only the mapped tool's pending draft, and safely
+  label unassigned tools.
+
 ## 0.1.0b71 — 2026-08-18
 
 - Match current firmware loadouts by their separate profile alias instead of
