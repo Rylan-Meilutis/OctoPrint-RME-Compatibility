@@ -658,13 +658,19 @@ class ToolmapGateTests(unittest.TestCase):
             "remaining_weight": 600, "is_active": True, "is_template": False,
         }
         empty = dict(active, database_id=8, display_name="Empty PETG", remaining_weight=0)
+        template = dict(
+            active, database_id=9, display_name="Grey Blue Pla",
+            material="PLA", is_template=True,
+        )
 
         class Provider(object):
             def available(self):
                 return True
 
             def inventory(self, include_unavailable=False):
-                return [dict(active), dict(empty)] if include_unavailable else [dict(active)]
+                if include_unavailable:
+                    return [dict(active), dict(empty), dict(template)]
+                return [dict(active), dict(template)]
 
             def selected(self):
                 return []
@@ -682,11 +688,11 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._sync_spoolmanager(True, False)
 
         self.assertEqual(
-            [7, 8],
+            [7, 8, 9],
             [item["database_id"] for item in plugin._state["spoolmanager"]["inventory"]],
         )
         self.assertEqual(
-            [7],
+            [7, 9],
             [item["database_id"] for item in plugin._state["spoolmanager"]["published"]],
         )
 

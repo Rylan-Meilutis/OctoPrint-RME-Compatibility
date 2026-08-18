@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0b75 — 2026-08-18
+
+- Keep SpoolManager profiles marked as templates selectable in filament
+  mapping. Mapping preserves the existing profile ID so later synchronization
+  recognizes the assignment instead of creating a duplicate or prompting
+  again.
+
 ## 0.1.0b74 — 2026-08-18
 
 - Show the complete provider spool inventory by default in every mapping

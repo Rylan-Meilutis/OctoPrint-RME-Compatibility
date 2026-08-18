@@ -3078,8 +3078,10 @@ class RmeCompatibilityPlugin(
             } | selected_ids
 
             # Selected spools have priority, then prior slots, then remaining
-            # usable inventory. The mapping UI still receives every concrete
-            # spool above, without consuming scarce firmware preset slots.
+            # usable inventory. The mapping UI still receives every provider
+            # profile above, including profiles also marked as templates,
+            # without letting unavailable entries consume scarce firmware
+            # preset slots.
             ordered_ids = []
             for record in selected + old_published + publishable_inventory:
                 database_id = record.get("database_id")

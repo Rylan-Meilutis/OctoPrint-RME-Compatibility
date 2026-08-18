@@ -66,11 +66,12 @@ class SpoolManagerBridge(object):
         return self._implementation(required=False) is not None
 
     def inventory(self, include_unavailable=False):
-        """Return concrete spools, optionally including empty/inactive ones.
+        """Return selectable profiles, optionally including unavailable ones.
 
         Firmware publication only needs usable spools, but an operator mapping
-        page must be able to display every real SpoolManager spool. Templates
-        are definitions rather than physical spools and are never selectable.
+        page must be able to display every SpoolManager profile. SpoolManager's
+        ``isTemplate`` flag means a profile may also prefill a new spool; it
+        does not make the existing profile unselectable.
         """
         implementation = self._implementation()
         manager = getattr(implementation, "_databaseManager", None)
@@ -78,10 +79,9 @@ class SpoolManagerBridge(object):
             raise SpoolManagerUnavailable("Installed SpoolManager has no compatible inventory API")
         models = self._load_all_models(manager)
         records = [self._record(model) for model in models]
-        concrete = [record for record in records if not record["is_template"]]
         if include_unavailable:
-            return concrete
-        return [record for record in concrete if (
+            return records
+        return [record for record in records if (
             record["is_active"]
             and (record["remaining_weight"] is None or record["remaining_weight"] > 0)
         )]

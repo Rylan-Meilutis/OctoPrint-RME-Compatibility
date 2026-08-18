@@ -14,7 +14,7 @@ from octoprint_rme_compatibility.spoolmanager import (
 class _Model(object):
     """Minimal stand-in for the mutable SpoolManager database model."""
 
-    def __init__(self, database_id, name="Galaxy Blue", remaining=750):
+    def __init__(self, database_id, name="Galaxy Blue", remaining=750, template=False):
         self.databaseId = database_id
         self.displayName = name
         self.vendor = "Example"
@@ -25,7 +25,7 @@ class _Model(object):
         self.bedTemperature = 60
         self.remainingWeight = remaining
         self.isActive = True
-        self.isTemplate = False
+        self.isTemplate = template
 
 
 class _Database(object):
@@ -59,6 +59,7 @@ class _Implementation(object):
     def _selectSpool(self, tool, database_id):
         self.selection[tool] = next(model for model in self._databaseManager.models
                                     if model.databaseId == database_id)
+        self._settings.database_ids[tool] = database_id
         return self.selection[tool]
 
 
@@ -82,14 +83,23 @@ class SpoolManagerTests(unittest.TestCase):
         self.assertLessEqual(len(spool_alias("Very Long Material", 99999)), 7)
 
     def test_bridge_filters_empty_spools_and_selects_by_tool(self):
-        models = [_Model(1), _Model(2, remaining=0)]
+        models = [
+            _Model(1),
+            _Model(2, remaining=0),
+            _Model(3, name="Grey Blue Pla", template=True),
+        ]
         implementation = _Implementation(models)
         bridge = SpoolManagerBridge(_PluginManager(implementation))
-        self.assertEqual([record["database_id"] for record in bridge.inventory()], [1])
+        self.assertEqual(
+            [record["database_id"] for record in bridge.inventory()], [1, 3]
+        )
         self.assertEqual(
             [record["database_id"] for record in bridge.inventory(include_unavailable=True)],
-            [1, 2],
+            [1, 2, 3],
         )
+        self.assertTrue(bridge.get(3)["is_template"])
+        self.assertEqual(bridge.select(0, 3)["database_id"], 3)
+        self.assertEqual(bridge.selected()[0]["database_id"], 3)
         self.assertEqual(bridge.selected()[0]["color"], "#193a8a")
         self.assertEqual(bridge.select(0, 1)["display_name"], "Galaxy Blue")
 

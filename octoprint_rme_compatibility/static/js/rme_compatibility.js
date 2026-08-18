@@ -549,6 +549,7 @@ $(function () {
             var availability = [];
             if (spool.is_active === false) availability.push("inactive");
             if (remaining !== null && remaining !== undefined && Number(remaining) <= 0) availability.push("empty");
+            if (spool.is_template === true) availability.push("template profile");
             return (spool.alias ? spool.alias + " — " : "") + spool.display_name +
                 (spool.vendor ? " · " + spool.vendor : "") + " · " + spool.material +
                 (remaining === null || remaining === undefined ? "" : " · " + Number(remaining).toFixed(0) + " g left") +
