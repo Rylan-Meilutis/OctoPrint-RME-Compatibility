@@ -479,6 +479,7 @@ class RmeCompatibilityPlugin(
             "confirm_printer_reboot": [],
             "delete_firmware": ["filename"],
             "sync_spoolmanager": [],
+            "refresh_spool_inventory": [],
             "sync_filaments_from_printer": [],
             "sync_filaments_to_printer": [],
             "confirm_provider_sync": [],
@@ -671,6 +672,8 @@ class RmeCompatibilityPlugin(
             self._delete_firmware(data["filename"])
         elif command == "sync_spoolmanager":
             self._sync_filaments_to_printer()
+        elif command == "refresh_spool_inventory":
+            self._sync_spoolmanager(True, False)
         elif command == "sync_filaments_from_printer":
             self._sync_filaments_from_printer()
         elif command in ("sync_filaments_to_printer", "confirm_provider_sync"):

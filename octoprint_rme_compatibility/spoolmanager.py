@@ -76,7 +76,7 @@ class SpoolManagerBridge(object):
         manager = getattr(implementation, "_databaseManager", None)
         if manager is None or not hasattr(manager, "loadAllSpoolsByQuery"):
             raise SpoolManagerUnavailable("Installed SpoolManager has no compatible inventory API")
-        models = manager.loadAllSpoolsByQuery(None)
+        models = self._load_all_models(manager)
         records = [self._record(model) for model in models]
         concrete = [record for record in records if not record["is_template"]]
         if include_unavailable:
@@ -85,6 +85,52 @@ class SpoolManagerBridge(object):
             record["is_active"]
             and (record["remaining_weight"] is None or record["remaining_weight"] > 0)
         )]
+
+    def _load_all_models(self, manager):
+        """Materialize SpoolManager's complete lazy query before disconnecting.
+
+        ``loadAllSpoolsByQuery`` returns a Peewee query rather than a list. Its
+        normal non-reused path closes the provider database before callers can
+        iterate that query. Use the same explicit all-pages request as the
+        native UI and consume it while the shared connection remains open.
+        """
+        all_rows_query = {
+            "selectedPageSize": "all",
+            "from": 0,
+            "to": 0,
+            "sortColumn": "displayName",
+            "sortOrder": "asc",
+            "filterName": "",
+            "materialFilter": "all",
+            "vendorFilter": "all",
+            "colorFilter": "all",
+        }
+        connect = getattr(manager, "connectoToDatabase", None)
+        close = getattr(manager, "closeDatabase", None)
+        if callable(connect) and callable(close):
+            connect()
+            try:
+                models = list(manager.loadAllSpoolsByQuery(
+                    all_rows_query, withReusedConnection=True
+                ) or [])
+                count_method = getattr(manager, "countSpoolsByQuery", None)
+                expected = (
+                    count_method(withReusedConnection=True)
+                    if callable(count_method) else None
+                )
+                if expected is not None and len(models) != int(expected):
+                    raise SpoolManagerUnavailable(
+                        "SpoolManager returned %d of %d inventory rows"
+                        % (len(models), int(expected))
+                    )
+                return models
+            except TypeError:
+                # Older SpoolManager builds lack reusable-connection keyword
+                # arguments. Their no-query path still requests every row.
+                pass
+            finally:
+                close()
+        return list(manager.loadAllSpoolsByQuery(None) or [])
 
     def selected(self):
         """Return the tool-indexed selection without emitting read-side events.

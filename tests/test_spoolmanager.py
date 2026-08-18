@@ -93,6 +93,48 @@ class SpoolManagerTests(unittest.TestCase):
         self.assertEqual(bridge.selected()[0]["color"], "#193a8a")
         self.assertEqual(bridge.select(0, 1)["display_name"], "Galaxy Blue")
 
+    def test_spoolmanager_inventory_materializes_all_rows_while_connected(self):
+        models = [_Model(1), _Model(2), _Model(3)]
+
+        class LazyRows(object):
+            def __init__(self, manager):
+                self.manager = manager
+
+            def __iter__(self):
+                if not self.manager.connected:
+                    raise RuntimeError("provider connection closed before iteration")
+                return iter(models)
+
+        class Manager(object):
+            connected = False
+            query = None
+
+            def connectoToDatabase(self):
+                self.connected = True
+
+            def closeDatabase(self):
+                self.connected = False
+
+            def loadAllSpoolsByQuery(self, query, withReusedConnection=False):
+                self.query = query
+                self.assert_reused = withReusedConnection
+                return LazyRows(self)
+
+            def countSpoolsByQuery(self, withReusedConnection=False):
+                return len(models)
+
+        manager = Manager()
+        implementation = _Implementation(models)
+        implementation._databaseManager = manager
+        bridge = SpoolManagerBridge(_PluginManager(implementation))
+
+        inventory = bridge.inventory(include_unavailable=True)
+
+        self.assertEqual([1, 2, 3], [item["database_id"] for item in inventory])
+        self.assertEqual("all", manager.query["selectedPageSize"])
+        self.assertTrue(manager.assert_reused)
+        self.assertFalse(manager.connected)
+
     def test_spoolman_bridge_normalizes_inventory_and_selected_tools(self):
         raw = [{
             "id": 7,

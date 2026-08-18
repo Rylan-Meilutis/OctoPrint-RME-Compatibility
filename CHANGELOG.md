@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0b74 — 2026-08-18
+
+- Show the complete provider spool inventory by default in every mapping
+  selector, order compatible materials first, and refresh the provider whenever
+  the mapper opens so independently added spools are immediately available.
+- Materialize SpoolManager's explicit all-pages database query while its
+  provider connection is still open, and reject count mismatches instead of
+  silently presenting a partial mapping inventory.
+
 ## 0.1.0b73 — 2026-08-18
 
 - Close RME Settings before opening SpoolManager's mapping panel, and route
