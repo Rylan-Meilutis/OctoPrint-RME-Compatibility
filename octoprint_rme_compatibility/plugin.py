@@ -1375,15 +1375,6 @@ class RmeCompatibilityPlugin(
         ):
             return (None,)
 
-        # Current firmware reports and validates the base polymer independently
-        # from its custom profile, so current S"PETG" P"PET-00L" records leave
-        # Orca's M976 material untouched. Older firmware exposed only the
-        # profile alias in S; retain the narrow on-wire translation for those
-        # legacy records while preserving the source file and all other fields.
-        rewritten_m976 = self._rewrite_m976_batch_materials(cmd)
-        if rewritten_m976 != cmd:
-            return (rewritten_m976,)
-
         # OctoPrint has no public hook for replacing its SD file-list backend.
         # Suppress only the native refresh command after positive RME FILE
         # discovery, then repopulate the Files view through the plugin state.
@@ -1407,76 +1398,6 @@ class RmeCompatibilityPlugin(
         # An explicit service command is resent with force=True below; leaving
         # its original copy queued would execute the action twice later.
         return (None,) if command_action else None
-
-    def _rewrite_m976_batch_materials(self, command):
-        command = str(command or "")
-        match = re.match(
-            r"^(\s*M976\s+A\s+)([^;\r\n]*)(.*)$",
-            command,
-            re.IGNORECASE,
-        )
-        if not match:
-            return command
-        with self._state_lock:
-            assigned = {
-                int(item.get("tool")): self._m976_assignment_material(item)
-                for item in self._state.get("loaded_filaments", [])
-                if item.get("tool") is not None
-            }
-        changed = False
-        manifest = match.group(2)
-        trailing_space = manifest[len(manifest.rstrip()):]
-        rewritten = []
-        for raw_entry in manifest.strip().split(","):
-            fields = raw_entry.strip().split(":")
-            if len(fields) != 4:
-                return command
-            try:
-                logical = int(fields[1])
-            except (TypeError, ValueError):
-                return command
-            material = assigned.get(logical, "")
-            if material and material.lower() not in ("none", "empty", "---"):
-                if fields[2] != material:
-                    fields[2] = material
-                    changed = True
-            rewritten.append(":".join(fields))
-        if not changed:
-            return command
-        result = (
-            match.group(1) + ",".join(rewritten)
-            + trailing_space + match.group(3)
-        )
-        self._logger.info("Translated M976 batch materials to firmware assignments")
-        return result
-
-    @staticmethod
-    def _m976_assignment_material(item):
-        """Return the material identifier this firmware can validate safely.
-
-        A current M865 record explicitly carries ``S`` (base family) and ``P``
-        (profile).  A legacy record carries only ``S`` and therefore must use
-        that exact profile identifier.  Provider enrichment changes the
-        display material, so it must never be used to infer that a firmware
-        profile has a persisted base association.
-        """
-        family_reported = item.get("material_family_reported")
-        firmware_material = str(
-            item.get("firmware_material") or item.get("material") or ""
-        ).strip()
-        firmware_profile = str(
-            item.get("firmware_profile") or item.get("profile") or firmware_material
-        ).strip()
-        if family_reported is True:
-            return firmware_material
-        if family_reported is False:
-            return firmware_profile
-        # Compatibility for in-memory state produced before this marker was
-        # introduced: differing material/profile values are safest as the
-        # exact profile, which current and legacy M976 both accept.
-        if firmware_profile and firmware_profile != firmware_material:
-            return firmware_profile
-        return firmware_material
 
     def gcode_sent_hook(self, comm_instance, phase, cmd, cmd_type, gcode,
                         subcode=None, tags=None, *args, **kwargs):
@@ -3244,9 +3165,19 @@ class RmeCompatibilityPlugin(
                 for selected_item in selected:
                     item = slot_by_id.get(selected_item["database_id"])
                     if item:
+                        # Persist the authoritative polymer family in the same
+                        # M865 transaction that loads the custom profile.  The
+                        # remote FILAMENT SET normally stores this already, but
+                        # making it atomic here prevents a loaded profile from
+                        # ever being reported as S/P=<alias>/<alias> (and then
+                        # rejected by an unchanged M976 PETG/PLA batch).
+                        base = self._firmware_filament_base(item.get("material"))
                         assignments.append(
-                            'M865 U%d L%d O"%s"'
-                            % (item["slot"], selected_item["tool"], item["color"])
+                            'M865 U%d J"%s" L%d O"%s"'
+                            % (
+                                item["slot"], base, selected_item["tool"],
+                                item["color"],
+                            )
                         )
                         manufacturer = manufacturer_by_spool.get(
                             item["database_id"], "none"

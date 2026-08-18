@@ -1177,6 +1177,8 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
                 )
                 self.assertIn("r != FilamentType::none", filament)
                 self.assertIn('remote_value(command, "base")', remote_queue)
+                self.assertIn("base_preset_name", m865)
+                self.assertIn("params.base_preset", m865)
                 self.assertIn("filament_material_name(params)", m865)
                 self.assertIn('SERIAL_ECHO("\\\" P\\\"")', m865)
                 self.assertIn("requested == authoritative_name", m976_material)
@@ -1202,6 +1204,7 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertNotIn("assignments.append('M865 S\"---\"", host_plugin)
         self.assertIn("base=%s nozzle=%d", host_plugin)
+        self.assertIn('M865 U%d J"%s" L%d O"%s"', host_plugin)
 
     def test_657_release_exposes_the_same_host_workflow_and_transfer_contract(self):
         firmware_root = (

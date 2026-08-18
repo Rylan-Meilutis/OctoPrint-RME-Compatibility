@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0b77 — 2026-08-18
+
+- Preserve slicer-authored M976 commands byte-for-byte and fix the underlying
+  filament state instead: provider assignments now persist the authoritative
+  base material in the same M865 transaction that loads each custom profile.
+  This prevents current firmware from reporting an alias in both S and P and
+  rejecting a valid PETG/PLA pressure-advance batch.
+
 ## 0.1.0b76 — 2026-08-18
 
 - Broadcast SpoolManager's native table-and-sidebar reload after RME mapping

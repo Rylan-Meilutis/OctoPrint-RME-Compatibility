@@ -624,7 +624,7 @@ class ToolmapGateTests(unittest.TestCase):
 
         commands = [command for batch in plugin._printer.command_batches
                     for command in (batch if isinstance(batch, list) else [batch])]
-        self.assertIn('M865 U0 L0 O"#193a8a"', commands)
+        self.assertIn('M865 U0 J"PETG" L0 O"#193a8a"', commands)
         self.assertIn('M865 V0 O"#193a8a" N"Blue"', commands)
         self.assertTrue(any(
             command.startswith("@RME MANUFACTURER ASSIGN tool=0 name=Atomic%20Filament tx=")
@@ -745,7 +745,7 @@ class ToolmapGateTests(unittest.TestCase):
             command.startswith('@RME FILAMENT SET slot=0 name=PLA-00C base=PLA nozzle=215 preheat=175 bed=60 visible=1 tx=')
             for command in commands
         ))
-        self.assertIn('M865 U0 L0 O"#ff7700"', commands)
+        self.assertIn('M865 U0 J"PLA" L0 O"#ff7700"', commands)
 
     def test_confirmed_provider_change_stays_cleared_when_print_defers_apply(self):
         plugin = RmeCompatibilityPlugin()
@@ -1786,10 +1786,10 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual("PETG", loaded["material"])
         self.assertEqual("Black PETG", loaded["display_name"])
         self.assertTrue(loaded["material_family_reported"])
-        self.assertEqual(
-            "M976 A 0:2:PETG:255",
-            plugin._rewrite_m976_batch_materials("M976 A 0:2:PLA:255"),
-        )
+        command = "M976 A 0:2:PETG:255"
+        self.assertIsNone(plugin.gcode_queuing_hook(
+            None, "queuing", command, None, "M976", tags={"source:job"},
+        ))
 
     def test_machine_manufacturer_is_retained_regardless_of_query_order(self):
         plugin = RmeCompatibilityPlugin()
@@ -2050,7 +2050,7 @@ class ToolmapGateTests(unittest.TestCase):
              plugin._state["spoolmanager"]["pending_new_queue"]],
         )
 
-    def test_legacy_loaded_profile_provider_enrichment_stays_exact_for_m976(self):
+    def test_legacy_loaded_profile_provider_enrichment_does_not_edit_m976(self):
         plugin = RmeCompatibilityPlugin()
         plugin._logger = logging.getLogger("rme-m976-provider-legacy-test")
         plugin._schedule_publish = lambda: None
@@ -2073,10 +2073,10 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual("PETG", loaded["material"])
         self.assertEqual("PET-00L", loaded["firmware_material"])
         self.assertFalse(loaded["material_family_reported"])
-        self.assertEqual(
-            "M976 A 0:2:PET-00L:255",
-            plugin._rewrite_m976_batch_materials("M976 A 0:2:PETG:255"),
-        )
+        self.assertIsNone(plugin.gcode_queuing_hook(
+            None, "queuing", "M976 A 0:2:PETG:255", None, "M976",
+            tags={"source:job"},
+        ))
 
     def test_stats_use_connection_and_print_lifecycle_snapshots_without_polling(self):
         plugin = RmeCompatibilityPlugin()
@@ -2469,7 +2469,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual([], plugin._printer.forced_commands)
 
-    def test_m976_batch_translates_legacy_profile_only_assignments(self):
+    def test_m976_batch_is_never_rewritten_from_loaded_filament_state(self):
         plugin = RmeCompatibilityPlugin()
         plugin._logger = logging.getLogger("rme-m976-translation-test")
         plugin._state.update(connected=True, supported=True)
@@ -2478,20 +2478,15 @@ class ToolmapGateTests(unittest.TestCase):
             {"tool": 2, "material": "PET-00L"},
         ]
 
-        result = plugin.gcode_queuing_hook(
+        self.assertIsNone(plugin.gcode_queuing_hook(
             None, "queuing", "M976 A 0:2:PETG:255", None, "M976",
             tags={"source:job"},
-        )
-
-        self.assertEqual(("M976 A 0:2:PET-00L:255",), result)
-        self.assertEqual(
-            ("M976 A 0:0:PLA-00D:215,0:2:PET-00L:255 ; calibrate",),
-            plugin.gcode_queuing_hook(
-                None, "queuing",
-                "M976 A 0:0:PLA:215,0:2:PETG:255 ; calibrate",
-                None, "M976", tags={"source:job"},
-            ),
-        )
+        ))
+        self.assertIsNone(plugin.gcode_queuing_hook(
+            None, "queuing",
+            "M976 A 0:0:PLA:215,0:2:PETG:255 ; calibrate",
+            None, "M976", tags={"source:job"},
+        ))
 
     def test_m976_batch_preserves_current_authoritative_material_family(self):
         plugin = RmeCompatibilityPlugin()
@@ -2503,7 +2498,6 @@ class ToolmapGateTests(unittest.TestCase):
         }]
         command = "M976 A 0:2:PETG:255"
 
-        self.assertEqual(command, plugin._rewrite_m976_batch_materials(command))
         self.assertIsNone(plugin.gcode_queuing_hook(
             None, "queuing", command, None, "M976", tags={"source:job"},
         ))
