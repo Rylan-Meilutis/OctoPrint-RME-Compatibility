@@ -22,6 +22,7 @@ $(function () {
             return !!((self.state().firmware || {}).recovery_required);
         });
         self.tick = ko.observable(Date.now());
+        self.corePrintClock = null;
         self.pendingUpload = ko.observable(null);
         self.piUploadActive = ko.observable(false);
         self.piUploadProgress = ko.observable(0);
@@ -1266,6 +1267,7 @@ $(function () {
             OctoPrint.simpleApiGet("rme_compatibility").done(self.acceptState);
             window.setInterval(function () {
                 self.tick(Date.now());
+                updateCorePrintClock();
                 if (self.workflowVisible() || $("#rme-workflow-overlay, .rme-dashboard-workflow-active").length) {
                     scheduleCoreWorkflowRender();
                 }
@@ -1274,6 +1276,7 @@ $(function () {
         self.onAllBound = function () {
             self.allViewModelsBound = true;
             installSpoolManagerPanel();
+            updateCorePrintClock();
         };
         self.onSettingsShown = function () {
             if (self.state().supported) {
@@ -1708,6 +1711,64 @@ $(function () {
                 var caption = target.find(".rme-dashboard-workflow-caption");
                 if (!caption.length) caption = $('<div class="rme-dashboard-workflow-caption"></div>').appendTo(target);
                 caption.text(label).attr("title", label);
+            });
+        }
+
+        function updateCorePrintClock() {
+            var reported = Number(ko.unwrap(self.printerState.printTime));
+            var stateName = String(ko.unwrap(self.printerState.stateString) || "").toLowerCase();
+            var running = !!(
+                ko.unwrap(self.printerState.isPrinting) ||
+                ko.unwrap(self.printerState.isPausing) ||
+                ko.unwrap(self.printerState.isResuming) ||
+                ko.unwrap(self.printerState.isCancelling) ||
+                /^(starting|printing|pausing|resuming|cancelling|finishing)/.test(stateName)
+            );
+            var sources = $("[data-bind*='printTimeString']").filter(function () {
+                return String($(this).attr("data-bind") || "").indexOf("printTimeLeftString") < 0;
+            });
+
+            if (!running || !isFinite(reported)) {
+                self.corePrintClock = null;
+                sources.css("display", "");
+                $(".rme-smoothed-print-time").remove();
+                return;
+            }
+
+            var now = Date.now();
+            var clock = self.corePrintClock;
+            if (!clock || reported + 2 < clock.lastReported) {
+                clock = self.corePrintClock = {
+                    anchorAt: now,
+                    anchorTime: Math.max(0, reported),
+                    lastReported: reported
+                };
+            }
+
+            var expected = clock.anchorTime + (now - clock.anchorAt) / 1000;
+            // Server progress can correct the display forward. Blocking G-code
+            // often republishes an unchanged or older value, which must never
+            // pull the locally advancing clock backward.
+            if (reported > expected) {
+                clock.anchorAt = now;
+                clock.anchorTime = reported;
+                expected = reported;
+            }
+            clock.lastReported = reported;
+
+            var elapsed = Math.max(0, Math.floor(expected));
+            var label = typeof window.formatDuration === "function"
+                ? window.formatDuration(elapsed)
+                : formatDurationLong(elapsed);
+            sources.each(function () {
+                var source = $(this);
+                var display = source.next(".rme-smoothed-print-time");
+                if (!display.length) {
+                    display = $('<span class="rme-smoothed-print-time" aria-live="off"></span>');
+                    source.after(display);
+                }
+                source.css("display", "none");
+                display.text(label);
             });
         }
 
