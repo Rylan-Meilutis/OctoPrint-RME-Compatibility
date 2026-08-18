@@ -209,7 +209,8 @@ class RmeFileService(object):
                 self._condition.wait(min(quiet_remaining, remaining))
 
     def _exchange(
-        self, command, expected, timeout=None, terminal=None, respect_cancel=True,
+        self, command, expected, timeout=None, terminal=None,
+        refresh_timeout=None, respect_cancel=True,
     ):
         """Send a command and return all records through its terminal reply."""
         expected = set(expected if isinstance(expected, (tuple, list, set)) else [expected])
@@ -227,12 +228,20 @@ class RmeFileService(object):
                     self.send_binary(item)
                 else:
                     self.send_command(item)
-            deadline = time.monotonic() + (timeout or self.response_timeout)
+            timeout_seconds = timeout or self.response_timeout
+            deadline = time.monotonic() + timeout_seconds
+            observed_records = 0
             with self._condition:
                 while not any(
                     item.get("record") in expected and (terminal is None or terminal(item))
                     for item in self._records
                 ):
+                    new_records = self._records[observed_records:]
+                    observed_records = len(self._records)
+                    if refresh_timeout is not None and any(
+                        refresh_timeout(item) for item in new_records
+                    ):
+                        deadline = time.monotonic() + timeout_seconds
                     if self._error:
                         error = self._error
                         if isinstance(error, dict):
@@ -1081,6 +1090,10 @@ class RmeFileService(object):
                     self.response_timeout, FIRMWARE_STATUS_TIMEOUT_SECONDS
                 ),
                 terminal=lambda item: item.get("state") != "validating",
+                refresh_timeout=lambda item: (
+                    item.get("record") == "firmware_status"
+                    and item.get("state") == "validating"
+                ),
             )
         return self._terminal(records, "firmware_status")
 

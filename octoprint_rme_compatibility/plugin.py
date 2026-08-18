@@ -1337,12 +1337,11 @@ class RmeCompatibilityPlugin(
         if "rme:priority_control" in tags:
             return self._force_send_rme_control(comm_instance, cmd, gcode)
 
-        # Orca's documented M976 templates describe the sliced polymer using
-        # base names such as PETG. The RME provider bridge may intentionally
-        # assign a richer custom profile alias (for example PET-00L) to that
-        # MMU slot. Current firmware validates the batch manifest against the
-        # assigned name exactly, so translate only the material field while
-        # preserving physical tool, logical slot and slicer temperature.
+        # Current firmware reports and validates the base polymer independently
+        # from its custom profile, so current S"PETG" P"PET-00L" records leave
+        # Orca's M976 material untouched. Older firmware exposed only the
+        # profile alias in S; retain the narrow on-wire translation for those
+        # legacy records while preserving the source file and all other fields.
         rewritten_m976 = self._rewrite_m976_batch_materials(cmd)
         if rewritten_m976 != cmd:
             return (rewritten_m976,)

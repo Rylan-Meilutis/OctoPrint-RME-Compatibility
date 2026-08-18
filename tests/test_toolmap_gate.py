@@ -1974,7 +1974,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual([], plugin._printer.forced_commands)
 
-    def test_m976_batch_uses_exact_firmware_material_assignments(self):
+    def test_m976_batch_translates_legacy_profile_only_assignments(self):
         plugin = RmeCompatibilityPlugin()
         plugin._logger = logging.getLogger("rme-m976-translation-test")
         plugin._state.update(connected=True, supported=True)
@@ -1997,6 +1997,19 @@ class ToolmapGateTests(unittest.TestCase):
                 None, "M976", tags={"source:job"},
             ),
         )
+
+    def test_m976_batch_preserves_current_authoritative_material_family(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["loaded_filaments"] = [{
+            "tool": 2, "material": "PETG", "profile": "PET-00L",
+        }]
+        command = "M976 A 0:2:PETG:255"
+
+        self.assertEqual(command, plugin._rewrite_m976_batch_materials(command))
+        self.assertIsNone(plugin.gcode_queuing_hook(
+            None, "queuing", command, None, "M976", tags={"source:job"},
+        ))
 
     def test_m976_batch_is_untouched_without_an_exact_loaded_assignment(self):
         plugin = RmeCompatibilityPlugin()

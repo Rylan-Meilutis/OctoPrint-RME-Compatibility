@@ -14,6 +14,7 @@ import unittest
 import zlib
 from unittest import mock
 
+from octoprint_rme_compatibility import file_service as file_service_module
 from octoprint_rme_compatibility.file_service import RmeFileService
 from octoprint_rme_compatibility.protocol import parse_line
 
@@ -46,7 +47,7 @@ class FirmwareFileServicePeer(object):
         suspend_bulk_after_ack_count=0,
         bulk_supported=True, confirm_abort=True,
         resume_begin_failures=0,
-        firmware_query_delay=0,
+        firmware_query_delay=0, firmware_query_validating=False,
         fragment_widths=(1, 2, 5, 13, 31),
     ):
         self.service = None
@@ -87,6 +88,7 @@ class FirmwareFileServicePeer(object):
         self._confirm_abort = bool(confirm_abort)
         self._resume_begin_failures = max(0, int(resume_begin_failures))
         self._firmware_query_delay = max(0, float(firmware_query_delay))
+        self._firmware_query_validating = bool(firmware_query_validating)
         self.resume_failed_offsets = []
         self._fragment_widths = tuple(fragment_widths)
         self._host_to_firmware = queue.Queue()
@@ -175,7 +177,30 @@ class FirmwareFileServicePeer(object):
                     )
                 self._reply(fields, "ok")
 
-            if self._firmware_query_delay:
+            if self._firmware_query_validating and self.published_path == "FWUPD.RME":
+                size = len(self.received)
+                self._reply(
+                    "RME_FIRMWARE candidate=1 armed=0 state=validating "
+                    "path=FWUPD.RME size=%d progress=0" % size,
+                    "ok",
+                )
+
+                def validate():
+                    for progress in (size // 3, (size * 2) // 3):
+                        time.sleep(self._firmware_query_delay / 3.0)
+                        self._reply(
+                            "RME_FIRMWARE candidate=1 armed=0 state=validating "
+                            "path=FWUPD.RME size=%d progress=%d" % (size, progress)
+                        )
+                    time.sleep(self._firmware_query_delay / 3.0)
+                    reply_status()
+
+                threading.Thread(
+                    target=validate,
+                    name="simulated-rme-firmware-validation",
+                    daemon=True,
+                ).start()
+            elif self._firmware_query_delay:
                 threading.Timer(self._firmware_query_delay, reply_status).start()
             else:
                 reply_status()
@@ -504,6 +529,37 @@ class FirmwareFileServicePeer(object):
 
 
 class SerialLinkIntegrationTests(unittest.TestCase):
+    def test_async_firmware_validation_refreshes_deadline_until_terminal_status(self):
+        link = FirmwareFileServicePeer(
+            firmware_query_delay=0.30,
+            firmware_query_validating=True,
+        )
+        service = RmeFileService(
+            link.send_command,
+            response_timeout=0.01,
+            send_binary=link.send_binary,
+            begin_binary=link.begin_binary,
+            end_binary=link.end_binary,
+        )
+        link.service = service
+        content = bytes(range(256)) * 8 + b"signed-firmware-tail"
+
+        with tempfile.NamedTemporaryFile() as source:
+            source.write(content)
+            source.flush()
+            try:
+                service.write_file(source.name, "FWUPD.BBF")
+                with mock.patch.object(
+                    file_service_module, "FIRMWARE_STATUS_TIMEOUT_SECONDS", 0.15
+                ):
+                    status = service.firmware_status()
+            finally:
+                link.close()
+
+        self.assertEqual("ready", status["state"])
+        self.assertEqual(len(content), status["size"])
+        self.assertEqual(hashlib.sha256(content).hexdigest(), status["sha256"])
+
     def test_firmware_candidate_hash_may_outlive_generic_command_timeout(self):
         link = FirmwareFileServicePeer(firmware_query_delay=0.08)
         service = RmeFileService(
@@ -1077,6 +1133,12 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
                     ref, "doc/rme_serial_handler_integration.md"
                 ))
                 m865 = ref_file(ref, "src/marlin_stubs/M865.cpp")
+                m976_material = ref_file(
+                    ref, "src/common/m976_material.hpp"
+                )
+                firmware_status = ref_file(
+                    ref, "src/common/rme_firmware_status.hpp"
+                )
                 filament = ref_file(ref, "src/common/filament.cpp")
                 remote_queue = ref_file(
                     ref, "lib/Marlin/Marlin/src/gcode/queue.cpp"
@@ -1115,11 +1177,18 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
                 )
                 self.assertIn("r != FilamentType::none", filament)
                 self.assertIn('remote_value(command, "base")', remote_queue)
+                self.assertIn("filament_material_name(params)", m865)
+                self.assertIn('SERIAL_ECHO("\\\" P\\\"")', m865)
+                self.assertIn("requested == authoritative_name", m976_material)
+                self.assertIn("query_hash_timeout_ms", firmware_status)
 
         self.assertEqual(protocols[0], protocols[1])
         self.assertEqual(integrations[0], integrations[1])
         self.assertIn("code=resume_failed", protocols[0])
         self.assertIn("retry the identical BEGIN", integrations[0])
+        self.assertIn('S"PLA" P"PLA-00D"', protocols[0])
+        self.assertIn("state=validating", protocols[0])
+        self.assertIn("accept the later unsolicited `state=ready`", integrations[0])
 
         host_service = (
             Path(__file__).resolve().parents[1]

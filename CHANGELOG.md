@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.0b68 — 2026-08-17
+
+- Follow the maintained 6.6.3/6.8.1 asynchronous firmware-validation
+  contract through completion. Every structured `state=validating` progress
+  record now refreshes the host deadline before the unsolicited terminal
+  ready/error result arrives.
+- Exercise that workflow over the fragmented serial-link simulator and pin
+  both maintained firmware branches to the separated material/profile wire
+  format and base-material M976 validation contract.
+- Preserve Orca's authoritative material family with current
+  `S"PETG" P"PET-00L"` loadouts while retaining the narrow profile-alias
+  translation needed by legacy profile-only reports.
+
 ## 0.1.0b67 — 2026-08-17
 
 - Treat filament material family and custom profile identity as separate wire
