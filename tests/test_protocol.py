@@ -103,14 +103,23 @@ class ProtocolTests(unittest.TestCase):
             'loaded_filament T2 S"PLA-00A" O"Orange" H"#ff8000"'
         ), {
             "record": "loaded_filament", "tool": 2, "material": "PLA-00A",
+            "profile": "PLA-00A",
             "color_name": "Orange", "color": "#ff8000",
         })
         self.assertEqual(parse_line(
             'loaded_filament T0 S"PLA-00D" O"Custom" H"#808080" M"Prusa / Prusament"'
         ), {
             "record": "loaded_filament", "tool": 0, "material": "PLA-00D",
+            "profile": "PLA-00D",
             "color_name": "Custom", "color": "#808080",
             "vendor": "Prusa / Prusament",
+        })
+        self.assertEqual(parse_line(
+            'loaded_filament T0 S"PLA" P"PLA-00D" O"Custom" H"#808080" M"Polymaker"'
+        ), {
+            "record": "loaded_filament", "tool": 0, "material": "PLA",
+            "profile": "PLA-00D", "color_name": "Custom", "color": "#808080",
+            "vendor": "Polymaker",
         })
         self.assertEqual(parse_line(
             "RME_MANUFACTURER builtin=1 slot=0 name=Prusa%20%2F%20Prusament"

@@ -1552,7 +1552,8 @@ class ToolmapGateTests(unittest.TestCase):
         )
 
         plugin._handle_record({
-            "record": "loaded_filament", "tool": 0, "material": "PLA-00D",
+            "record": "loaded_filament", "tool": 0, "material": "PLA",
+            "profile": "PLA-00D",
             "color_name": "Custom", "color": "#808080",
         })
 
@@ -1573,13 +1574,14 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._state["spoolmanager"]["published"] = []
 
         record = parse_line(
-            'loaded_filament T2 S"PET-00L" O"Black" H"#000000" M"Polymaker"'
+            'loaded_filament T2 S"PETG" P"PET-00L" O"Black" H"#000000" M"Polymaker"'
         )
         plugin._handle_record(record)
 
         self.assertEqual("Polymaker", plugin._state["loaded_filaments"][0]["vendor"])
         self.assertEqual("#000000", plugin._state["loaded_filaments"][0]["color"])
-        self.assertEqual("PET-00L", accepted[0]["material"])
+        self.assertEqual("PETG", accepted[0]["material"])
+        self.assertEqual("PET-00L", accepted[0]["profile"])
 
     def test_stats_use_connection_and_print_lifecycle_snapshots_without_polling(self):
         plugin = RmeCompatibilityPlugin()

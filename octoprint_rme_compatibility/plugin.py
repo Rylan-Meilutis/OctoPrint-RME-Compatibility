@@ -1700,13 +1700,13 @@ class RmeCompatibilityPlugin(
                 provider_match = next(
                     (
                         item for item in self._state["spoolmanager"].get("published", [])
-                        if item.get("alias") == loadout.get("material")
+                        if item.get("alias") == loadout.get("profile")
                     ),
                     None,
                 )
                 if provider_match:
                     loadout.update(
-                        firmware_alias=loadout.get("material", ""),
+                        firmware_alias=loadout.get("profile", ""),
                         material=provider_match.get("material", loadout.get("material", "")),
                         vendor=provider_match.get("vendor", ""),
                         display_name=provider_match.get("display_name", ""),

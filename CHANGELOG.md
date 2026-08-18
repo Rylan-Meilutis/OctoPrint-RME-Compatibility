@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0b67 — 2026-08-17
+
+- Treat filament material family and custom profile identity as separate wire
+  fields. New firmware reports `S"PLA" P"PLA-00D"`; legacy reports remain
+  accepted, while provider spool matching uses the profile and all material
+  consumers receive only the authoritative polymer family.
+
 ## 0.1.0b66 — 2026-08-17
 
 - Support non-blocking firmware-candidate validation. An intermediate
