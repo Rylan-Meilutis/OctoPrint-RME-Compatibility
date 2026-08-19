@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0b81 — 2026-08-19
+
+- Show automatic M976 pressure-advance calibration in the normal OctoPrint
+  progress area, retaining its nested heating, probing, and MMU phases until
+  the firmware reports that the calibration batch has finished.
+- Keep the active-tool indicator synchronized across streamed and
+  firmware-originated tool changes, and clear it immediately when the MMU
+  unloads or an XL/INDX toolchanger reports its parked no-tool state.
+- Return successful MMU, INDX, and XL print lifecycles to an idle/no-tool UI
+  state even if the final firmware workflow record races OctoPrint's print-done
+  event.
+
 ## 0.1.0b77 — 2026-08-18
 
 - Preserve slicer-authored M976 commands byte-for-byte and fix the underlying

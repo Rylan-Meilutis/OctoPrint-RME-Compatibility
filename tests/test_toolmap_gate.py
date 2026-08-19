@@ -1921,6 +1921,99 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual("PETG", report["data"]["tools"][1]["material"])
         self.assertEqual("RME firmware", report["data"]["tools"][1]["provider"])
 
+    def test_completed_mmu_unload_clears_active_tool_without_reconnect(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        plugin._defer = lambda callback, *args: None
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["machine"] = {
+            "logical_tools": 5, "tool_capacity": 5, "single_nozzle": 1,
+        }
+        plugin._state["loaded_filaments"] = [{
+            "tool": 2, "material": "PETG", "color": "#000000",
+            "color_name": "Black",
+        }]
+        plugin._set_active_tool(2)
+
+        plugin._handle_record({
+            "record": "event", "seq": 1, "type": "progress",
+            "workflow": "filament_unload", "state": "closed", "progress": 100,
+            "message": "Filament unload complete",
+        })
+
+        self.assertEqual(
+            plugin._empty_state()["active_tool"],
+            plugin._state["active_tool"],
+        )
+
+    def test_successful_print_returns_mmu_indx_and_xl_to_no_tool_idle_state(self):
+        from octoprint.events import Events
+
+        topologies = {
+            "mmu": {
+                "hotends": 1, "logical_tools": 5,
+                "tool_capacity": 5, "single_nozzle": 1,
+            },
+            "indx": {
+                "hotends": 1, "logical_tools": 8,
+                "tool_capacity": 8, "single_nozzle": 0,
+            },
+            "xl": {
+                "hotends": 5, "logical_tools": 5,
+                "tool_capacity": 5, "single_nozzle": 0,
+            },
+        }
+        for name, machine in topologies.items():
+            with self.subTest(machine=name):
+                plugin = RmeCompatibilityPlugin()
+                plugin._schedule_publish = lambda: None
+                plugin._defer = lambda callback, *args: None
+                plugin._state.update(connected=True, supported=True)
+                plugin._state["machine"] = machine
+                plugin._state["loaded_filaments"] = [{
+                    "tool": 2, "material": "PETG", "color": "#000000",
+                    "color_name": "Black",
+                }]
+                plugin._set_active_tool(2)
+                plugin._state["workflow"] = {
+                    "record": "event", "type": "progress",
+                    "workflow": "mmu" if name == "mmu" else "tool_change",
+                    "state": "active", "progress": 90,
+                    "message": "Finishing print",
+                }
+
+                plugin.on_event(Events.PRINT_DONE, {})
+
+                self.assertEqual(
+                    plugin._empty_state()["active_tool"],
+                    plugin._state["active_tool"],
+                )
+                self.assertIsNone(plugin._state["workflow"])
+
+    def test_toolchanger_t_minus_one_and_park_event_clear_active_tool(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        plugin._defer = lambda callback, *args: None
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["machine"] = {
+            "hotends": 5, "logical_tools": 5,
+            "tool_capacity": 5, "single_nozzle": 0,
+        }
+        plugin._set_active_tool(2)
+
+        plugin.gcode_sent_hook(
+            None, "sent", "T-1", None, "T", tags={"source:file"}
+        )
+        self.assertIsNone(plugin._state["active_tool"]["logical"])
+
+        plugin._set_active_tool(3)
+        plugin._handle_record({
+            "record": "event", "seq": 1, "type": "progress",
+            "workflow": "tool_change", "state": "closed", "progress": 100,
+            "tool": -1, "message": "Tool parked",
+        })
+        self.assertIsNone(plugin._state["active_tool"]["logical"])
+
     def test_firmware_alias_recovers_provider_manufacturer(self):
         plugin = RmeCompatibilityPlugin()
         plugin._defer = lambda callback, *args: None
@@ -2746,6 +2839,90 @@ class ToolmapGateTests(unittest.TestCase):
             "M976 A 0:0:PLA:215,0:2:PETG:255 ; calibrate",
             None, "M976", tags={"source:job"},
         ))
+
+    def test_sent_m976_creates_parent_workflow_until_batch_completes(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        plugin._state.update(connected=True, supported=True)
+
+        plugin.gcode_sent_hook(
+            None, "sent", "M976 A 0:2:PETG:255", None, "M976",
+            tags={"source:file"},
+        )
+
+        self.assertTrue(plugin._auto_pa_active)
+        self.assertEqual(
+            "pressure_advance", plugin._state["workflow"]["workflow"]
+        )
+        self.assertEqual(0, plugin._state["workflow"]["progress"])
+
+        plugin._observe_pressure_advance_output(
+            "PA_CALIBRATION batch accepted entries=1"
+        )
+        self.assertEqual(2, plugin._state["workflow"]["progress"])
+
+        plugin._observe_pressure_advance_output(
+            "PA_CALIBRATION batch complete entries=1"
+        )
+        self.assertFalse(plugin._auto_pa_active)
+        self.assertIsNone(plugin._state["workflow"])
+
+    def test_m976_nested_unload_remains_visible_as_pressure_advance(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        plugin._defer = lambda callback, *args: None
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["machine"] = {
+            "logical_tools": 5, "tool_capacity": 5, "single_nozzle": 1,
+        }
+        plugin._set_active_tool(2)
+        plugin._start_pressure_advance_workflow()
+
+        plugin._handle_record({
+            "record": "event", "seq": 1, "type": "progress",
+            "workflow": "filament_unload", "state": "closed", "progress": 100,
+            "message": "Filament unload complete",
+        })
+
+        self.assertTrue(plugin._auto_pa_active)
+        self.assertEqual(
+            "pressure_advance", plugin._state["workflow"]["workflow"]
+        )
+        self.assertEqual("active", plugin._state["workflow"]["state"])
+        self.assertIsNone(plugin._state["active_tool"]["logical"])
+
+    def test_m976_legacy_heater_progress_stays_under_pa_parent(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        plugin._state.update(connected=True, supported=True)
+        plugin._start_pressure_advance_workflow()
+
+        plugin._accept_legacy_workflow_notification("Heating hotend 55%")
+
+        workflow = plugin._state["workflow"]
+        self.assertEqual("pressure_advance", workflow["workflow"])
+        self.assertEqual(55, workflow["progress"])
+        self.assertNotIn("legacy_expires_at", workflow)
+
+    def test_firmware_tool_change_event_updates_active_tool(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        plugin._defer = lambda callback, *args: None
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["loaded_filaments"] = [
+            {"tool": 1, "material": "PLA", "color_name": "Blue"},
+            {"tool": 3, "material": "PETG", "color_name": "Orange"},
+        ]
+        plugin._set_active_tool(1)
+
+        plugin._handle_record({
+            "record": "event", "seq": 1, "type": "progress",
+            "workflow": "tool_change", "state": "active", "progress": 50,
+            "tool": 3, "message": "Tool change to T3",
+        })
+
+        self.assertEqual(3, plugin._state["active_tool"]["logical"])
+        self.assertEqual("PETG", plugin._state["active_tool"]["material"])
 
     def test_m976_batch_preserves_current_authoritative_material_family(self):
         plugin = RmeCompatibilityPlugin()

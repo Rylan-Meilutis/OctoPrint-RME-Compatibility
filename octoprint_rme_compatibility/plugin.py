@@ -56,6 +56,15 @@ STUCK_ACTION_WORKFLOWS = frozenset((
     "extrusion_flow_limit",
     "stuck_filament",
 ))
+PRESSURE_ADVANCE_PHASE_WORKFLOWS = frozenset((
+    "printer",
+    "heating",
+    "probing",
+    "mmu",
+    "filament_load",
+    "filament_unload",
+    "tool_change",
+))
 FIRMWARE_RECONNECT_INITIAL_DELAY_SECONDS = 2.0
 FIRMWARE_RECONNECT_INTERVAL_SECONDS = 5.0
 FIRMWARE_RECONNECT_HANDSHAKE_TIMEOUT_SECONDS = 15.0
@@ -163,6 +172,11 @@ class RmeCompatibilityPlugin(
         self._firmware_reconnect_deadline = 0
         self._firmware_reconnect_disconnect_requested = False
         self._firmware_reconnect_connecting = False
+        # M976 owns several nested heater, probing, MMU load, and unload
+        # workflows. Older firmware does not emit a pressure_advance parent
+        # event, so retain a synthetic parent from transmission until the
+        # command's terminal serial record arrives.
+        self._auto_pa_active = False
 
     @staticmethod
     def _empty_state():
@@ -961,6 +975,7 @@ class RmeCompatibilityPlugin(
                 self._state["loaded_filaments"] = []
                 self._state["manufacturers"] = {"profiles": [], "loaded": []}
                 self._state["active_tool"] = self._empty_state()["active_tool"]
+                self._auto_pa_active = False
                 # Workflow records are connection-local. Replaying a persisted
                 # firmware handoff after reconnect can claim that USB is about
                 # to disappear even though no current M997 is running.
@@ -1000,6 +1015,7 @@ class RmeCompatibilityPlugin(
                 self._provider_firmware_signature = None
                 self._pending_provider_profile_sync = None
                 self._transfer_conflict_cancel = False
+                self._auto_pa_active = False
             self._publish()
             if event == Events.DISCONNECTED and self._firmware_reconnect_pending():
                 self._begin_firmware_reconnect()
@@ -1045,15 +1061,31 @@ class RmeCompatibilityPlugin(
                 self._preflight_gate_started = False
                 self._toolmap_preflight_decision = None
                 workflow = self._state.get("workflow") or {}
+                if event == Events.PRINT_DONE:
+                    machine = self._state.get("machine") or {}
+                    if int(machine.get("logical_tools", 0) or 0) > 1:
+                        # Successful RME multi-material/toolchanger finalization
+                        # leaves the MMU path empty or parks the physical head.
+                        # Do not retain the last streamed Tn after that firmware
+                        # lifecycle has completed, even if its terminal workflow
+                        # event raced OctoPrint's PRINT_DONE event.
+                        self._clear_active_tool_locked()
+                    if workflow.get("workflow") in (
+                        "mmu", "tool_change", "filament_load",
+                        "filament_unload", "pressure_advance",
+                    ):
+                        self._state["workflow"] = None
                 if workflow.get("workflow") in EXTRUSION_FAULT_WORKFLOWS:
                     self._state["workflow"] = None
                     if (self._state.get("prompt") or {}).get("kind") == "firmware":
                         self._state["prompt"] = None
+                self._auto_pa_active = False
             self._defer(self._resume_background_queries)
 
     def gcode_received_hook(self, comm_instance, line, *args, **kwargs):
         """Observe RME records without blocking or bypassing OctoPrint's queue."""
         normalized_line = str(line or "").strip()
+        self._observe_pressure_advance_output(normalized_line)
         if re.match(
             r"^\s*//\s*action:\s*notification(?:\s|$)",
             normalized_line,
@@ -1148,6 +1180,12 @@ class RmeCompatibilityPlugin(
                 # A current structured RME_EVENT carries more state than its
                 # legacy notification mirror and remains authoritative.
                 return
+            pressure_advance_phase = bool(
+                self._auto_pa_active
+                and workflow in PRESSURE_ADVANCE_PHASE_WORKFLOWS
+            )
+            if pressure_advance_phase:
+                workflow = "pressure_advance"
             phase_started = (
                 previous.get("phase_started_at", now)
                 if previous.get("workflow") == workflow else now
@@ -1160,10 +1198,12 @@ class RmeCompatibilityPlugin(
                 "message": message,
                 "received_at": now,
                 "phase_started_at": phase_started,
-                # Do not let a one-shot Homing/status notice remain forever.
-                # Repeated heater percentages renew this short lease.
-                "legacy_expires_at": now + 15,
             }
+            if not pressure_advance_phase:
+                # Do not let a one-shot Homing/status notice remain forever.
+                # Repeated heater percentages renew this short lease. M976's
+                # synthetic parent instead lives until its batch terminal line.
+                promoted["legacy_expires_at"] = now + 15
             if progress is not None:
                 promoted["progress"] = progress
             self._state["workflow"] = promoted
@@ -1432,11 +1472,24 @@ class RmeCompatibilityPlugin(
         if is_job_command and not is_cancel_command:
             with self._state_lock:
                 self._print_job_gcode_sent = True
-        tool_match = re.match(r"^\s*T(\d+)(?:\s|$)", str(cmd or ""), re.IGNORECASE)
+        tool_match = re.match(r"^\s*T(-?\d+)(?:\s|$)", str(cmd or ""), re.IGNORECASE)
         with self._state_lock:
             supported = self._state.get("supported", False)
         if supported and tool_match:
-            self._set_active_tool(int(tool_match.group(1)))
+            logical_tool = int(tool_match.group(1))
+            with self._state_lock:
+                capacity = int(
+                    (self._state.get("machine") or {}).get("tool_capacity", 0) or 0
+                )
+                no_tool = logical_tool < 0 or bool(capacity and logical_tool >= capacity)
+                if no_tool:
+                    self._clear_active_tool_locked()
+            if no_tool:
+                self._schedule_publish()
+            else:
+                self._set_active_tool(logical_tool)
+        if supported and re.match(r"^\s*M976(?:\s|$)", str(cmd or ""), re.IGNORECASE):
+            self._start_pressure_advance_workflow()
 
     def _handle_record(self, record):
         """Fold one parsed firmware record into the authoritative UI state."""
@@ -1526,6 +1579,49 @@ class RmeCompatibilityPlugin(
                 now = int(time.time())
                 record["workflow"] = classify_workflow(record)
                 previous_workflow = self._state.get("workflow") or {}
+                original_workflow = record.get("workflow")
+                selected_tool = self._workflow_tool(record)
+                reports_no_tool = self._workflow_reports_no_tool(record)
+                capacity = int(
+                    (self._state.get("machine") or {}).get("tool_capacity", 0) or 0
+                )
+                if original_workflow == "tool_change" and (
+                    reports_no_tool
+                    or selected_tool is not None
+                    and capacity
+                    and selected_tool >= capacity
+                ):
+                    self._clear_active_tool_locked()
+                elif (
+                    selected_tool is not None
+                    and original_workflow in ("tool_change", "filament_load", "mmu")
+                    and record.get("type") != "error"
+                    and str(record.get("state", "")).lower()
+                    not in ("canceled", "cancelled", "failed", "stopped")
+                ):
+                    self._set_active_tool_locked(selected_tool)
+                # A completed shared-nozzle unload is authoritative proof that
+                # no logical MMU tool is currently in the filament path. M865
+                # loadout rows remain assigned after unloading and therefore
+                # cannot be used to infer an active tool.
+                if (
+                    original_workflow == "filament_unload"
+                    and workflow_is_terminal(record)
+                    and str(record.get("state", "")).lower()
+                    in ("closed", "skipped", "completed")
+                ):
+                    self._clear_active_tool_locked()
+                if (
+                    self._auto_pa_active
+                    and original_workflow in PRESSURE_ADVANCE_PHASE_WORKFLOWS
+                    and record.get("type") != "error"
+                ):
+                    # Present M976's nested operations as phases of one parent
+                    # workflow. A nested unload/load completing must not make
+                    # the main progress bar disappear before M976 itself ends.
+                    record["workflow"] = "pressure_advance"
+                    if workflow_is_terminal(record):
+                        record["state"] = "active"
                 record["received_at"] = now
                 if previous_workflow.get("workflow") == record.get("workflow"):
                     record["phase_started_at"] = previous_workflow.get("phase_started_at", now)
@@ -1544,6 +1640,8 @@ class RmeCompatibilityPlugin(
                     self._state["workflow"] = retained
                 else:
                     self._state["workflow"] = dict(record)
+                if record.get("workflow") == "pressure_advance":
+                    self._auto_pa_active = not workflow_is_terminal(record)
                 if record.get("type") == "error" or record.get("state") == "waiting":
                     follow_up.append("@RME DIALOG QUERY")
                     if record.get("workflow") in STUCK_ACTION_WORKFLOWS:
@@ -2372,6 +2470,108 @@ class RmeCompatibilityPlugin(
             color=color if self._valid_color(color) else None,
         )
 
+    def _clear_active_tool_locked(self):
+        """Clear the last Tn after firmware confirms the filament path empty."""
+        self._state["active_tool"] = self._empty_state()["active_tool"]
+
+    def _set_active_tool_locked(self, logical):
+        """Update active-tool details while the caller owns ``_state_lock``."""
+        self._state["active_tool"]["logical"] = int(logical)
+        self._state["active_tool"]["updated"] = int(time.time())
+        self._refresh_active_tool_locked()
+
+    @staticmethod
+    def _workflow_tool(record):
+        """Read a logical tool/slot from current and forward-compatible events."""
+        for key in ("logical_tool", "tool", "slot"):
+            value = record.get(key)
+            if value is None:
+                continue
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                continue
+            if value >= 0:
+                return value
+        message = str(record.get("message", ""))
+        match = re.search(
+            r"(?:^|\s)(?:tool\s+|slot\s+|T)(\d+)(?:\s|$)",
+            message,
+            re.IGNORECASE,
+        )
+        return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _workflow_reports_no_tool(record):
+        """Recognize the explicit parked/no-tool state used by XL and INDX."""
+        for key in ("logical_tool", "tool", "slot"):
+            value = record.get(key)
+            if value is None:
+                continue
+            if str(value).strip().lower() in ("none", "no_tool", "notool", "parked"):
+                return True
+            try:
+                if int(value) < 0:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        message = str(record.get("message", ""))
+        return bool(re.search(r"\b(?:no tool|tool parked|parked tool)\b", message, re.IGNORECASE))
+
+    def _start_pressure_advance_workflow(self):
+        """Show M976 while firmware performs its nested blocking workflows."""
+        now = int(time.time())
+        with self._state_lock:
+            self._auto_pa_active = True
+            self._state["workflow"] = {
+                "record": "event",
+                "type": "progress",
+                "workflow": "pressure_advance",
+                "state": "active",
+                "progress": 0,
+                "message": "Automatic pressure-advance calibration",
+                "received_at": now,
+                "phase_started_at": now,
+                "synthetic": True,
+            }
+        self._schedule_publish()
+
+    def _observe_pressure_advance_output(self, line):
+        """Close or advance the M976 fallback using its stable serial records."""
+        if not line:
+            return
+        accepted = re.match(
+            r"^PA_CALIBRATION\s+batch\s+accepted(?:\s|$)", line, re.IGNORECASE
+        )
+        terminal = re.match(
+            r"^PA_CALIBRATION\s+(?:batch\s+complete|aborted)(?:\s|$)",
+            line,
+            re.IGNORECASE,
+        ) or re.match(r"^Error:\s*M976(?:\s|$)", line, re.IGNORECASE)
+        if not accepted and not terminal:
+            return
+        changed = False
+        with self._state_lock:
+            if not self._auto_pa_active:
+                return
+            workflow = self._state.get("workflow") or {}
+            if accepted and workflow.get("workflow") == "pressure_advance":
+                workflow = dict(workflow)
+                workflow.update(
+                    progress=max(2, int(workflow.get("progress", 0) or 0)),
+                    message="Automatic pressure-advance calibration started",
+                    received_at=int(time.time()),
+                )
+                self._state["workflow"] = workflow
+                changed = True
+            elif terminal:
+                self._auto_pa_active = False
+                if workflow.get("workflow") == "pressure_advance":
+                    self._state["workflow"] = None
+                changed = True
+        if changed:
+            self._schedule_publish()
+
     def _filament_report(self):
         """Build OrcaSlicer's provider-neutral ``data.tools`` response shape."""
         with self._state_lock:
@@ -2435,9 +2635,7 @@ class RmeCompatibilityPlugin(
     def _set_active_tool(self, logical):
         """Publish the tool selected by a transmitted ``Tn`` command."""
         with self._state_lock:
-            self._state["active_tool"]["logical"] = int(logical)
-            self._state["active_tool"]["updated"] = int(time.time())
-            self._refresh_active_tool_locked()
+            self._set_active_tool_locked(logical)
         self._schedule_publish()
 
     def _open_session(self):
