@@ -602,6 +602,14 @@ $(function () {
                 type: "notice"
             });
         };
+        self.mappingSelectionLabel = function (row) {
+            var selectedId = normalizeDatabaseId(row && row.selected && row.selected());
+            if (selectedId === null) return "No spool selected";
+            var spool = ko.utils.arrayFirst(self.inventorySpools(), function (item) {
+                return normalizeDatabaseId(item.database_id) === selectedId;
+            });
+            return spool ? self.spoolLabel(spool) : "Selected spool " + selectedId;
+        };
         self.hasDirtySpoolSelections = ko.pureComputed(function () {
             return !!self.pendingProviderSync() || ko.utils.arrayFirst(self.spoolSelectionRows(), function (row) {
                 return row.dirty();
@@ -1388,15 +1396,13 @@ $(function () {
             var panel = $(
                 '<div id="rme-spoolmanager-mapping" class="well rme-spoolmanager-mapping" data-bind="visible: spoolManagerProvider">' +
                 '<div class="rme-spoolmanager-heading"><div><h4>Printer loadout mapping <small>RME</small></h4>' +
-                '<p>Map every loaded printer tool to a SpoolManager profile, then apply all changes together.</p></div>' +
-                '<div><label class="checkbox rme-spool-show-all"><input type="checkbox" data-bind="checked: showAllMappingSpools"> Show all materials (complete inventory)</label>' +
-                '<button class="btn btn-primary" data-bind="click: applySpoolSelections, enable: hasDirtySpoolSelections">Apply mappings</button></div></div>' +
-                '<table class="table table-condensed"><thead><tr><th>Tool</th><th>Loaded on printer</th><th>SpoolManager profile</th><th></th></tr></thead>' +
+                '<p>Use SpoolManager’s native selector for each loaded printer tool, or create a new spool with the known printer data prefilled.</p></div></div>' +
+                '<table class="table table-condensed"><thead><tr><th>Tool</th><th>Loaded on printer</th><th>Current SpoolManager assignment</th><th>Actions</th></tr></thead>' +
                 '<tbody data-bind="foreach: spoolSelectionRows"><tr data-bind="css: {\'rme-spool-mapping-dirty\': dirty}">' +
                 '<td data-bind="text: \'T\' + tool"></td><td><span class="rme-color-dot" data-bind="visible: loaded, style: {backgroundColor: loaded && loaded.color}"></span> ' +
                 '<span data-bind="text: $parent.loadedFilamentLabel(loaded)"></span></td>' +
-                '<td><select data-bind="options: availableSpools, optionsText: $parent.spoolLabel, optionsValue: \'database_id\', optionsCaption: \'Unassigned\', value: selected, event: {change: function() { $parent.changeSpoolSelection($data); }}"></select></td>' +
-                '<td class="rme-spool-mapping-actions"><button class="btn btn-mini" data-bind="click: $parent.openNativeSpoolSelector"><i class="fa fa-ellipsis-h"></i> Native select…</button> ' +
+                '<td class="rme-native-provider-selection" data-bind="text: $parent.mappingSelectionLabel($data)"></td>' +
+                '<td class="rme-spool-mapping-actions"><button class="btn btn-mini" data-bind="click: $parent.openNativeSpoolSelector"><i class="fa fa-ellipsis-h"></i> Select spool…</button> ' +
                 '<button class="btn btn-mini" data-bind="click: $parent.createSpoolInSpoolManager"><i class="fa fa-plus"></i> Create new…</button></td>' +
                 '</tr></tbody></table><p class="help-block">Create new opens SpoolManager’s native spool editor with the printer’s known material, vendor, color, and temperatures prefilled.</p></div>'
             );
@@ -1413,20 +1419,22 @@ $(function () {
                 '<div class="modal-header"><button type="button" class="close" data-dismiss="modal">&times;</button>' +
                 '<h3>Printer loadout mapping</h3><p data-bind="text: spoolOwnershipText"></p></div>' +
                 '<div class="modal-body"><div class="rme-mapping-toolbar">' +
-                '<p>Map all printer tools to <strong data-bind="text: mappingProviderName"></strong> spools. Changes are staged until Apply mappings.</p>' +
-                '<label class="checkbox"><input type="checkbox" data-bind="checked: showAllMappingSpools"> Show all materials (complete inventory)</label></div>' +
+                '<p data-bind="visible: externalSpoolProvider">Use <strong data-bind="text: mappingProviderName"></strong>’s native selector for each tool, or create a new spool.</p>' +
+                '<p data-bind="visible: internalSpoolProvider">Map all printer tools to RME inventory. Changes are staged until Apply mappings.</p>' +
+                '<label class="checkbox" data-bind="visible: internalSpoolProvider"><input type="checkbox" data-bind="checked: showAllMappingSpools"> Show all materials (complete inventory)</label></div>' +
                 '<div class="rme-spool-mapping-table"><table class="table table-condensed"><thead><tr>' +
                 '<th>Tool</th><th>Loaded on printer</th><th>Provider spool</th><th></th></tr></thead>' +
                 '<tbody data-bind="foreach: spoolSelectionRows"><tr data-bind="css: {\'rme-spool-mapping-dirty\': dirty}">' +
                 '<td data-bind="text: \'T\' + tool"></td><td><span class="rme-color-dot" data-bind="visible: loaded, style: {backgroundColor: loaded && loaded.color}"></span> ' +
                 '<span data-bind="text: $parent.loadedFilamentLabel(loaded)"></span></td>' +
-                '<td><select data-bind="options: availableSpools, optionsText: $parent.spoolLabel, optionsValue: \'database_id\', optionsCaption: \'Unassigned\', value: selected, event: {change: function() { $parent.changeSpoolSelection($data); }}"></select></td>' +
-                '<td class="rme-spool-mapping-actions"><button class="btn btn-mini" data-bind="click: $parent.openNativeSpoolSelector"><i class="fa fa-ellipsis-h"></i> Native select…</button> ' +
+                '<td><span class="rme-native-provider-selection" data-bind="visible: $parent.externalSpoolProvider, text: $parent.mappingSelectionLabel($data)"></span>' +
+                '<select data-bind="visible: $parent.internalSpoolProvider, options: availableSpools, optionsText: $parent.spoolLabel, optionsValue: \'database_id\', optionsCaption: \'Unassigned\', value: selected, event: {change: function() { $parent.changeSpoolSelection($data); }}"></select></td>' +
+                '<td class="rme-spool-mapping-actions"><button class="btn btn-mini" data-bind="visible: $parent.externalSpoolProvider, click: $parent.openNativeSpoolSelector"><i class="fa fa-ellipsis-h"></i> Select spool…</button> ' +
                 '<button class="btn btn-mini" data-bind="click: $parent.createSpoolForMappingRow"><i class="fa fa-plus"></i> Create new…</button></td>' +
                 '</tr></tbody></table></div>' +
-                '<p class="help-block">The complete provider inventory is shown by default, with material matches first. Clear Show all materials only when you want a compatible-material-only list. Printer manufacturer, profile, color, and temperature data prefill new spools.</p></div>' +
+                '<p class="help-block">Printer manufacturer, profile, color, and temperature data prefill new spools. RME’s internal inventory keeps the complete dropdown available, with compatible materials first.</p></div>' +
                 '<div class="modal-footer"><button class="btn" data-dismiss="modal">Close</button>' +
-                '<button class="btn btn-primary" data-bind="click: applySpoolSelections, enable: hasDirtySpoolSelections">Apply mappings</button></div></div>'
+                '<button class="btn btn-primary" data-bind="visible: internalSpoolProvider, click: applySpoolSelections, enable: hasDirtySpoolSelections">Apply mappings</button></div></div>'
             ).appendTo(document.body);
             ko.applyBindings(self, dialog[0]);
             return dialog;

@@ -1465,7 +1465,11 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("self.openNativeSpoolSelector", javascript)
         self.assertIn("sidebarOpenSelectSpoolDialog", javascript)
         self.assertIn("handleOpenSpoolSelector", javascript)
-        self.assertIn("Native select…", javascript)
+        self.assertNotIn("Native select…", javascript)
+        self.assertIn("Select spool…", javascript)
+        self.assertIn("self.mappingSelectionLabel", javascript)
+        self.assertIn("visible: $parent.externalSpoolProvider", javascript)
+        self.assertIn("visible: $parent.internalSpoolProvider", javascript)
         self.assertIn("if (filament.display_name) details.push(filament.display_name)", javascript)
         self.assertIn("installSpoolManagerPanel", javascript)
         self.assertIn("ensureRmeSpoolMappingDialog", javascript)
@@ -1483,6 +1487,13 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("Manufacturer: ", javascript)
         self.assertIn("spoolManager.addNewSpool()", javascript)
         self.assertIn('self.command("apply_spool_selections"', javascript)
+        spoolmanager_panel = javascript[
+            javascript.index("function installSpoolManagerPanel()"):
+            javascript.index("function ensureRmeSpoolMappingDialog()")
+        ]
+        self.assertNotIn("<select", spoolmanager_panel)
+        self.assertIn("Select spool…", spoolmanager_panel)
+        self.assertIn("Create new…", spoolmanager_panel)
         self.assertIn("stageAndFlashFirmware", javascript)
         self.assertIn("unstageFirmware", javascript)
         self.assertIn("stage_octoprint_firmware", javascript)

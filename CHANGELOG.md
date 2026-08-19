@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0b82 — 2026-08-19
+
+- Remove the duplicate plugin-owned spool dropdown from SpoolManager and
+  Spoolman mapping rows. External integrations now expose only their native
+  Select spool action and Create new, while still showing the current
+  assignment.
+- Keep the complete material-aware dropdown and staged Apply workflow only for
+  RME's internal spool inventory, where no native provider selector exists.
+
 ## 0.1.0b81 — 2026-08-19
 
 - Show automatic M976 pressure-advance calibration in the normal OctoPrint
