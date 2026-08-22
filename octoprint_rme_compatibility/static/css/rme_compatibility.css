@@ -50,6 +50,37 @@
     gap: 5px;
 }
 
+#navbar_plugin_rme_compatibility_light > .rme-chamber-light-toggle {
+    color: #999;
+    min-width: 18px;
+    text-align: center;
+}
+
+#navbar_plugin_rme_compatibility_light > .rme-chamber-light-toggle.rme-chamber-light-on {
+    color: #f5c542;
+    text-shadow: 0 0 5px rgba(245, 197, 66, .65);
+}
+
+#navbar_plugin_rme_compatibility_light > .rme-chamber-light-toggle.rme-chamber-light-held {
+    color: #ffd65a;
+    text-shadow: 0 0 8px rgba(255, 214, 90, .95);
+}
+
+.rme-chamber-light-icon {
+    display: inline-block;
+    line-height: 1;
+    position: relative;
+}
+
+.rme-chamber-light-lock {
+    bottom: -4px;
+    color: #fff3b0;
+    font-size: 8px;
+    position: absolute;
+    right: -6px;
+    text-shadow: 0 0 3px #805f00;
+}
+
 #navbar_plugin_rme_compatibility .rme-navbar-label {
     display: inline-block;
     max-width: 155px;

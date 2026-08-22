@@ -73,7 +73,14 @@ $(function () {
         self.providerSyncNoticeKey = "";
         self.toolmapNotice = null;
         self.toolmapNoticeKey = "";
+        self.firmwareRecoveryNotice = null;
+        self.firmwareRecoveryNoticeKey = "";
         self.lightSnapshotKey = "";
+        self.chamberLightLastPressAt = 0;
+        self.chamberLightTemporary = ko.observable(false);
+        self.chamberLightLatchPending = ko.observable(false);
+        self.chamberLightLatchPendingTimer = null;
+        self.chamberLightRefreshTimers = [];
         self.persistentLightProfiles = [
             makeLightProfile("screen", "Screen", 20, 20, 100, 60),
             makeLightProfile("chamber", "Chamber", 20, 20, 100, 100),
@@ -317,6 +324,30 @@ $(function () {
             if (light.status_print !== undefined && Number(light.status_print) >= 0) values.push("print status " + light.status_print + "%");
             return values.length ? values.join(" · ") : "Not reported yet";
         });
+        self.chamberLightAvailable = ko.pureComputed(function () {
+            var state = self.state();
+            var light = state.light || {};
+            var live = light.live || {};
+            return !!state.connected && !!state.supported && !!Number(light.chamber_supported) &&
+                Object.prototype.hasOwnProperty.call(live, "hold");
+        });
+        self.chamberLightOn = ko.pureComputed(function () {
+            return self.chamberLightTemporary() || self.chamberLightHeld();
+        });
+        self.chamberLightHeld = ko.pureComputed(function () {
+            var live = (self.state().light || {}).live || {};
+            return Number(live.hold) > 0 || self.chamberLightLatchPending();
+        });
+        self.chamberLightTitle = ko.pureComputed(function () {
+            if (self.chamberLightHeld()) return "Chamber light latched on; press to turn off";
+            return self.chamberLightOn() ?
+                "Chamber light temporarily on; double-press to latch" :
+                "Press for temporary chamber light; double-press to latch";
+        });
+        self.chamberLightIconClass = ko.pureComputed(function () {
+            if (self.chamberLightHeld()) return "fas fa-lightbulb rme-chamber-light-bulb-latched";
+            return self.chamberLightOn() ? "fas fa-lightbulb" : "far fa-lightbulb";
+        });
         self.lightPolicyText = ko.pureComputed(function () {
             var policy = (self.state().light || {}).policy || {};
             var values = [];
@@ -446,12 +477,12 @@ $(function () {
             return self.workflow().workflow === "mmu" && self.workflowVisible();
         });
         self.navbarMmuActionable = ko.pureComputed(function () {
-            return self.hasToolmapPrompt() ||
-                (self.navbarMmuActive() && self.hasFirmwarePrompt());
+            return self.hasToolmapPrompt() || self.hasFirmwarePrompt();
         });
         self.navbarModeText = ko.pureComputed(function () {
             if (self.transportRecoveryRequired()) return "Printer reboot required";
             if (self.hasToolmapPrompt()) return "Tool mapping required";
+            if (self.hasFirmwarePrompt()) return "Printer action required";
             if (self.navbarTransferActive()) return self.navbarTransfer().title;
             if (!self.state().supported) return "RME Compatibility";
             return self.mmuDetected() ? "RME MMU" : "RME multi-tool";
@@ -461,6 +492,7 @@ $(function () {
             if (self.transportRecoveryRequired()) return "RME transmission locked for safety";
             if (self.navbarTransferActive()) return self.navbarTransfer().detail;
             if (!self.state().supported) return self.connectionText();
+            if (self.hasFirmwarePrompt()) return self.promptMessage();
             if (!self.navbarMmuActive()) return self.mmuDetected() ? "MMU idle" : "Multi-tool ready";
             var state = String(workflow.state || "active").replace(/_/g, " ");
             var label = workflow.message || state.charAt(0).toUpperCase() + state.slice(1);
@@ -470,6 +502,7 @@ $(function () {
         self.navbarCompactText = ko.pureComputed(function () {
             if (self.transportRecoveryRequired()) return "Reboot printer";
             if (self.hasToolmapPrompt()) return "Map tools to continue";
+            if (self.hasFirmwarePrompt()) return "Action · " + self.promptMessage();
             if (self.navbarTransferActive()) {
                 // Keep the percentage in its own non-shrinking navbar badge.
                 // The descriptive label may ellipsize on narrow windows.
@@ -497,6 +530,9 @@ $(function () {
             if (self.hasToolmapPrompt()) {
                 return "Print is waiting for tool mapping confirmation";
             }
+            if (self.hasFirmwarePrompt()) {
+                return self.promptMessage() + " · choose a recovery action from this menu";
+            }
             if (self.navbarTransferActive()) {
                 return self.navbarTransfer().summary + " · " + self.navbarTransfer().detail;
             }
@@ -507,6 +543,7 @@ $(function () {
         self.navbarIconClass = ko.pureComputed(function () {
             if (self.transportRecoveryRequired()) return "fa-exclamation-triangle";
             if (self.hasToolmapPrompt()) return "fa-exclamation-triangle";
+            if (self.hasFirmwarePrompt()) return "fa-exclamation-triangle";
             if (self.navbarTransferActive()) return self.navbarTransfer().icon;
             return self.mmuDetected() ? "fa-random" : "fa-tools";
         });
@@ -743,10 +780,50 @@ $(function () {
                 });
             }
         };
+        self.updateFirmwareRecoveryNotice = function (workflow, prompt) {
+            workflow = workflow || {};
+            prompt = prompt || {};
+            var state = String(workflow.state || "").toLowerCase();
+            var needsAction = workflow.type === "error" || state === "waiting";
+            var actions = prompt.kind === "firmware" ? (prompt.actions || []) : [];
+            var key = needsAction ? [workflow.seq, workflow.received_at,
+                workflow.code, workflow.message, actions.join(",")].join(":") : "";
+            if (key === self.firmwareRecoveryNoticeKey) return;
+            if (self.firmwareRecoveryNotice && typeof self.firmwareRecoveryNotice.remove === "function") {
+                self.firmwareRecoveryNotice.remove();
+            }
+            self.firmwareRecoveryNotice = null;
+            self.firmwareRecoveryNoticeKey = key;
+            if (key) {
+                var text = workflow.message || "The printer requires attention.";
+                if (actions.length) text += " Available actions: " + actions.join(", ") + ".";
+                text += " Use the RME top-bar menu to respond.";
+                self.firmwareRecoveryNotice = new PNotify({
+                    title: "Printer action required",
+                    text: text,
+                    type: "error",
+                    hide: false
+                });
+            }
+        };
         self.acceptState = function (value) {
             if (!value) return;
             var oldPrompt = self.state().prompt || {};
             self.state(value);
+            var reportedLightHold = Number((((value.light || {}).live || {}).hold));
+            if (reportedLightHold > 0 && self.chamberLightLatchPending()) {
+                self.chamberLightLatchPending(false);
+                if (self.chamberLightLatchPendingTimer) window.clearTimeout(self.chamberLightLatchPendingTimer);
+                self.chamberLightLatchPendingTimer = null;
+            }
+            if (!value.connected) {
+                self.chamberLightLastPressAt = 0;
+                self.chamberLightTemporary(false);
+                self.chamberLightLatchPending(false);
+                if (self.chamberLightLatchPendingTimer) window.clearTimeout(self.chamberLightLatchPendingTimer);
+                self.chamberLightLatchPendingTimer = null;
+                self.clearChamberLightRefreshTimers();
+            }
             var storageSupported = !!(value.supported && value.storage && value.storage.supported);
             var nativeFiles = (value.storage && value.storage.native_files) || [];
             var nativeKey = (storageSupported ? "rme|" : "native|") + nativeFiles.map(function (item) {
@@ -788,6 +865,7 @@ $(function () {
             );
             var prompt = value.prompt || {};
             self.updateToolmapNotice(prompt);
+            self.updateFirmwareRecoveryNotice(value.workflow, prompt);
             if (prompt.kind === "toolmap" && (oldPrompt.kind !== "toolmap" || self.mappingRows().length !== prompt.count)) {
                 var count = Number(prompt.count || 0);
                 var options = [];
@@ -1002,6 +1080,57 @@ $(function () {
         };
         self.applyMachineProfile = function () { self.command("apply_machine_profile"); };
         self.queryControls = function () { self.command("query_controls"); };
+        self.clearChamberLightRefreshTimers = function () {
+            ko.utils.arrayForEach(self.chamberLightRefreshTimers, function (timer) {
+                window.clearTimeout(timer);
+            });
+            self.chamberLightRefreshTimers = [];
+        };
+        self.scheduleChamberLightRefresh = function () {
+            self.clearChamberLightRefreshTimers();
+            var policy = (self.state().light || {}).policy || {};
+            var activitySeconds = Math.max(1, Number(policy.activity_timeout_s) || 30);
+            var offSeconds = Math.max(0, Number(policy.off_timeout_s) || 0);
+            var delays = [activitySeconds * 1000 + 500];
+            if (offSeconds > 0) delays.push((activitySeconds + offSeconds) * 1000 + 1000);
+            ko.utils.arrayForEach(delays, function (delay, index) {
+                self.chamberLightRefreshTimers.push(window.setTimeout(function () {
+                    if (index === 0) self.chamberLightTemporary(false);
+                    self.command("query_chamber_light");
+                }, delay));
+            });
+        };
+        self.pressChamberLightButton = function () {
+            var now = Date.now();
+            if (self.chamberLightHeld()) {
+                self.chamberLightLastPressAt = 0;
+                self.chamberLightTemporary(false);
+                self.chamberLightLatchPending(false);
+                if (self.chamberLightLatchPendingTimer) window.clearTimeout(self.chamberLightLatchPendingTimer);
+                self.chamberLightLatchPendingTimer = null;
+                self.clearChamberLightRefreshTimers();
+                self.command("set_chamber_light_mode", {mode: "off"});
+                return;
+            }
+            if (self.chamberLightLastPressAt && now - self.chamberLightLastPressAt < 2000) {
+                self.chamberLightLastPressAt = 0;
+                self.clearChamberLightRefreshTimers();
+                self.chamberLightTemporary(false);
+                self.chamberLightLatchPending(true);
+                if (self.chamberLightLatchPendingTimer) window.clearTimeout(self.chamberLightLatchPendingTimer);
+                self.chamberLightLatchPendingTimer = window.setTimeout(function () {
+                    self.chamberLightLatchPending(false);
+                    self.chamberLightLatchPendingTimer = null;
+                    self.command("query_chamber_light");
+                }, 4000);
+                self.command("set_chamber_light_mode", {mode: "latched"});
+                return;
+            }
+            self.chamberLightLastPressAt = now;
+            self.chamberLightTemporary(true);
+            self.command("set_chamber_light_mode", {mode: "temporary"});
+            self.scheduleChamberLightRefresh();
+        };
         self.uiControl = function (action, value) { self.command("ui_control", {action: action, value: value}); };
         self.lockNow = function () { self.command("lock_now"); };
         self.unlock = function () { self.command("lock_unlock", {pin: self.unlockPin()}); };
@@ -1869,6 +1998,7 @@ $(function () {
     OCTOPRINT_VIEWMODELS.push({
         construct: RmeCompatibilityViewModel,
         dependencies: ["settingsViewModel", "loginStateViewModel", "printerStateViewModel", "filesViewModel"],
-        elements: ["#navbar_plugin_rme_compatibility", "#tab_plugin_rme_compatibility", "#settings_plugin_rme_compatibility"]
+        elements: ["#navbar_plugin_rme_compatibility", "#navbar_plugin_rme_compatibility_light",
+            "#tab_plugin_rme_compatibility", "#settings_plugin_rme_compatibility"]
     });
 });

@@ -218,10 +218,12 @@ class ProtocolTests(unittest.TestCase):
             "off_timeout_s=120 door_holds_active=1 post_print_hold=1 "
             "status_finished_hold_s=300"
         )["record"], "light_policy")
-        self.assertEqual(parse_line(
+        live = parse_line(
             "RME_LIGHT_LIVE state=idle screen=20 chamber=20 print_screen=60 "
-            "print_chamber=100 print_status=100"
-        )["record"], "light_live")
+            "print_chamber=100 print_status=100 hold=1"
+        )
+        self.assertEqual(live["record"], "light_live")
+        self.assertEqual(live["hold"], 1)
 
     def test_terminal_workflow_state_dismisses_remote_prompt(self):
         self.assertTrue(workflow_is_terminal({"state": "closed"}))

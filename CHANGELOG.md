@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.0b83 — 2026-08-21
+
+- Add a dedicated chamber-light navbar control for the current RME lighting
+  protocol. A single press temporarily wakes the configured Active lighting,
+  a second press within two seconds enables the session-scoped firmware hold,
+  and a press while held releases it. Off, temporary, and latched states use
+  distinct outline, illuminated, and lock-badged icons.
+- Reconcile machine topology, loaded filament slots, and active dialogs after
+  every OctoPrint connection. This corrects the provisional T0 state produced
+  when OctoPrint connects while an MMU is still initializing, including normal
+  reboot connections as well as firmware-update reconnects.
+- Route firmware dialog queries and recovery responses through RME's
+  out-of-band service path so a blocking MMU or filament command cannot hide
+  the actions needed to resolve its own failure. All actionable firmware
+  error/wait workflows now appear in the top-bar menu with a persistent
+  OctoPrint notification listing the firmware-provided choices.
+
 ## 0.1.0b82 — 2026-08-19
 
 - Remove the duplicate plugin-owned spool dropdown from SpoolManager and

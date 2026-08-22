@@ -1398,12 +1398,31 @@ class ToolmapGateTests(unittest.TestCase):
         navbar = next(item for item in templates if item["type"] == "navbar")
         self.assertEqual("rme_compatibility_navbar.jinja2", navbar["template"])
         self.assertEqual("visible: navbarVisible", navbar["data_bind"])
+        light_navbar = next(
+            item for item in templates
+            if item.get("suffix") == "_light"
+        )
+        self.assertEqual(
+            "rme_compatibility_light_navbar.jinja2",
+            light_navbar["template"],
+        )
+        self.assertEqual(
+            "visible: chamberLightAvailable", light_navbar["data_bind"]
+        )
         with open(
             "octoprint_rme_compatibility/templates/rme_compatibility_navbar.jinja2"
         ) as navbar_file:
             navbar_template = navbar_file.read()
         self.assertIn("navbarTransferActive", navbar_template)
         self.assertIn("navbarTransferWidth", navbar_template)
+        with open(
+            "octoprint_rme_compatibility/templates/rme_compatibility_light_navbar.jinja2"
+        ) as light_navbar_file:
+            light_navbar_template = light_navbar_file.read()
+        self.assertIn("click: pressChamberLightButton", light_navbar_template)
+        self.assertIn("chamberLightOn", light_navbar_template)
+        self.assertIn("chamberLightHeld", light_navbar_template)
+        self.assertIn("chamberLightIconClass", light_navbar_template)
         with open(
             "octoprint_rme_compatibility/templates/rme_compatibility_settings.jinja2"
         ) as template_file:
@@ -1956,6 +1975,62 @@ class ToolmapGateTests(unittest.TestCase):
             plugin._empty_state()["active_tool"],
             plugin._state["active_tool"],
         )
+
+    def test_mmu_topology_expansion_clears_provisional_connection_tool(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._defer = lambda callback, *args: None
+        plugin._schedule_publish = lambda: None
+
+        plugin._handle_record({
+            "record": "machine", "hotends": 1, "logical_tools": 1,
+            "tool_capacity": 5, "single_nozzle": 1,
+        })
+        self.assertEqual(0, plugin._state["active_tool"]["logical"])
+        self.assertTrue(plugin._active_tool_was_single_tool_default)
+
+        plugin._handle_record({
+            "record": "loaded_filament", "tool": 4,
+            "material": "PLA", "profile": "PLA-00H",
+            "material_family_reported": True,
+            "color_name": "White", "color": "#ffffff",
+        })
+
+        self.assertEqual(5, plugin._state["machine"]["logical_tools"])
+        self.assertIsNone(plugin._state["active_tool"]["logical"])
+        self.assertFalse(plugin._active_tool_was_single_tool_default)
+
+    def test_waiting_mmu_error_queries_and_answers_dialog_out_of_band(self):
+        from octoprint.access.permissions import Permissions
+
+        Permissions.CONTROL = types.SimpleNamespace(can=lambda: True)
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+        plugin._defer = lambda callback, *args: callback(*args)
+        plugin._schedule_publish = lambda: None
+        plugin._state.update(connected=True, supported=True)
+
+        plugin._handle_record({
+            "record": "event", "seq": 1, "type": "error",
+            "workflow": "mmu", "state": "waiting", "code": "mmu_error",
+            "message": "FINDA FILAM. STUCK",
+        })
+        self.assertEqual(
+            "@RME DIALOG QUERY", plugin._printer.forced_commands[-1][0]
+        )
+
+        plugin._handle_record({
+            "record": "prompt", "actions": ["Retry", "Unload", "MMU_disable"],
+        })
+        plugin.on_api_command("respond", {"action": "Retry"})
+        self.assertEqual(
+            ['@RME DIALOG RESPOND A"Retry"', "@RME DIALOG QUERY"],
+            plugin._printer.forced_commands[-1][0],
+        )
+        self.assertTrue(all(
+            "rme:priority_control" in tags
+            for _, tags in plugin._printer.forced_commands
+        ))
 
     def test_successful_print_returns_mmu_indx_and_xl_to_no_tool_idle_state(self):
         from octoprint.events import Events
@@ -2651,7 +2726,7 @@ class ToolmapGateTests(unittest.TestCase):
             "off_timeout_s=120 door_holds_active=1 post_print_hold=1 "
             "status_finished_hold_s=300",
             "RME_LIGHT_LIVE state=idle screen=20 chamber=20 print_screen=60 "
-            "print_chamber=100 print_status=100",
+            "print_chamber=100 print_status=100 hold=0",
         ]
         for line in records:
             plugin._handle_record(parse_line(line))
@@ -2662,6 +2737,57 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual(300, light["policy"]["event_timeout_s"])
         self.assertEqual("idle", light["live"]["state"])
         self.assertEqual(20, light["live"]["chamber"])
+        self.assertEqual(0, light["live"]["hold"])
+
+    def test_chamber_light_button_supports_temporary_latched_and_off_modes(self):
+        from octoprint.access.permissions import Permissions
+
+        Permissions.CONTROL = types.SimpleNamespace(can=lambda: True)
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+        plugin._transaction = 0
+
+        plugin.on_api_command("set_chamber_light_mode", {"mode": "temporary"})
+        plugin.on_api_command("set_chamber_light_mode", {"mode": "latched"})
+        plugin.on_api_command("set_chamber_light_mode", {"mode": "off"})
+        plugin.on_api_command("query_chamber_light", {})
+
+        self.assertEqual(
+            [
+                ["M154", "@RME LIGHT QUERY"],
+                "@RME LIGHT HOLD active=1 tx=1",
+                [
+                    "@RME LIGHT HOLD active=0 tx=2",
+                    "M153",
+                    "@RME LIGHT QUERY",
+                ],
+                "@RME LIGHT QUERY",
+            ],
+            plugin._printer.command_batches,
+        )
+
+        with open(
+            "octoprint_rme_compatibility/static/js/rme_compatibility.js"
+        ) as javascript_file:
+            javascript = javascript_file.read()
+        self.assertIn("self.chamberLightAvailable = ko.pureComputed", javascript)
+        self.assertIn("self.chamberLightTemporary() || self.chamberLightHeld()", javascript)
+        self.assertIn("self.chamberLightHeld = ko.pureComputed", javascript)
+        self.assertIn('Object.prototype.hasOwnProperty.call(live, "hold")', javascript)
+        self.assertIn("now - self.chamberLightLastPressAt < 2000", javascript)
+        self.assertIn('return "fas fa-lightbulb rme-chamber-light-bulb-latched"', javascript)
+        self.assertIn('self.command("query_chamber_light")', javascript)
+        self.assertIn('self.command("set_chamber_light_mode", {mode: "temporary"})', javascript)
+        self.assertIn('self.command("set_chamber_light_mode", {mode: "latched"})', javascript)
+        self.assertIn('self.command("set_chamber_light_mode", {mode: "off"})', javascript)
+        self.assertIn('"#navbar_plugin_rme_compatibility_light"', javascript)
+
+        with open(
+            "octoprint_rme_compatibility/templates/rme_compatibility_light_navbar.jinja2"
+        ) as light_template_file:
+            light_template = light_template_file.read()
+        self.assertIn("fa-lock", light_template)
+        self.assertIn("visible: chamberLightHeld", light_template)
 
     def test_lighting_ui_uses_current_firmware_byte_order(self):
         with open(
@@ -2728,6 +2854,7 @@ class ToolmapGateTests(unittest.TestCase):
         plugin = RmeCompatibilityPlugin()
         commands = []
         plugin._send_command = commands.append
+        plugin._send_priority_service = lambda command, trigger="service": commands.append(command)
         plugin._defer = lambda callback, *args: callback(*args)
         plugin._schedule_publish = lambda: None
 
@@ -2772,6 +2899,7 @@ class ToolmapGateTests(unittest.TestCase):
         plugin = RmeCompatibilityPlugin()
         commands = []
         plugin._send_command = commands.append
+        plugin._send_priority_service = lambda command, trigger="service": commands.append(command)
         plugin._defer = lambda callback, *args: callback(*args)
         plugin._schedule_publish = lambda: None
         plugin._state.update(connected=True, supported=True)
@@ -3021,6 +3149,29 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual((None,), result)
         self.assertEqual([("M604", "M604")], comm.sent)
         self.assertEqual(1, comm.continued)
+
+        result = plugin.gcode_queuing_hook(
+            comm, "queuing", "@RME DIALOG QUERY", None, "@RME",
+            tags={"plugin:rme_compatibility", "rme:priority_control"},
+        )
+        self.assertEqual((None,), result)
+        self.assertEqual(
+            ("@RME DIALOG QUERY", "@RME"), comm.sent[-1]
+        )
+
+    def test_frontend_exposes_every_firmware_recovery_prompt_in_navbar(self):
+        with open(
+            "octoprint_rme_compatibility/static/js/rme_compatibility.js"
+        ) as javascript_file:
+            javascript = javascript_file.read()
+
+        self.assertIn(
+            "return self.hasToolmapPrompt() || self.hasFirmwarePrompt();",
+            javascript,
+        )
+        self.assertIn("self.updateFirmwareRecoveryNotice", javascript)
+        self.assertIn('title: "Printer action required"', javascript)
+        self.assertIn('actions.join(", ")', javascript)
 
     def test_firmware_completed_pause_does_not_echo_service_command(self):
         from octoprint.events import Events

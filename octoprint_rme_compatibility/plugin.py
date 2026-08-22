@@ -172,6 +172,8 @@ class RmeCompatibilityPlugin(
         self._firmware_reconnect_deadline = 0
         self._firmware_reconnect_disconnect_requested = False
         self._firmware_reconnect_connecting = False
+        self._connection_generation = 0
+        self._active_tool_was_single_tool_default = False
         # M976 owns several nested heater, probing, MMU load, and unload
         # workflows. Older firmware does not emit a pressure_advance parent
         # event, so retain a synthetic parent from transmission until the
@@ -422,6 +424,15 @@ class RmeCompatibilityPlugin(
                 "styles": ["display: none"],
                 "data_bind": "visible: navbarVisible",
             },
+            {
+                "type": "navbar",
+                "template": "rme_compatibility_light_navbar.jinja2",
+                "suffix": "_light",
+                "custom_bindings": True,
+                "classes": ["rme-chamber-light-navbar"],
+                "styles": ["display: none"],
+                "data_bind": "visible: chamberLightAvailable",
+            },
             {"type": "tab", "name": "RME", "custom_bindings": True},
             {"type": "settings", "name": "RME Compatibility", "custom_bindings": True},
         ]
@@ -491,6 +502,8 @@ class RmeCompatibilityPlugin(
             "set_theme": ["colors"],
             "set_temp_lights": ["screen", "chamber", "status"],
             "set_persistent_lights": ["screen", "chamber", "status"],
+            "set_chamber_light_mode": ["mode"],
+            "query_chamber_light": [],
             "set_filament": ["slot", "name", "nozzle", "preheat", "bed", "visible"],
             "stage_firmware": ["filename"],
             "stage_and_flash_firmware": ["filename"],
@@ -542,15 +555,19 @@ class RmeCompatibilityPlugin(
         elif command == "open_session":
             self._open_session()
         elif command == "query_dialog":
-            self._send_command("@RME DIALOG QUERY")
+            self._send_priority_service("@RME DIALOG QUERY", "dialog_query")
         elif command == "respond":
-            self._send_command(dialog_response_command(data["action"]))
-            self._send_command("@RME DIALOG QUERY")
+            self._send_priority_services([
+                dialog_response_command(data["action"]),
+                "@RME DIALOG QUERY",
+            ], "dialog_response")
         elif command == "stuck":
             action = str(data["action"]).upper()
             if action not in ("CONTINUE", "UNLOAD", "ABORT", "QUERY"):
                 flask.abort(400, description="Invalid stuck-filament action")
-            self._send_command("@RME STUCK %s" % action)
+            self._send_priority_service(
+                "@RME STUCK %s" % action, "stuck_response"
+            )
         elif command == "apply_toolmap":
             self._apply_toolmap(data["mapping"], bool(data["enabled"]), release_hold=True)
         elif command == "reset_toolmap":
@@ -629,6 +646,32 @@ class RmeCompatibilityPlugin(
             self._send_command(self._with_transaction(
                 "@RME LIGHT SET screen=0x%08X chamber=0x%08X status=0x%08X" % tuple(values)
             ))
+        elif command == "set_chamber_light_mode":
+            mode = str(data["mode"]).lower()
+            if mode == "temporary":
+                # A settings-free M154 is RME's normal activity wake. It uses
+                # the configured Active brightness and expires through the
+                # configured Active/Idle timeouts without mutating settings.
+                self._send_commands(["M154", "@RME LIGHT QUERY"])
+            elif mode == "latched":
+                self._send_command(self._with_transaction(
+                    "@RME LIGHT HOLD active=1"
+                ))
+            elif mode == "off":
+                # Release the session hold, then explicitly hand the idle
+                # lighting state machine an idle ping so this press turns the
+                # temporary/latched light off immediately. A final snapshot
+                # keeps the icon authoritative even when the hold was already
+                # released automatically by local interaction.
+                self._send_commands([
+                    self._with_transaction("@RME LIGHT HOLD active=0"),
+                    "M153",
+                    "@RME LIGHT QUERY",
+                ])
+            else:
+                flask.abort(400, description="Invalid chamber light mode")
+        elif command == "query_chamber_light":
+            self._send_command("@RME LIGHT QUERY")
         elif command == "set_filament":
             _, provider_name = self._active_spool_provider()
             if provider_name in ("spoolmanager", "spoolman"):
@@ -943,6 +986,8 @@ class RmeCompatibilityPlugin(
         if event == Events.CONNECTED:
             self._complete_firmware_reconnect()
             with self._state_lock:
+                self._connection_generation += 1
+                connection_generation = self._connection_generation
                 recovery_required = bool(
                     self._state["firmware"].get("recovery_required")
                 )
@@ -975,6 +1020,7 @@ class RmeCompatibilityPlugin(
                 self._state["loaded_filaments"] = []
                 self._state["manufacturers"] = {"profiles": [], "loaded": []}
                 self._state["active_tool"] = self._empty_state()["active_tool"]
+                self._active_tool_was_single_tool_default = False
                 self._auto_pa_active = False
                 # Workflow records are connection-local. Replaying a persisted
                 # firmware handoff after reconnect can claim that USB is about
@@ -989,6 +1035,7 @@ class RmeCompatibilityPlugin(
                 self._toolmap_preflight_decision = None
             self._publish()
             self._send_command("@RME MACHINE QUERY")
+            self._schedule_post_connect_reconciliation(connection_generation, 0)
             self._defer(self._sync_spoolmanager, True)
         elif event in (Events.DISCONNECTING, Events.DISCONNECTED):
             if (
@@ -1004,6 +1051,7 @@ class RmeCompatibilityPlugin(
             if self._file_service:
                 self._file_service.reset("Printer disconnected")
             with self._state_lock:
+                self._connection_generation += 1
                 self._state["connected"] = False
                 self._state["supported"] = False
                 self._state["session"]["active"] = False
@@ -1016,6 +1064,7 @@ class RmeCompatibilityPlugin(
                 self._pending_provider_profile_sync = None
                 self._transfer_conflict_cancel = False
                 self._auto_pa_active = False
+                self._active_tool_was_single_tool_default = False
             self._publish()
             if event == Events.DISCONNECTED and self._firmware_reconnect_pending():
                 self._begin_firmware_reconnect()
@@ -1504,6 +1553,11 @@ class RmeCompatibilityPlugin(
             if kind == "machine":
                 self._state["supported"] = True
                 self._state["machine"].update(record)
+                if (
+                    int(record.get("logical_tools", 0) or 0) > 1
+                    and self._active_tool_was_single_tool_default
+                ):
+                    self._clear_active_tool_locked()
                 # Build the provider alias table before M865 Q so printer-side
                 # selections can be resolved without first overwriting them.
                 follow_up.append("initialize_spool_sync")
@@ -1514,6 +1568,7 @@ class RmeCompatibilityPlugin(
                     and self._state["active_tool"].get("logical") is None
                 ):
                     self._state["active_tool"]["logical"] = 0
+                    self._active_tool_was_single_tool_default = True
                     self._refresh_active_tool_locked()
                 if self._settings.get_boolean(["auto_open_session"]):
                     follow_up.append("open_session")
@@ -1643,7 +1698,12 @@ class RmeCompatibilityPlugin(
                 if record.get("workflow") == "pressure_advance":
                     self._auto_pa_active = not workflow_is_terminal(record)
                 if record.get("type") == "error" or record.get("state") == "waiting":
-                    follow_up.append("@RME DIALOG QUERY")
+                    # Recovery commands often block Marlin's ordinary command
+                    # acknowledgement while waiting for an LCD choice. Query
+                    # the guarded action list through the same out-of-band
+                    # service path as pause/cancel or OctoPrint can deadlock
+                    # behind the command whose error it is trying to resolve.
+                    follow_up.append("query_dialog_priority")
                     if record.get("workflow") in STUCK_ACTION_WORKFLOWS:
                         follow_up.append("@RME STUCK QUERY")
                 if workflow_is_terminal(record):
@@ -1941,6 +2001,12 @@ class RmeCompatibilityPlugin(
                     and current_count < observed_count <= capacity
                 ):
                     machine["logical_tools"] = observed_count
+                    if observed_count > 1 and self._active_tool_was_single_tool_default:
+                        # A connection made while MMU initialization was still
+                        # incomplete can first look like a single-extruder
+                        # machine. The provisional T0 default must not survive
+                        # once virtual slots prove this is a shared-nozzle MMU.
+                        self._clear_active_tool_locked()
                     apply_profile = self._settings.get_boolean(
                         ["auto_machine_profile"]
                     )
@@ -1994,6 +2060,12 @@ class RmeCompatibilityPlugin(
                 self._defer(self._release_transfer_conflict_hold)
             elif item == "begin_firmware_reconnect":
                 self._defer(self._begin_firmware_reconnect, True)
+            elif item == "query_dialog_priority":
+                self._defer(
+                    self._send_priority_service,
+                    "@RME DIALOG QUERY",
+                    "dialog_query",
+                )
             elif item.startswith("refresh_configuration:"):
                 self._schedule_configuration_refresh(item.split(":", 1)[1])
             else:
@@ -2404,6 +2476,61 @@ class RmeCompatibilityPlugin(
                 self._priority_controls_sent.discard(action)
             raise
 
+    def _send_priority_service(self, command, trigger="service"):
+        """Submit one guarded RME recovery command out of band.
+
+        Dialog queries and responses must remain usable while a blocking MMU,
+        filament, or tool-change G-code is waiting for its firmware prompt.
+        """
+        self._send_priority_services([command], trigger)
+
+    def _send_priority_services(self, commands, trigger="service"):
+        command_list = list(commands)
+        self._printer.commands(
+            command_list[0] if len(command_list) == 1 else command_list,
+            tags={
+                "plugin:rme_compatibility",
+                "rme:priority_control",
+                "trigger:rme.%s" % trigger,
+            },
+            force=True,
+        )
+
+    def _schedule_post_connect_reconciliation(self, generation, attempt):
+        """Re-query topology after MMU startup without polling indefinitely."""
+        delays = (3.0, 7.0, 15.0)
+        if attempt >= len(delays) or self._stop.is_set():
+            return
+
+        def reconcile():
+            with self._state_lock:
+                current = self._connection_generation
+                connected = bool(self._state.get("connected"))
+            if current != generation or not connected or self._stop.is_set():
+                return
+            try:
+                if not self._print_job_active() and not self._printer_transfer_active():
+                    self._send_commands([
+                        "@RME MACHINE QUERY",
+                        "M865 Q",
+                    ])
+                    self._send_priority_service(
+                        "@RME DIALOG QUERY", "dialog_query"
+                    )
+            except Exception:
+                self._logger.debug(
+                    "Post-connect MMU reconciliation attempt %d deferred",
+                    attempt + 1,
+                    exc_info=True,
+                )
+            self._schedule_post_connect_reconciliation(
+                generation, attempt + 1
+            )
+
+        timer = threading.Timer(delays[attempt], reconcile)
+        timer.daemon = True
+        timer.start()
+
     def _force_send_rme_control(self, comm_instance, command, gcode):
         """Write an RME service command without waiting for the prior ``ok``.
 
@@ -2473,9 +2600,11 @@ class RmeCompatibilityPlugin(
     def _clear_active_tool_locked(self):
         """Clear the last Tn after firmware confirms the filament path empty."""
         self._state["active_tool"] = self._empty_state()["active_tool"]
+        self._active_tool_was_single_tool_default = False
 
     def _set_active_tool_locked(self, logical):
         """Update active-tool details while the caller owns ``_state_lock``."""
+        self._active_tool_was_single_tool_default = False
         self._state["active_tool"]["logical"] = int(logical)
         self._state["active_tool"]["updated"] = int(time.time())
         self._refresh_active_tool_locked()

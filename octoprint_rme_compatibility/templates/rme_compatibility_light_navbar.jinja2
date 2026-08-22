@@ -1,0 +1,11 @@
+<a href="javascript:void(0)"
+   class="rme-chamber-light-toggle"
+   role="button"
+   data-bind="click: pressChamberLightButton,
+              css: {'rme-chamber-light-on': chamberLightOn, 'rme-chamber-light-held': chamberLightHeld},
+              attr: {title: chamberLightTitle, 'aria-label': chamberLightTitle, 'aria-pressed': chamberLightHeld}">
+    <span class="rme-chamber-light-icon" aria-hidden="true">
+        <i data-bind="css: chamberLightIconClass"></i>
+        <i class="fas fa-lock rme-chamber-light-lock" data-bind="visible: chamberLightHeld"></i>
+    </span>
+</a>
