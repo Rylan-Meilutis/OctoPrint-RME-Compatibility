@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0b85 — 2026-08-21
+
+- Use the firmware-reported live chamber brightness as the authoritative
+  navbar light state. Chamber lighting activated externally now updates the
+  icon in both Active and Idle modes and remains switchable off from OctoPrint.
+- Continue displaying the physical chamber-light state while disabling and
+  graying its control whenever printing, an RME transfer, or transport recovery
+  owns the printer connection.
+
 ## 0.1.0b84 — 2026-08-21
 
 - Complete the chamber-light button timing behavior: a second press within two

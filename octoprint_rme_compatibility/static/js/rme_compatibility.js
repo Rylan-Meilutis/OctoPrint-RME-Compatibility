@@ -331,8 +331,18 @@ $(function () {
             return !!state.connected && !!state.supported && !!Number(light.chamber_supported) &&
                 Object.prototype.hasOwnProperty.call(live, "hold");
         });
+        self.chamberLightReportedOn = ko.pureComputed(function () {
+            var live = (self.state().light || {}).live || {};
+            // Brightness is authoritative across Active, Idle, and any future
+            // firmware lighting state. The state name describes why the light
+            // is on; the chamber output tells the user whether it is on.
+            return Number(live.chamber) > 0;
+        });
         self.chamberLightOn = ko.pureComputed(function () {
-            return self.chamberLightTemporary() || self.chamberLightHeld();
+            // The firmware snapshot is authoritative, including lighting
+            // entered from the printer itself or another host. Keep the local
+            // flag only as optimistic feedback while its reply is in flight.
+            return self.chamberLightTemporary() || self.chamberLightReportedOn() || self.chamberLightHeld();
         });
         self.chamberLightHeld = ko.pureComputed(function () {
             var live = (self.state().light || {}).live || {};
@@ -459,9 +469,10 @@ $(function () {
             return self.chamberLightPrinterBusy() || self.transportRecoveryRequired() || self.navbarTransferActive();
         });
         self.chamberLightDisabled = ko.pureComputed(function () {
-            // A manual light that is already on must always remain switchable
-            // off, even when printing or an RME transfer subsequently starts.
-            return self.chamberLightBlocked() && !self.chamberLightOn();
+            // Printing owns its lighting profile, and raw RME transfers own
+            // the serial transport. Continue showing the reported light state
+            // while preventing a conflicting command in either case.
+            return self.chamberLightBlocked();
         });
         self.navbarTransferWidth = ko.pureComputed(function () {
             var value = self.navbarTransfer().progress;
@@ -1152,8 +1163,7 @@ $(function () {
                 self.command("set_chamber_light_mode", {mode: "latched"});
                 return;
             }
-            if (self.chamberLightTemporary() && self.chamberLightLastPressAt &&
-                    now - self.chamberLightLastPressAt >= 2000) {
+            if (self.chamberLightOn()) {
                 self.chamberLightLastPressAt = 0;
                 self.chamberLightTemporary(false);
                 self.clearChamberLightRefreshTimers();

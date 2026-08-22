@@ -2771,16 +2771,21 @@ class ToolmapGateTests(unittest.TestCase):
         ) as javascript_file:
             javascript = javascript_file.read()
         self.assertIn("self.chamberLightAvailable = ko.pureComputed", javascript)
-        self.assertIn("self.chamberLightTemporary() || self.chamberLightHeld()", javascript)
+        self.assertIn("self.chamberLightReportedOn = ko.pureComputed", javascript)
+        self.assertIn("Number(live.chamber) > 0", javascript)
+        self.assertIn(
+            "self.chamberLightTemporary() || self.chamberLightReportedOn() || self.chamberLightHeld()",
+            javascript,
+        )
         self.assertIn("self.chamberLightHeld = ko.pureComputed", javascript)
         self.assertIn('Object.prototype.hasOwnProperty.call(live, "hold")', javascript)
         self.assertIn("now - self.chamberLightLastPressAt < 2000", javascript)
-        self.assertIn("now - self.chamberLightLastPressAt >= 2000", javascript)
+        self.assertIn("if (self.chamberLightOn())", javascript)
         self.assertIn("self.chamberLightDisabled = ko.pureComputed", javascript)
         self.assertIn("self.chamberLightPrinterBusy()", javascript)
         self.assertIn("self.transportRecoveryRequired()", javascript)
         self.assertIn("self.navbarTransferActive()", javascript)
-        self.assertIn("self.chamberLightBlocked() && !self.chamberLightOn()", javascript)
+        self.assertIn("return self.chamberLightBlocked();", javascript)
         self.assertIn("if (self.chamberLightDisabled()) return;", javascript)
         self.assertIn('return "fas fa-lightbulb rme-chamber-light-bulb-latched"', javascript)
         self.assertIn('self.command("query_chamber_light")', javascript)
