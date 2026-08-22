@@ -339,9 +339,10 @@ $(function () {
             return Number(live.hold) > 0 || self.chamberLightLatchPending();
         });
         self.chamberLightTitle = ko.pureComputed(function () {
+            if (self.chamberLightDisabled()) return self.chamberLightBlockedReason();
             if (self.chamberLightHeld()) return "Chamber light latched on; press to turn off";
             return self.chamberLightOn() ?
-                "Chamber light temporarily on; double-press to latch" :
+                "Chamber light temporarily on; double-press within two seconds to latch, or press later to turn off" :
                 "Press for temporary chamber light; double-press to latch";
         });
         self.chamberLightIconClass = ko.pureComputed(function () {
@@ -438,6 +439,30 @@ $(function () {
             return {active: false, icon: "", title: "", summary: "", detail: "", progress: null};
         });
         self.navbarTransferActive = ko.pureComputed(function () { return !!self.navbarTransfer().active; });
+        self.chamberLightPrinterBusy = ko.pureComputed(function () {
+            var stateName = String(ko.unwrap(self.printerState.stateString) || "").toLowerCase();
+            return !!(
+                ko.unwrap(self.printerState.isPrinting) ||
+                ko.unwrap(self.printerState.isPausing) ||
+                ko.unwrap(self.printerState.isResuming) ||
+                ko.unwrap(self.printerState.isCancelling) ||
+                /^(starting|printing|pausing|paused|resuming|cancelling|finishing)/.test(stateName)
+            );
+        });
+        self.chamberLightBlockedReason = ko.pureComputed(function () {
+            if (self.chamberLightPrinterBusy()) return "Chamber light control is unavailable while printing";
+            if (self.transportRecoveryRequired()) return "Chamber light control is unavailable until the RME transport recovers";
+            if (self.navbarTransferActive()) return "Chamber light control is unavailable during an RME transfer";
+            return "Chamber light control is unavailable";
+        });
+        self.chamberLightBlocked = ko.pureComputed(function () {
+            return self.chamberLightPrinterBusy() || self.transportRecoveryRequired() || self.navbarTransferActive();
+        });
+        self.chamberLightDisabled = ko.pureComputed(function () {
+            // A manual light that is already on must always remain switchable
+            // off, even when printing or an RME transfer subsequently starts.
+            return self.chamberLightBlocked() && !self.chamberLightOn();
+        });
         self.navbarTransferWidth = ko.pureComputed(function () {
             var value = self.navbarTransfer().progress;
             var progress = value === null || value === undefined ? NaN : Number(value);
@@ -1102,6 +1127,7 @@ $(function () {
         };
         self.pressChamberLightButton = function () {
             var now = Date.now();
+            if (self.chamberLightDisabled()) return;
             if (self.chamberLightHeld()) {
                 self.chamberLightLastPressAt = 0;
                 self.chamberLightTemporary(false);
@@ -1124,6 +1150,14 @@ $(function () {
                     self.command("query_chamber_light");
                 }, 4000);
                 self.command("set_chamber_light_mode", {mode: "latched"});
+                return;
+            }
+            if (self.chamberLightTemporary() && self.chamberLightLastPressAt &&
+                    now - self.chamberLightLastPressAt >= 2000) {
+                self.chamberLightLastPressAt = 0;
+                self.chamberLightTemporary(false);
+                self.clearChamberLightRefreshTimers();
+                self.command("set_chamber_light_mode", {mode: "off"});
                 return;
             }
             self.chamberLightLastPressAt = now;

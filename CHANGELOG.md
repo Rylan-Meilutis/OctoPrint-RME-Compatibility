@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0b84 — 2026-08-21
+
+- Complete the chamber-light button timing behavior: a second press within two
+  seconds latches Active lighting, while a later press turns temporary Active
+  lighting off.
+- Disable and gray an inactive chamber-light button while a print, RME file or
+  firmware transfer, or transport recovery blocks manual lighting commands.
+  An already active temporary or latched light remains available so the user
+  can always turn it off.
+
 ## 0.1.0b83 — 2026-08-21
 
 - Add a dedicated chamber-light navbar control for the current RME lighting

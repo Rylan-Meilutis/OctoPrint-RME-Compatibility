@@ -2775,6 +2775,13 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("self.chamberLightHeld = ko.pureComputed", javascript)
         self.assertIn('Object.prototype.hasOwnProperty.call(live, "hold")', javascript)
         self.assertIn("now - self.chamberLightLastPressAt < 2000", javascript)
+        self.assertIn("now - self.chamberLightLastPressAt >= 2000", javascript)
+        self.assertIn("self.chamberLightDisabled = ko.pureComputed", javascript)
+        self.assertIn("self.chamberLightPrinterBusy()", javascript)
+        self.assertIn("self.transportRecoveryRequired()", javascript)
+        self.assertIn("self.navbarTransferActive()", javascript)
+        self.assertIn("self.chamberLightBlocked() && !self.chamberLightOn()", javascript)
+        self.assertIn("if (self.chamberLightDisabled()) return;", javascript)
         self.assertIn('return "fas fa-lightbulb rme-chamber-light-bulb-latched"', javascript)
         self.assertIn('self.command("query_chamber_light")', javascript)
         self.assertIn('self.command("set_chamber_light_mode", {mode: "temporary"})', javascript)
@@ -2788,6 +2795,8 @@ class ToolmapGateTests(unittest.TestCase):
             light_template = light_template_file.read()
         self.assertIn("fa-lock", light_template)
         self.assertIn("visible: chamberLightHeld", light_template)
+        self.assertIn("rme-chamber-light-disabled", light_template)
+        self.assertIn("'aria-disabled': chamberLightDisabled", light_template)
 
     def test_lighting_ui_uses_current_firmware_byte_order(self):
         with open(

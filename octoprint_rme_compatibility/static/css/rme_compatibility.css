@@ -66,6 +66,13 @@
     text-shadow: 0 0 8px rgba(255, 214, 90, .95);
 }
 
+#navbar_plugin_rme_compatibility_light > .rme-chamber-light-toggle.rme-chamber-light-disabled {
+    color: #666;
+    cursor: not-allowed;
+    opacity: .55;
+    text-shadow: none;
+}
+
 .rme-chamber-light-icon {
     display: inline-block;
     line-height: 1;
