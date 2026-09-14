@@ -1570,7 +1570,7 @@ $(function () {
             var tab = $("#tab_spoolOverview");
             if (!tab.length) return;
             var panel = $(
-                '<div id="rme-spoolmanager-mapping" class="well rme-spoolmanager-mapping" data-bind="visible: spoolManagerProvider">' +
+                '<div id="rme-spoolmanager-mapping" class="well rme-spoolmanager-mapping" tabindex="0" role="region" aria-label="Printer loadout mapping" data-bind="visible: spoolManagerProvider">' +
                 '<div class="rme-spoolmanager-heading"><div><h4>Printer loadout mapping <small>RME</small></h4>' +
                 '<p>Use SpoolManager’s native selector for each loaded printer tool, or create a new spool with the known printer data prefilled.</p></div></div>' +
                 '<table class="table table-condensed"><thead><tr><th>Tool</th><th>Loaded on printer</th><th>Current SpoolManager assignment</th><th>Actions</th></tr></thead>' +
@@ -1598,7 +1598,7 @@ $(function () {
                 '<p data-bind="visible: externalSpoolProvider">Use <strong data-bind="text: mappingProviderName"></strong>’s native selector for each tool, or create a new spool.</p>' +
                 '<p data-bind="visible: internalSpoolProvider">Map all printer tools to RME inventory. Changes are staged until Apply mappings.</p>' +
                 '<label class="checkbox" data-bind="visible: internalSpoolProvider"><input type="checkbox" data-bind="checked: showAllMappingSpools"> Show all materials (complete inventory)</label></div>' +
-                '<div class="rme-spool-mapping-table"><table class="table table-condensed"><thead><tr>' +
+                '<div class="rme-spool-mapping-table" tabindex="0" role="region" aria-label="Tool assignments"><table class="table table-condensed"><thead><tr>' +
                 '<th>Tool</th><th>Loaded on printer</th><th>Provider spool</th><th></th></tr></thead>' +
                 '<tbody data-bind="foreach: spoolSelectionRows"><tr data-bind="css: {\'rme-spool-mapping-dirty\': dirty}">' +
                 '<td data-bind="text: \'T\' + tool"></td><td><span class="rme-color-dot" data-bind="visible: loaded, style: {backgroundColor: loaded && loaded.color}"></span> ' +
