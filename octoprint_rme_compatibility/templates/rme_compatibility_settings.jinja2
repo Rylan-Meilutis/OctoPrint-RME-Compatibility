@@ -129,6 +129,7 @@
         <span data-bind="text: partialTransferSummary"></span>
         <div>
             <button type="button" class="btn btn-primary" data-bind="click: resumePartialTransfer, enable: partialTransfer() && partialTransfer().source_available">Resume</button>
+            <button type="button" class="btn" data-bind="click: deferPartialTransfer, enable: !partialRecoveryActive()">Defer recovery</button>
             <button type="button" class="btn" data-bind="click: discardPartialTransfer">Discard partial</button>
         </div>
         <span class="text-error" data-bind="visible: partialTransfer() && partialTransfer().error, text: partialTransfer() && partialTransfer().error"></span>

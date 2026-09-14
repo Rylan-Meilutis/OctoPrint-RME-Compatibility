@@ -174,6 +174,10 @@ class RmeCompatibilityPlugin(
         self._firmware_reconnect_connecting = False
         self._connection_generation = 0
         self._active_tool_was_single_tool_default = False
+        # XL and INDX park their active tool with P0. The firmware's terminal
+        # tool-change event does not currently include a no-tool target, so
+        # retain the transmitted intent until that workflow succeeds or fails.
+        self._pending_tool_park = False
         # M976 owns several nested heater, probing, MMU load, and unload
         # workflows. Older firmware does not emit a pressure_advance parent
         # event, so retain a synthetic parent from transmission until the
@@ -537,6 +541,7 @@ class RmeCompatibilityPlugin(
             "storage_flash": ["path"],
             "storage_download": ["path", "target"],
             "partial_resume": [],
+            "partial_defer": [],
             "partial_discard": [],
             "partial_cleanup": ["path"],
         }
@@ -791,6 +796,8 @@ class RmeCompatibilityPlugin(
             self._start_storage_download(data["path"], data["target"])
         elif command == "partial_resume":
             self._resume_partial_transfer()
+        elif command == "partial_defer":
+            self._defer_partial_transfer()
         elif command == "partial_discard":
             self._discard_partial_transfer()
         elif command == "partial_cleanup":
@@ -1020,7 +1027,12 @@ class RmeCompatibilityPlugin(
                 self._state["loaded_filaments"] = []
                 self._state["manufacturers"] = {"profiles": [], "loaded": []}
                 self._state["active_tool"] = self._empty_state()["active_tool"]
+                # Connection-local snapshots must never leak across a printer
+                # reboot. In particular, an old live chamber value otherwise
+                # leaves the navbar bulb lit until discovery eventually runs.
+                self._state["light"] = {}
                 self._active_tool_was_single_tool_default = False
+                self._pending_tool_park = False
                 self._auto_pa_active = False
                 # Workflow records are connection-local. Replaying a persisted
                 # firmware handoff after reconnect can claim that USB is about
@@ -1065,6 +1077,7 @@ class RmeCompatibilityPlugin(
                 self._transfer_conflict_cancel = False
                 self._auto_pa_active = False
                 self._active_tool_was_single_tool_default = False
+                self._pending_tool_park = False
             self._publish()
             if event == Events.DISCONNECTED and self._firmware_reconnect_pending():
                 self._begin_firmware_reconnect()
@@ -1129,6 +1142,7 @@ class RmeCompatibilityPlugin(
                     if (self._state.get("prompt") or {}).get("kind") == "firmware":
                         self._state["prompt"] = None
                 self._auto_pa_active = False
+                self._pending_tool_park = False
             self._defer(self._resume_background_queries)
 
     def gcode_received_hook(self, comm_instance, line, *args, **kwargs):
@@ -1522,11 +1536,20 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 self._print_job_gcode_sent = True
         tool_match = re.match(r"^\s*T(-?\d+)(?:\s|$)", str(cmd or ""), re.IGNORECASE)
+        park_match = re.match(r"^\s*P0(?:\s|$)", str(cmd or ""), re.IGNORECASE)
         with self._state_lock:
             supported = self._state.get("supported", False)
+            machine = self._state.get("machine") or {}
+            toolchanger = bool(
+                int(machine.get("logical_tools", 0) or 0) > 1
+                and not int(machine.get("single_nozzle", 0) or 0)
+            )
+            if supported and park_match and toolchanger:
+                self._pending_tool_park = True
         if supported and tool_match:
             logical_tool = int(tool_match.group(1))
             with self._state_lock:
+                self._pending_tool_park = False
                 capacity = int(
                     (self._state.get("machine") or {}).get("tool_capacity", 0) or 0
                 )
@@ -1563,9 +1586,13 @@ class RmeCompatibilityPlugin(
                 follow_up.append("initialize_spool_sync")
                 follow_up.append("initialize_storage")
                 follow_up.append("probe_stats")
+                # The initial RME_LIGHT record plus its RME_LIGHT_LIVE tail is
+                # authoritative for the navbar indicator on this connection.
+                follow_up.append("@RME LIGHT QUERY")
                 if (
                     int(record.get("logical_tools", 0)) == 1
                     and self._state["active_tool"].get("logical") is None
+                    and "active_tool" not in self._state["session"]
                 ):
                     self._state["active_tool"]["logical"] = 0
                     self._active_tool_was_single_tool_default = True
@@ -1592,6 +1619,18 @@ class RmeCompatibilityPlugin(
                 lease = record.get("lease", record.get("active"))
                 self._state["session"]["active"] = bool(lease)
                 self._state["session"]["legacy"] = bool(record.get("legacy"))
+                # New firmware snapshots the live selection on OPEN, QUERY,
+                # and KEEPALIVE, including LCD-initiated parking. Missing fields
+                # on older builds must not erase our transmitted-tool fallback.
+                if "active_tool" in record:
+                    reported_tool = str(record["active_tool"]).strip().lower()
+                    if reported_tool == "none":
+                        self._clear_active_tool_locked()
+                    elif re.fullmatch(r"\d+", reported_tool):
+                        tool = int(reported_tool)
+                        capacity = int(self._state["machine"].get("tool_capacity", 0) or 0)
+                        if not capacity or tool < capacity:
+                            self._set_active_tool_locked(tool)
                 # A fresh session record is authoritative printer state. If
                 # the printer remains connected and IDLE after a claimed
                 # firmware handoff, no bootloader restart is in progress.
@@ -1637,6 +1676,17 @@ class RmeCompatibilityPlugin(
                 original_workflow = record.get("workflow")
                 selected_tool = self._workflow_tool(record)
                 reports_no_tool = self._workflow_reports_no_tool(record)
+                event_state = str(record.get("state", "")).lower()
+                event_failed = bool(
+                    record.get("type") == "error"
+                    or event_state in ("canceled", "cancelled", "failed", "stopped")
+                )
+                if (
+                    original_workflow in ("tool_change", "filament_load", "filament_unload", "mmu")
+                    and (workflow_is_terminal(record) or event_failed)
+                    and "active_tool" in self._state["session"]
+                ):
+                    follow_up.append("@RME SESSION QUERY")
                 capacity = int(
                     (self._state.get("machine") or {}).get("tool_capacity", 0) or 0
                 )
@@ -1647,6 +1697,18 @@ class RmeCompatibilityPlugin(
                     and selected_tool >= capacity
                 ):
                     self._clear_active_tool_locked()
+                    self._pending_tool_park = False
+                elif (
+                    original_workflow == "tool_change"
+                    and self._pending_tool_park
+                    and (workflow_is_terminal(record) or event_failed)
+                ):
+                    # P0 parks XL/INDX tools, but current terminal events carry
+                    # no target. Clear only after success; a failed park leaves
+                    # the previously selected tool authoritative.
+                    if not event_failed:
+                        self._clear_active_tool_locked()
+                    self._pending_tool_park = False
                 elif (
                     selected_tool is not None
                     and original_workflow in ("tool_change", "filament_load", "mmu")
@@ -1654,6 +1716,7 @@ class RmeCompatibilityPlugin(
                     and str(record.get("state", "")).lower()
                     not in ("canceled", "cancelled", "failed", "stopped")
                 ):
+                    self._pending_tool_park = False
                     self._set_active_tool_locked(selected_tool)
                 # A completed shared-nozzle unload is authoritative proof that
                 # no logical MMU tool is currently in the filament path. M865
@@ -2001,6 +2064,7 @@ class RmeCompatibilityPlugin(
                     and current_count < observed_count <= capacity
                 ):
                     machine["logical_tools"] = observed_count
+                    machine.update(self._normalize_machine_topology(machine))
                     if observed_count > 1 and self._active_tool_was_single_tool_default:
                         # A connection made while MMU initialization was still
                         # incomplete can first look like a single-extruder
@@ -2075,20 +2139,33 @@ class RmeCompatibilityPlugin(
 
     @staticmethod
     def _normalize_machine_topology(machine):
-        """Bound enabled logical tools by the firmware's physical capacity.
+        """Normalize logical-tool count and OctoPrint shared-nozzle topology.
 
         MMU firmware branches can report ``EXTRUDERS`` as the enabled count,
         which includes the shared extrusion path on some builds.  The virtual
         tool capacity is the authoritative count of addressable T indices.
+
+        Current INDX firmware also reports ``single_nozzle=1`` because it has
+        one hotend. INDX is nevertheless a toolchanger from OctoPrint's point
+        of view: its virtual-tool capacity is eight and each tool must retain
+        an independent offset. MMU capacity is five and shares one nozzle.
         """
         normalized = dict(machine or {})
         try:
             logical_tools = int(normalized.get("logical_tools", 0))
             tool_capacity = int(normalized.get("tool_capacity", 0))
+            hotends = int(normalized.get("hotends", 0))
         except (TypeError, ValueError):
             return normalized
         if tool_capacity > 0 and logical_tools > tool_capacity:
-            normalized["logical_tools"] = tool_capacity
+            logical_tools = tool_capacity
+            normalized["logical_tools"] = logical_tools
+        if logical_tools <= 1:
+            normalized["single_nozzle"] = 0
+        elif hotends > 1 or tool_capacity >= 8:
+            normalized["single_nozzle"] = 0
+        elif hotends == 1 and 1 < tool_capacity <= 5:
+            normalized["single_nozzle"] = 1
         return normalized
 
     # -- Protocol actions ---------------------------------------------------
@@ -2513,6 +2590,7 @@ class RmeCompatibilityPlugin(
                     self._send_commands([
                         "@RME MACHINE QUERY",
                         "M865 Q",
+                        "@RME LIGHT QUERY",
                     ])
                     self._send_priority_service(
                         "@RME DIALOG QUERY", "dialog_query"
@@ -2645,7 +2723,11 @@ class RmeCompatibilityPlugin(
             except (TypeError, ValueError):
                 pass
         message = str(record.get("message", ""))
-        return bool(re.search(r"\b(?:no tool|tool parked|parked tool)\b", message, re.IGNORECASE))
+        return bool(re.search(
+            r"\b(?:no tool|tool parked|parked tool|tool unloaded|unloaded tool)\b",
+            message,
+            re.IGNORECASE,
+        ))
 
     def _start_pressure_advance_workflow(self):
         """Show M976 while firmware performs its nested blocking workflows."""
@@ -4509,6 +4591,17 @@ class RmeCompatibilityPlugin(
             )
         self._persist_and_publish()
 
+    def _defer_partial_transfer(self):
+        """Retain recovery data without requiring the printer's USB drive."""
+        if self._printer_transfer_active():
+            raise FileServiceError("Stop the active transfer before deferring recovery")
+        manifest = self._manifest_store.get() if self._manifest_store else None
+        if not manifest:
+            return
+        manifest["status"] = "deferred"
+        self._manifest_store.save(manifest)
+        self._set_partial_status("deferred")
+
     def _start_partial_recovery(self, status, name, callback):
         """Replace a stale recovery worker without stranding its UI state."""
         with self._partial_action_lock:
@@ -4732,7 +4825,7 @@ class RmeCompatibilityPlugin(
     def _probe_interrupted_transfer(self):
         """Reopen and suspend a hidden partial to recover its committed offset."""
         manifest = self._manifest_store.get() if self._manifest_store else None
-        if not manifest or (self._partial_thread and self._partial_thread.is_alive()):
+        if not manifest or manifest.get("status") == "deferred" or (self._partial_thread and self._partial_thread.is_alive()):
             return
         try:
             ready = self._file_service.probe_partial(

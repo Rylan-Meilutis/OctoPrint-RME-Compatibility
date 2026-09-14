@@ -168,6 +168,21 @@ class _Comm(object):
 
 
 class ToolmapGateTests(unittest.TestCase):
+    def test_partial_recovery_can_be_deferred_without_usb_storage(self):
+        plugin = RmeCompatibilityPlugin()
+        manifest = {"remote_path": "FWUPD.BBF", "size": 100, "offset": 50}
+        plugin._manifest_store = types.SimpleNamespace(
+            get=lambda: dict(manifest), save=lambda value: manifest.update(value),
+        )
+        plugin._persist_and_publish = lambda: None
+        plugin._defer_partial_transfer()
+        self.assertEqual("deferred", manifest["status"])
+        self.assertEqual(50, manifest["offset"])
+        self.assertFalse(plugin._state["storage"]["partial"]["recovery_active"])
+        self.assertFalse(plugin._printer_transfer_active())
+        # No service is attached: this must not probe a missing USB drive.
+        plugin._probe_interrupted_transfer()
+
     def test_provider_material_labels_map_to_current_firmware_bases(self):
         expected = {
             "PLA": "PLA", "PLA_plus": "PLA", "PETG-CF": "PETG",
@@ -541,6 +556,69 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual(5, extruder["count"])
         self.assertTrue(extruder["sharedNozzle"])
         self.assertEqual([(0, 0)] * 5, extruder["offsets"])
+
+    def test_machine_topology_enables_shared_nozzle_only_for_mmu(self):
+        topologies = {
+            "mmu": ({
+                "hotends": 1, "logical_tools": 5,
+                "tool_capacity": 5, "single_nozzle": 1,
+            }, 1),
+            # Current firmware identifies INDX as one hotend and may therefore
+            # report single_nozzle=1. Its eight-tool capacity distinguishes it
+            # from the five-slot shared-nozzle MMU topology.
+            "indx": ({
+                "hotends": 1, "logical_tools": 8,
+                "tool_capacity": 8, "single_nozzle": 1,
+            }, 0),
+            "xl": ({
+                "hotends": 5, "logical_tools": 5,
+                "tool_capacity": 5, "single_nozzle": 0,
+            }, 0),
+            "single_tool": ({
+                "hotends": 1, "logical_tools": 1,
+                "tool_capacity": 1, "single_nozzle": 1,
+            }, 0),
+        }
+
+        for name, (machine, expected) in topologies.items():
+            with self.subTest(machine=name):
+                normalized = RmeCompatibilityPlugin._normalize_machine_topology(
+                    machine
+                )
+                self.assertEqual(expected, normalized["single_nozzle"])
+
+    def test_indx_machine_profile_disables_octoprint_shared_nozzle(self):
+        class ProfileManager(object):
+            def __init__(self):
+                self.saved = None
+
+            def get_current_or_default(self):
+                return {
+                    "volume": {}, "extruder": {},
+                    "axes": {"x": {}, "y": {}, "z": {}},
+                }
+
+            def save(self, profile, allow_overwrite=False):
+                self.saved = profile
+
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer_profile_manager = ProfileManager()
+        plugin._logger = logging.getLogger("rme-indx-profile-test")
+        plugin._state["machine"] = {
+            "hotends": 1, "logical_tools": 8,
+            "tool_capacity": 8, "single_nozzle": 1,
+            "x_min": 0, "x_max": 250,
+            "y_min": 0, "y_max": 220,
+            "z_min": 0, "z_max": 270,
+            "feed_x": 500, "feed_y": 500, "feed_z": 30,
+        }
+
+        plugin._apply_machine_profile()
+
+        extruder = plugin._printer_profile_manager.saved["extruder"]
+        self.assertEqual(8, extruder["count"])
+        self.assertFalse(extruder["sharedNozzle"])
+        self.assertEqual([(0, 0)] * 8, extruder["offsets"])
 
     def test_print_and_printer_transfer_ownership_are_mutually_exclusive(self):
         plugin = RmeCompatibilityPlugin()
@@ -2076,6 +2154,98 @@ class ToolmapGateTests(unittest.TestCase):
                 )
                 self.assertIsNone(plugin._state["workflow"])
 
+    def test_indx_p0_clears_active_tool_only_after_successful_park(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        plugin._defer = lambda callback, *args: None
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["machine"] = {
+            "hotends": 1, "logical_tools": 8,
+            "tool_capacity": 8, "single_nozzle": 0,
+        }
+        plugin._set_active_tool(2)
+
+        plugin.gcode_sent_hook(
+            None, "sent", "P0", None, "P", tags={"source:file"}
+        )
+        self.assertEqual(2, plugin._state["active_tool"]["logical"])
+        self.assertTrue(plugin._pending_tool_park)
+
+        plugin._handle_record({
+            "record": "event", "seq": 1, "type": "progress",
+            "workflow": "tool_change", "state": "closed", "progress": 100,
+            "message": "Tool change complete",
+        })
+
+        self.assertIsNone(plugin._state["active_tool"]["logical"])
+        self.assertFalse(plugin._pending_tool_park)
+
+    def test_session_active_tool_tracks_pick_and_lcd_park(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._schedule_publish = lambda: None
+        deferred = []
+        plugin._defer = lambda callback, *args: deferred.append(args)
+        plugin._state["machine"] = {"logical_tools": 8, "tool_capacity": 8}
+        plugin._state["session"]["active"] = True
+        for tool, expected in ((2, 2), (4, 4), ("none", None)):
+            plugin._handle_record(parse_line(
+                "RME_SESSION lease=1 printer_state=IDLE active_tool=%s legacy=0" % tool
+            ))
+            self.assertEqual(expected, plugin._state["active_tool"]["logical"])
+        plugin._handle_record({
+            "record": "event", "seq": 1, "type": "workflow",
+            "workflow": "tool_change", "state": "closed",
+            "message": "Tool change complete",
+        })
+        self.assertIn(("@RME SESSION QUERY",), deferred)
+
+    def test_legacy_session_preserves_tool_fallback(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        plugin._defer = lambda *args: None
+        plugin._state["session"]["active"] = True
+        plugin._set_active_tool(2)
+        plugin._handle_record(parse_line(
+            "RME_SESSION lease=1 printer_state=IDLE legacy=0"
+        ))
+        self.assertEqual(2, plugin._state["active_tool"]["logical"])
+
+    def test_failed_indx_p0_keeps_previous_active_tool(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        plugin._defer = lambda callback, *args: None
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["machine"] = {
+            "hotends": 1, "logical_tools": 8,
+            "tool_capacity": 8, "single_nozzle": 0,
+        }
+        plugin._set_active_tool(3)
+        plugin.gcode_sent_hook(None, "sent", "P0", None, "P")
+
+        plugin._handle_record({
+            "record": "event", "seq": 1, "type": "error",
+            "workflow": "tool_change", "state": "failed", "progress": 25,
+            "message": "Tool parking failed",
+        })
+
+        self.assertEqual(3, plugin._state["active_tool"]["logical"])
+        self.assertFalse(plugin._pending_tool_park)
+
+    def test_mmu_does_not_interpret_p0_as_toolchanger_park(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["machine"] = {
+            "hotends": 1, "logical_tools": 5,
+            "tool_capacity": 5, "single_nozzle": 1,
+        }
+        plugin._set_active_tool(2)
+
+        plugin.gcode_sent_hook(None, "sent", "P0", None, "P")
+
+        self.assertEqual(2, plugin._state["active_tool"]["logical"])
+        self.assertFalse(plugin._pending_tool_park)
+
     def test_toolchanger_t_minus_one_and_park_event_clear_active_tool(self):
         plugin = RmeCompatibilityPlugin()
         plugin._schedule_publish = lambda: None
@@ -2738,6 +2908,45 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual("idle", light["live"]["state"])
         self.assertEqual(20, light["live"]["chamber"])
         self.assertEqual(0, light["live"]["hold"])
+
+    def test_connect_clears_stale_light_snapshot_before_discovery(self):
+        from octoprint.events import Events
+
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._printer = _Printer()
+        plugin._logger = logging.getLogger("rme-connect-light-reset-test")
+        plugin._publish = lambda: None
+        plugin._schedule_post_connect_reconciliation = lambda *args: None
+        plugin._defer = lambda callback, *args: None
+        plugin._state["light"] = {
+            "schema": 2,
+            "live": {"state": "active", "chamber": 100, "hold": 1},
+        }
+
+        plugin.on_event(Events.CONNECTED, {})
+
+        self.assertEqual({}, plugin._state["light"])
+        self.assertIn("@RME MACHINE QUERY", plugin._printer.command_batches)
+
+    def test_machine_discovery_requests_authoritative_light_snapshot(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._schedule_publish = lambda: None
+        deferred = []
+        plugin._defer = lambda callback, *args: deferred.append(
+            (getattr(callback, "__name__", ""), args)
+        )
+
+        plugin._handle_record({
+            "record": "machine", "hotends": 1, "logical_tools": 5,
+            "tool_capacity": 5, "single_nozzle": 1,
+        })
+
+        self.assertIn(
+            ("_send_command", ("@RME LIGHT QUERY",)),
+            deferred,
+        )
 
     def test_chamber_light_button_supports_temporary_latched_and_off_modes(self):
         from octoprint.access.permissions import Permissions

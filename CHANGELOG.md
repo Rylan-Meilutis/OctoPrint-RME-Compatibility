@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.0b86 — 2026-09-14
+
+- Read the firmware's live `RME_SESSION active_tool` value, including `none`,
+  and refresh it after tool workflows so printer-side parking clears the icon.
+  Retain transmitted P0 tracking for older INDX/XL firmware.
+- Clear stale chamber-light state on connection and request fresh lighting
+  snapshots during discovery and startup reconciliation.
+- Correct automatic OctoPrint shared-nozzle configuration for MMU versus
+  INDX and XL toolchangers.
+- Add Defer recovery for interrupted uploads: preserve resume data without
+  contacting missing USB storage, stop automatic recovery probes, and dismiss
+  the interrupted-upload progress display after the transfer has stopped.
+- Validate with 173 passing tests and JavaScript syntax checks.
+
 ## 0.1.0b85 — 2026-08-21
 
 - Use the firmware-reported live chamber brightness as the authoritative

@@ -409,7 +409,7 @@ $(function () {
                     progress: progress
                 };
             }
-            if (partial) {
+            if (partial && partial.status !== "deferred") {
                 return {
                     active: true, icon: "fa-upload", title: "Interrupted upload",
                     summary: partial.status === "discarding" ? "Discarding printer partial" :
@@ -1091,6 +1091,9 @@ $(function () {
         };
         self.resumePartialTransfer = function () {
             self.command("partial_resume");
+        };
+        self.deferPartialTransfer = function () {
+            self.command("partial_defer");
         };
         self.discardPartialTransfer = function () {
             if (window.confirm("Discard this interrupted upload and remove its private partial data from the printer?")) {
