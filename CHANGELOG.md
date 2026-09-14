@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.0b88 — 2026-09-14
+
+- Support RME 6.9.0 INDX tool detection, dock selection, tool-change and
+  calibration dialogs, including firmware-provided recovery actions.
+- Offer guarded, zero-based dock selection from the RME tab and navbar, even
+  when the firmware reports no ordinary prompt buttons.
+- Reconcile active tools after picks and parking, including without an event
+  lease, and handle the new INDX tool-change workflow name.
+- Prevent the no-active-extruder sentinel from incorrectly blacklisting T0
+  after parking INDX/XL tools; retain actual invalid-tool errors.
+- Defer startup configuration snapshots during transfers instead of returning
+  HTTP 409, and retry refreshes that race with transfer startup.
+- Validate with 180 passing tests and JavaScript syntax checks.
+
 ## 0.1.0b87 — 2026-09-14
 
 - Make SpoolManager sidebar labels open the native selector for their tool and

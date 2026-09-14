@@ -133,6 +133,13 @@ $(function () {
         });
 
         var workflowNames = {
+            indx: "INDX",
+            indx_tool_detection: "INDX tool detection",
+            indx_slot_selection: "INDX dock selection",
+            indx_tool_change: "INDX tool change",
+            indx_dock_calibration: "INDX dock calibration",
+            indx_tool_offset_calibration: "INDX tool offset calibration",
+            indx_nozzle_cleaner_calibration: "INDX nozzle cleaner calibration",
             mmu: "MMU filament handling",
             tool_change: "Tool change / pickup",
             filament_runout: "Filament runout",
@@ -198,6 +205,13 @@ $(function () {
         self.hasToolmapPrompt = ko.pureComputed(function () { return self.prompt().kind === "toolmap"; });
         self.promptMessage = ko.pureComputed(function () { return self.prompt().message || "Printer action required"; });
         self.promptActions = ko.pureComputed(function () { return self.prompt().actions || []; });
+        self.indxSlots = ko.pureComputed(function () {
+            if (!self.prompt().slot_selection) return [];
+            var count = Number((self.state().machine || {}).tool_capacity) || 0;
+            return Array.from({length: Math.min(8, count)}, function (_, slot) {
+                return {slot: slot, label: "Dock " + (slot + 1) + " (T" + slot + ")"};
+            });
+        });
         self.toolmapTimeoutText = ko.pureComputed(function () {
             self.tick();
             var prompt = self.prompt();
@@ -1021,6 +1035,7 @@ $(function () {
         self.discover = function () { self.command("discover"); };
         self.openSession = function () { self.command("open_session"); };
         self.respond = function (action) { self.command("respond", {action: action}); };
+        self.selectIndxSlot = function (entry) { self.command("select_indx_slot", {slot: entry.slot}); };
         self.resetToolmap = function () { self.command("reset_toolmap"); };
         self.applyToolmap = function () {
             var mapping = {};

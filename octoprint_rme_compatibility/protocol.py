@@ -10,6 +10,9 @@ MAX_FIRMWARE_SIZE = 32 * 1024 * 1024
 DEFAULT_CHUNK_SIZE = 48
 WORKFLOWS = {
     "mmu",
+    "indx", "indx_tool_detection", "indx_slot_selection", "indx_tool_change",
+    "indx_dock_calibration", "indx_tool_offset_calibration",
+    "indx_nozzle_cleaner_calibration",
     "filament_load",
     "filament_unload",
     "tool_change",
@@ -213,6 +216,8 @@ def parse_line(raw_line):
         result = parse_fields(line[len("RME_FIRMWARE ") :])
         result["record"] = "firmware_status"
         return result
+    if line.startswith("RME_DIALOG "):
+        return dict(parse_fields(line[len("RME_DIALOG "):]), record="dialog")
     if line.startswith("RME_PROMPT "):
         actions = line[len("RME_PROMPT ") :].strip()
         return {

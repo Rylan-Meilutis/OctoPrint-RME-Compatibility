@@ -168,6 +168,32 @@ class _Comm(object):
 
 
 class ToolmapGateTests(unittest.TestCase):
+    def test_park_without_workflow_events_requests_live_tool_state(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        calls = []
+        plugin._defer = lambda callback, *args: calls.append(args)
+        plugin._state.update(supported=True, connected=True)
+        plugin._state["machine"] = {"logical_tools": 8, "tool_capacity": 8, "single_nozzle": 0}
+        plugin._set_active_tool(3)
+        plugin.gcode_sent_hook(None, "sent", "P0 S0", None, "P0")
+        self.assertIn(("@RME SESSION QUERY",), calls)
+        plugin._handle_record(parse_line(
+            "RME_SESSION lease=0 printer_state=IDLE active_tool=none legacy=0"
+        ))
+        self.assertIsNone(plugin._state["active_tool"]["logical"])
+
+    def test_tool_state_polling_without_active_lease(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._state.update(supported=True, connected=True)
+        plugin._stats_supported = True
+        waits = iter([False, True])
+        plugin._stop = types.SimpleNamespace(wait=lambda seconds: next(waits))
+        commands = []
+        plugin._send_command = commands.append
+        plugin._keepalive_loop()
+        self.assertEqual(["@RME SESSION QUERY"], commands)
+
     def test_partial_recovery_can_be_deferred_without_usb_storage(self):
         plugin = RmeCompatibilityPlugin()
         manifest = {"remote_path": "FWUPD.BBF", "size": 100, "offset": 50}
@@ -1069,7 +1095,7 @@ class ToolmapGateTests(unittest.TestCase):
             ),
         )
 
-    def test_shared_nozzle_no_tool_sentinel_does_not_invalidate_t0(self):
+    def test_mmu_and_toolchanger_no_tool_sentinel_does_not_invalidate_t0(self):
         plugin = RmeCompatibilityPlugin()
         plugin._settings = _Settings()
         plugin._state.update(supported=True)
@@ -1084,6 +1110,15 @@ class ToolmapGateTests(unittest.TestCase):
         )
 
         plugin._state["machine"]["single_nozzle"] = 0
+        for count in (5, 8):
+            plugin._state["machine"]["logical_tools"] = count
+            self.assertIsNone(plugin.gcode_received_hook(
+                None, "echo: Invalid extruder -1"
+            ))
+            for tool in (0, 3, 8):
+                line = "echo: Invalid extruder %d" % tool
+                self.assertEqual(line, plugin.gcode_received_hook(None, line))
+        plugin._state["supported"] = False
         self.assertEqual(
             "echo: Invalid extruder -1",
             plugin.gcode_received_hook(None, "echo: Invalid extruder -1"),
@@ -2078,6 +2113,77 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIsNone(plugin._state["active_tool"]["logical"])
         self.assertFalse(plugin._active_tool_was_single_tool_default)
 
+    def test_startup_controls_refresh_is_deferred(self):
+        from octoprint.access.permissions import Permissions
+        Permissions.CONTROL = types.SimpleNamespace(can=lambda: True)
+        plugin = RmeCompatibilityPlugin()
+        refreshes = []
+        plugin._schedule_configuration_refresh = refreshes.append
+        plugin._send_commands = lambda commands: self.fail("Must not send configuration directly")
+        plugin.on_api_command("query_controls", {})
+        self.assertEqual(["all"], refreshes)
+
+    def test_indx_slot_dialog_survives_empty_prompt_and_selects_dock(self):
+        from octoprint.access.permissions import Permissions
+        Permissions.CONTROL = types.SimpleNamespace(can=lambda: True)
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+        plugin._schedule_publish = lambda: None
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["machine"]["tool_capacity"] = 8
+        plugin._handle_record(parse_line("RME_DIALOG workflow=indx_slot_selection phase=select_slot state=active"))
+        plugin._handle_record(parse_line("RME_PROMPT none"))
+        self.assertTrue(plugin._state["prompt"]["slot_selection"])
+        plugin.on_api_command("select_indx_slot", {"slot": 3})
+        self.assertEqual("@RME INDX SLOT SELECT slot=3", plugin._printer.forced_commands[-1][0][0])
+        plugin._handle_record(parse_line("RME_DIALOG workflow=indx_tool_change phase=pickup_failed state=waiting"))
+        plugin._handle_record(parse_line("RME_PROMPT Retry,Abort"))
+        self.assertEqual(["Retry", "Abort"], plugin._state["prompt"]["actions"])
+        self.assertEqual("Pickup failed", plugin._state["prompt"]["message"])
+        self.assertFalse(plugin._state["prompt"].get("slot_selection", False))
+
+    def test_indx_recovery_routes_request_firmware_actions(self):
+        routes = ("indx_tool_detection", "indx_slot_selection", "indx_tool_change",
+                  "indx_dock_calibration", "indx_tool_offset_calibration",
+                  "indx_nozzle_cleaner_calibration", "indx")
+        for route in routes:
+            with self.subTest(route=route):
+                plugin = RmeCompatibilityPlugin()
+                plugin._printer = _Printer()
+                plugin._defer = lambda callback, *args: callback(*args)
+                plugin._schedule_publish = lambda: None
+                plugin._handle_record(parse_line(
+                    'RME_EVENT seq=1 type=workflow workflow=%s state=%s message="Action required"'
+                    % (route, "active" if route == "indx_slot_selection" else "waiting")
+                ))
+                self.assertEqual("@RME DIALOG QUERY", plugin._printer.forced_commands[-1][0])
+                self.assertEqual(route, plugin._state["workflow"]["workflow"])
+
+    def test_indx_slot_rejects_invalid_and_stale_selection(self):
+        from octoprint.access.permissions import Permissions
+        Permissions.CONTROL = types.SimpleNamespace(can=lambda: True)
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+        plugin._state["machine"]["tool_capacity"] = 8
+        plugin._state["prompt"] = {"slot_selection": True}
+        for slot in (-1, 8, "3 junk"):
+            self.assertEqual(409, plugin.on_api_command("select_indx_slot", {"slot": slot})[1])
+        plugin._state["prompt"] = None
+        self.assertEqual(409, plugin.on_api_command("select_indx_slot", {"slot": 3})[1])
+        self.assertEqual([], plugin._printer.forced_commands)
+
+    def test_indx_named_tool_change_completes_park(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        plugin._defer = lambda *args: None
+        plugin._set_active_tool(3)
+        plugin._pending_tool_park = True
+        plugin._handle_record(parse_line(
+            'RME_EVENT seq=1 type=workflow workflow=indx_tool_change state=closed message="Parked"'
+        ))
+        self.assertIsNone(plugin._state["active_tool"]["logical"])
+        self.assertFalse(plugin._pending_tool_park)
+
     def test_waiting_mmu_error_queries_and_answers_dialog_out_of_band(self):
         from octoprint.access.permissions import Permissions
 
@@ -2234,6 +2340,7 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_mmu_does_not_interpret_p0_as_toolchanger_park(self):
         plugin = RmeCompatibilityPlugin()
+        plugin._defer = lambda *args: None
         plugin._state.update(connected=True, supported=True)
         plugin._state["machine"] = {
             "hotends": 1, "logical_tools": 5,

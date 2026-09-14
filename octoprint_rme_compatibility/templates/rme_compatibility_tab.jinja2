@@ -19,6 +19,9 @@
     <div class="rme-card rme-prompt" data-bind="visible: hasFirmwarePrompt">
         <h4><span data-bind="text: workflowTitle"></span>: action required</h4>
         <p data-bind="text: promptMessage"></p>
+        <div data-bind="foreach: indxSlots">
+            <button class="btn" data-bind="text: label, click: $root.selectIndxSlot"></button>
+        </div>
         <div data-bind="foreach: promptActions">
             <button class="btn" data-bind="text: $data, click: $parent.respond"></button>
         </div>

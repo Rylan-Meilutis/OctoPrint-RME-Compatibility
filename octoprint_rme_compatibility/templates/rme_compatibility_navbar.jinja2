@@ -31,6 +31,9 @@
             <button class="btn btn-mini btn-primary" data-bind="click: showRmeTab">Review mapping</button>
             <button class="btn btn-mini" data-bind="click: resetToolmap">Use current mapping</button>
         </div>
+        <div data-bind="foreach: indxSlots">
+          <button class="btn" data-bind="text: label, click: $root.selectIndxSlot"></button>
+        </div>
         <div data-bind="visible: !hasToolmapPrompt(), foreach: promptActions">
             <button class="btn btn-mini" data-bind="text: $data, click: $parent.respond"></button>
         </div>

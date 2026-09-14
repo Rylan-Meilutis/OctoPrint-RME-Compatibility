@@ -230,6 +230,7 @@ class RmeCompatibilityPlugin(
             },
             "workflow": None,
             "prompt": None,
+            "dialog": None,
             "firmware": {
                 "status": "idle",
                 "filename": None,
@@ -493,6 +494,7 @@ class RmeCompatibilityPlugin(
             "discover": [],
             "open_session": [],
             "query_dialog": [],
+            "select_indx_slot": ["slot"],
             "respond": ["action"],
             "stuck": ["action"],
             "apply_toolmap": ["mapping", "enabled"],
@@ -561,6 +563,18 @@ class RmeCompatibilityPlugin(
             self._open_session()
         elif command == "query_dialog":
             self._send_priority_service("@RME DIALOG QUERY", "dialog_query")
+        elif command == "select_indx_slot":
+            slot = str(data["slot"])
+            with self._state_lock:
+                prompt = self._state.get("prompt") or {}
+                capacity = int(self._state["machine"].get("tool_capacity", 0))
+                selecting = prompt.get("slot_selection", False)
+            if not selecting or not re.fullmatch(r"\d+", slot) or not 0 <= int(slot) < capacity:
+                raise ValueError("No active INDX slot selection or invalid slot")
+            self._send_priority_services([
+                "@RME INDX SLOT SELECT slot=%d" % int(slot),
+                "@RME DIALOG QUERY", "@RME SESSION QUERY",
+            ], "indx_slot_selection")
         elif command == "respond":
             self._send_priority_services([
                 dialog_response_command(data["action"]),
@@ -584,15 +598,7 @@ class RmeCompatibilityPlugin(
                 flask.abort(403)
             self._apply_machine_profile()
         elif command == "query_controls":
-            self._send_commands(
-                [
-                    "@RME LOCK QUERY",
-                    "@RME THEME QUERY",
-                    "@RME LIGHT QUERY",
-                    "@RME FILAMENT QUERY",
-                    "@RME MANUFACTURER QUERY",
-                ]
-            )
+            self._schedule_configuration_refresh("all")
         elif command == "ui_control":
             action = str(data["action"]).upper()
             value = int(data.get("value", 0))
@@ -1039,6 +1045,7 @@ class RmeCompatibilityPlugin(
                 # to disappear even though no current M997 is running.
                 self._state["workflow"] = None
                 self._state["prompt"] = None
+                self._state["dialog"] = None
                 self._suppressed_refresh_transactions.clear()
                 self._provider_firmware_signature = None
                 self._pending_provider_profile_sync = None
@@ -1182,13 +1189,17 @@ class RmeCompatibilityPlugin(
             re.IGNORECASE,
         ):
             with self._state_lock:
-                rme_shared_nozzle = bool(
+                rme_no_tool_sentinel = bool(
                     self._state.get("supported")
-                    and int(self._state.get("machine", {}).get("single_nozzle", 0))
+                    and (
+                        int(self._state.get("machine", {}).get("single_nozzle", 0))
+                        or int(self._state.get("machine", {}).get("logical_tools", 0)) > 1
+                    )
                 )
-            if rme_shared_nozzle:
+            if rme_no_tool_sentinel:
                 # Buddy uses -1 as the sentinel for "no tool selected" when
-                # an unload/cleanup command runs after a shared-nozzle print.
+                # an unload/cleanup command runs with the MMU path empty or
+                # all INDX/XL tools parked (including M104 S0 and M107).
                 # OctoPrint interprets the generic Marlin diagnostic as a
                 # rejected T0 and permanently suppresses later T0 commands.
                 # It is not a rejected tool-selection command, so consume only
@@ -1562,6 +1573,10 @@ class RmeCompatibilityPlugin(
                 self._set_active_tool(logical_tool)
         if supported and re.match(r"^\s*M976(?:\s|$)", str(cmd or ""), re.IGNORECASE):
             self._start_pressure_advance_workflow()
+        if supported and (tool_match or park_match):
+            # Events can be disabled or the lease absent. Ask for the live
+            # selection even when no workflow close event will arrive.
+            self._defer(self._send_command, "@RME SESSION QUERY")
 
     def _handle_record(self, record):
         """Fold one parsed firmware record into the authoritative UI state."""
@@ -1682,7 +1697,7 @@ class RmeCompatibilityPlugin(
                     or event_state in ("canceled", "cancelled", "failed", "stopped")
                 )
                 if (
-                    original_workflow in ("tool_change", "filament_load", "filament_unload", "mmu")
+                    original_workflow in ("tool_change", "indx_tool_change", "filament_load", "filament_unload", "mmu")
                     and (workflow_is_terminal(record) or event_failed)
                     and "active_tool" in self._state["session"]
                 ):
@@ -1690,7 +1705,7 @@ class RmeCompatibilityPlugin(
                 capacity = int(
                     (self._state.get("machine") or {}).get("tool_capacity", 0) or 0
                 )
-                if original_workflow == "tool_change" and (
+                if original_workflow in ("tool_change", "indx_tool_change") and (
                     reports_no_tool
                     or selected_tool is not None
                     and capacity
@@ -1699,7 +1714,7 @@ class RmeCompatibilityPlugin(
                     self._clear_active_tool_locked()
                     self._pending_tool_park = False
                 elif (
-                    original_workflow == "tool_change"
+                    original_workflow in ("tool_change", "indx_tool_change")
                     and self._pending_tool_park
                     and (workflow_is_terminal(record) or event_failed)
                 ):
@@ -1711,7 +1726,7 @@ class RmeCompatibilityPlugin(
                     self._pending_tool_park = False
                 elif (
                     selected_tool is not None
-                    and original_workflow in ("tool_change", "filament_load", "mmu")
+                    and original_workflow in ("tool_change", "indx_tool_change", "filament_load", "mmu")
                     and record.get("type") != "error"
                     and str(record.get("state", "")).lower()
                     not in ("canceled", "cancelled", "failed", "stopped")
@@ -1760,7 +1775,10 @@ class RmeCompatibilityPlugin(
                     self._state["workflow"] = dict(record)
                 if record.get("workflow") == "pressure_advance":
                     self._auto_pa_active = not workflow_is_terminal(record)
-                if record.get("type") == "error" or record.get("state") == "waiting":
+                if (
+                    record.get("type") == "error" or record.get("state") == "waiting"
+                    or original_workflow == "indx_slot_selection" and not workflow_is_terminal(record)
+                ):
                     # Recovery commands often block Marlin's ordinary command
                     # acknowledgement while waiting for an LCD choice. Query
                     # the guarded action list through the same out-of-band
@@ -1809,6 +1827,22 @@ class RmeCompatibilityPlugin(
                     follow_up.append(
                         "refresh_configuration:%s" % str(record.get("domain", ""))
                     )
+            elif kind == "dialog":
+                self._state["dialog"] = dict(record)
+                route = str(record.get("workflow", "printer"))
+                if route.startswith("indx"):
+                    message = str(record.get("phase", route)).replace("_", " ").capitalize()
+                    self._state["workflow"] = dict(record, message=message, received_at=int(time.time()))
+                elif str((self._state.get("workflow") or {}).get("workflow", "")).startswith("indx"):
+                    self._state["workflow"] = None
+                if route == "indx_slot_selection" and record.get("phase") == "select_slot" and record.get("state") == "active":
+                    self._state["prompt"] = {
+                        "kind": "firmware", "workflow": route, "actions": [],
+                        "slot_selection": True, "message": "Select the dock for the detected INDX tool",
+                        "updated": int(time.time()),
+                    }
+                elif (self._state.get("prompt") or {}).get("slot_selection"):
+                    self._state["prompt"] = None
             elif kind == "prompt":
                 if record["actions"]:
                     workflow = self._state.get("workflow") or {}
@@ -1819,7 +1853,7 @@ class RmeCompatibilityPlugin(
                         "message": workflow.get("message", "Printer action required"),
                         "updated": int(time.time()),
                     }
-                elif (self._state.get("prompt") or {}).get("kind") == "firmware":
+                elif (self._state.get("prompt") or {}).get("kind") == "firmware" and not (self._state.get("prompt") or {}).get("slot_selection"):
                     self._state["prompt"] = None
             elif kind == "toolmap":
                 self._toolmap_supported = True
@@ -2078,6 +2112,8 @@ class RmeCompatibilityPlugin(
                 self._defer(self._accept_firmware_spool, dict(record))
             elif kind == "rme_error":
                 message = record["message"].lower()
+                if "workflow=indx" in message:
+                    follow_up.append("query_dialog_priority")
                 unsupported_toolmap = (
                     "unsupported" in message and "tool_mapping" in message
                 )
@@ -2507,6 +2543,12 @@ class RmeCompatibilityPlugin(
                 if commands:
                     try:
                         self._send_commands(commands)
+                    except RuntimeError:
+                        if self._printer_transfer_active() or self._print_job_active():
+                            for domain in domains:
+                                self._schedule_configuration_refresh(domain)
+                        else:
+                            self._logger.exception("RME configuration refresh failed")
                     except Exception:
                         self._logger.exception("RME configuration refresh failed")
 
@@ -2869,6 +2911,7 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 active = self._state["session"].get("active")
                 connected = self._state["connected"]
+                supported = self._state.get("supported", False)
                 recovery_required = bool(
                     self._state["firmware"].get("recovery_required")
                 )
@@ -2878,9 +2921,14 @@ class RmeCompatibilityPlugin(
                 (self._uploader and self._uploader.busy)
                 or (self._file_service and self._file_service.busy)
             )
-            if active and connected and not transfer_busy and not recovery_required:
+            if supported and connected and not transfer_busy and not recovery_required:
                 try:
-                    self._send_command("@RME SESSION KEEPALIVE")
+                    # QUERY works without an event lease. Continue reconciling
+                    # LCD tool changes and slow P0 commands when OPEN is disabled
+                    # or the lease has expired; never infer parking from an ok.
+                    self._send_command(
+                        "@RME SESSION KEEPALIVE" if active else "@RME SESSION QUERY"
+                    )
                 except Exception:
                     self._logger.debug("RME keepalive could not be queued", exc_info=True)
             if not transfer_busy and not recovery_required:
