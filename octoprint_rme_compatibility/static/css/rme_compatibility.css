@@ -63,15 +63,53 @@
     -webkit-overflow-scrolling: touch;
 }
 .rme-spool-mapping-table { max-width: 100%; overflow: auto; }
-.rme-spool-mapping-table table { min-width: 760px; }
-.rme-spool-mapping-table select { box-sizing: border-box; margin-bottom: 0; width: 100%; }
+.rme-spoolmanager-mapping table,
+.rme-spool-mapping-table table { width: 100%; min-width: 0; table-layout: fixed; }
+.rme-spool-mapping-table select { box-sizing: border-box; margin-bottom: 0; min-width: 0; max-width: 100%; width: 100%; }
 .rme-spool-mapping-table tr.rme-spool-mapping-dirty td { background: rgba(248, 148, 6, .12); }
 .rme-mapping-toolbar { align-items: flex-start; display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; }
 .rme-spoolmanager-mapping td,
-.rme-spool-mapping-table td { overflow-wrap: anywhere; }
+.rme-spool-mapping-table td,
+.rme-spoolmanager-mapping th,
+.rme-spool-mapping-table th { overflow-wrap: anywhere; white-space: normal; }
 .rme-spoolmanager-mapping .rme-spool-mapping-actions,
 .rme-spool-mapping-table .rme-spool-mapping-actions { white-space: normal; }
-.rme-spool-mapping-actions .btn { margin-bottom: 4px; }
+.rme-spool-mapping-actions .btn { box-sizing: border-box; max-width: 100%; white-space: normal; margin-bottom: 4px; }
+.rme-mapping-toolbar > *,
+.rme-spoolmanager-heading > * { min-width: 0; overflow-wrap: anywhere; }
+
+/* Stack each tool's fields on smaller screens, including OctoPrint's narrow
+   tab column beside the sidebar. Keep every value and action in reading order. */
+@media (max-width: 980px) {
+    .rme-spoolmanager-mapping table,
+    .rme-spoolmanager-mapping tbody,
+    .rme-spoolmanager-mapping tr,
+    .rme-spoolmanager-mapping td,
+    .rme-spool-mapping-table table,
+    .rme-spool-mapping-table tbody,
+    .rme-spool-mapping-table tr,
+    .rme-spool-mapping-table td {
+        display: block;
+        box-sizing: border-box;
+        width: 100%;
+    }
+    .rme-spoolmanager-mapping thead,
+    .rme-spool-mapping-table thead { display: none; }
+    .rme-spoolmanager-mapping tr,
+    .rme-spool-mapping-table tr { border-bottom: 1px solid #888; padding: 8px 0; }
+    .rme-spoolmanager-mapping td,
+    .rme-spool-mapping-table td { border-top: 0; }
+    .rme-spoolmanager-mapping td::before,
+    .rme-spool-mapping-table td::before { display: block; font-weight: bold; }
+    .rme-spoolmanager-mapping td:nth-child(1)::before,
+    .rme-spool-mapping-table td:nth-child(1)::before { content: "Tool"; }
+    .rme-spoolmanager-mapping td:nth-child(2)::before,
+    .rme-spool-mapping-table td:nth-child(2)::before { content: "Loaded on printer"; }
+    .rme-spoolmanager-mapping td:nth-child(3)::before,
+    .rme-spool-mapping-table td:nth-child(3)::before { content: "Provider spool"; }
+    .rme-spoolmanager-mapping td:nth-child(4)::before,
+    .rme-spool-mapping-table td:nth-child(4)::before { content: "Actions"; }
+}
 
 #navbar_plugin_rme_compatibility > a {
     align-items: center;
