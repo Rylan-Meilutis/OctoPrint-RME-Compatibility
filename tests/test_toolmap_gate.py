@@ -2113,6 +2113,34 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIsNone(plugin._state["active_tool"]["logical"])
         self.assertFalse(plugin._active_tool_was_single_tool_default)
 
+    def test_pa_abort_error_is_only_consumed_after_explicit_abort(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        deferred = []
+        plugin._defer = lambda callback, *args: deferred.append(callback)
+        plugin._state["supported"] = True
+        line = "Error:M976 batch tool/MMU change or calibration failed"
+        plugin._start_pressure_advance_workflow()
+        self.assertEqual(line, plugin.gcode_received_hook(None, line))
+        plugin._start_pressure_advance_workflow()
+        plugin._observe_pressure_advance_output("PA_CALIBRATION aborted fallback=0.04")
+        self.assertEqual("echo:M976 calibration canceled by user", plugin.gcode_received_hook(None, line))
+        self.assertIn(plugin._cancel_aborted_pa_print, deferred)
+        self.assertEqual(line, plugin.gcode_received_hook(None, line))
+        plugin._start_pressure_advance_workflow()
+        plugin._pa_abort_requested = True
+        plugin._observe_pressure_advance_output("PA_CALIBRATION batch complete entries=1")
+        self.assertFalse(plugin._pa_abort_requested)
+
+    def test_offset_calibration_dialog_emission(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        plugin._handle_record(parse_line("RME_DIALOG workflow=indx_tool_offset_calibration phase=calibration_failed state=waiting"))
+        plugin._handle_record(parse_line("RME_PROMPT Retry,Abort"))
+        self.assertEqual("indx_tool_offset_calibration", plugin._state["prompt"]["workflow"])
+        self.assertEqual("Calibration failed", plugin._state["prompt"]["message"])
+        self.assertEqual(["Retry", "Abort"], plugin._state["prompt"]["actions"])
+
     def test_startup_controls_refresh_is_deferred(self):
         from octoprint.access.permissions import Permissions
         Permissions.CONTROL = types.SimpleNamespace(can=lambda: True)

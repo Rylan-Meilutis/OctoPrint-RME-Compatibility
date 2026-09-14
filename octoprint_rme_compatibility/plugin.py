@@ -576,6 +576,9 @@ class RmeCompatibilityPlugin(
                 "@RME DIALOG QUERY", "@RME SESSION QUERY",
             ], "indx_slot_selection")
         elif command == "respond":
+            with self._state_lock:
+                if self._auto_pa_active and str(data["action"]).lower() == "abort":
+                    self._pa_abort_requested = True
             self._send_priority_services([
                 dialog_response_command(data["action"]),
                 "@RME DIALOG QUERY",
@@ -1155,7 +1158,18 @@ class RmeCompatibilityPlugin(
     def gcode_received_hook(self, comm_instance, line, *args, **kwargs):
         """Observe RME records without blocking or bypassing OctoPrint's queue."""
         normalized_line = str(line or "").strip()
+        with self._state_lock:
+            intentional_pa_abort = bool(
+                self._state.get("supported")
+                and getattr(self, "_pa_abort_requested", False)
+                and normalized_line == "Error:M976 batch tool/MMU change or calibration failed"
+            )
+            if intentional_pa_abort:
+                self._pa_abort_requested = False
         self._observe_pressure_advance_output(normalized_line)
+        if intentional_pa_abort:
+            self._defer(self._cancel_aborted_pa_print)
+            return "echo:M976 calibration canceled by user"
         if re.match(
             r"^\s*//\s*action:\s*notification(?:\s|$)",
             normalized_line,
@@ -2775,6 +2789,7 @@ class RmeCompatibilityPlugin(
         """Show M976 while firmware performs its nested blocking workflows."""
         now = int(time.time())
         with self._state_lock:
+            self._pa_abort_requested = False
             self._auto_pa_active = True
             self._state["workflow"] = {
                 "record": "event",
@@ -2805,6 +2820,10 @@ class RmeCompatibilityPlugin(
             return
         changed = False
         with self._state_lock:
+            if self._auto_pa_active and re.match(r"^PA_CALIBRATION\s+aborted(?:\s|$)", line, re.IGNORECASE):
+                self._pa_abort_requested = True
+            if re.match(r"^PA_CALIBRATION\s+batch\s+complete(?:\s|$)", line, re.IGNORECASE):
+                self._pa_abort_requested = False
             if not self._auto_pa_active:
                 return
             workflow = self._state.get("workflow") or {}
@@ -2824,6 +2843,11 @@ class RmeCompatibilityPlugin(
                 changed = True
         if changed:
             self._schedule_publish()
+
+    def _cancel_aborted_pa_print(self):
+        """Use normal cancellation, never continue a job after aborted M976."""
+        if self._print_job_active():
+            self._printer.cancel_print()
 
     def _filament_report(self):
         """Build OrcaSlicer's provider-neutral ``data.tools`` response shape."""

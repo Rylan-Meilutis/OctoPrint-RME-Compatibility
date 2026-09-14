@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0b89 — 2026-09-14
+
+- Handle the M976 batch failure diagnostic as normal cancellation when an
+  explicit calibration Abort was observed, instead of a firmware-error popup.
+  Preserve genuine failures and never continue the print after this abort.
+- Verify INDX offset-calibration dialog routing against RME 6.9.0 firmware
+  revision 11d358b3a3 and add regression coverage for its recovery actions.
+- Printer-screen aborts without an explicit abort report remain indistinguishable
+  from failures and still require firmware support.
+- Validate with 182 passing tests and JavaScript syntax checks.
+
 ## 0.1.0b88 — 2026-09-14
 
 - Support RME 6.9.0 INDX tool detection, dock selection, tool-change and
