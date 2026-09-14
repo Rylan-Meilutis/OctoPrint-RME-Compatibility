@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0b90 — 2026-09-14
+
+- Handle live G427 and tool-offset wizard emissions from the updated RME
+  6.9.0 firmware (3da41c1575), displaying calibration phases and progress.
+- Normalize success into completion so the progress display closes, and
+  request firmware recovery actions on failure and interactive wizard phases.
+- Validate with 183 passing tests and JavaScript syntax checks.
+
 ## 0.1.0b89 — 2026-09-14
 
 - Handle the M976 batch failure diagnostic as normal cancellation when an

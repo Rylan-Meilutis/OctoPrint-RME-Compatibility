@@ -178,6 +178,9 @@ $(function () {
         self.workflowMessage = ko.pureComputed(function () {
             var workflow = self.workflow();
             var message = workflow.message || self.workflowTitle();
+            if (workflow.workflow === "indx_tool_offset_calibration" && workflow.phase) {
+                message += " · " + workflow.phase.replace(/_/g, " ");
+            }
             var recovery = workflow.recovery || {};
             return recovery.message ? message + " · Recovery: " + recovery.message : message;
         });

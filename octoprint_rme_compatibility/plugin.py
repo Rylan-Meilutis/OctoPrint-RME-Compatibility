@@ -1701,6 +1701,22 @@ class RmeCompatibilityPlugin(
             elif kind == "event":
                 now = int(time.time())
                 record["workflow"] = classify_workflow(record)
+                if record["workflow"] == "indx_tool_offset_calibration":
+                    # Current 6.9.0 emits wizard/G427 phases in the state field.
+                    # Preserve the phase while normalizing the UI lifecycle.
+                    phase = str(record.get("state", ""))
+                    if phase in (
+                        "intro", "ensure_nozzles_clean", "clean_nozzles_cold",
+                        "clean_nozzles_hot", "moving_away", "homing",
+                        "picking_tool", "calibrating", "success", "failed",
+                    ):
+                        record["phase"] = phase
+                        record["state"] = (
+                            "complete" if phase == "success" else
+                            "waiting" if phase == "failed" else "active"
+                        )
+                        if phase in ("intro", "ensure_nozzles_clean", "clean_nozzles_cold", "clean_nozzles_hot"):
+                            follow_up.append("query_dialog_priority")
                 previous_workflow = self._state.get("workflow") or {}
                 original_workflow = record.get("workflow")
                 selected_tool = self._workflow_tool(record)

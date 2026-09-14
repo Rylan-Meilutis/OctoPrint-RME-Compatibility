@@ -2132,6 +2132,27 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._observe_pressure_advance_output("PA_CALIBRATION batch complete entries=1")
         self.assertFalse(plugin._pa_abort_requested)
 
+    def test_offset_calibration_live_g427_emissions(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        deferred = []
+        plugin._defer = lambda callback, *args: deferred.append(args)
+        for seq, phase, progress, expected in (
+            (1, "calibrating", 0, "active"),
+            (2, "calibrating", 50, "active"),
+            (3, "success", 100, "complete"),
+            (4, "failed", 0, "waiting"),
+        ):
+            plugin._handle_record(parse_line(
+                'RME_EVENT seq=%d type=workflow workflow=indx_tool_offset_calibration state=%s progress=%d message="Tool offset calibration"'
+                % (seq, phase, progress)
+            ))
+            workflow = plugin._state["workflow"]
+            self.assertEqual(expected, workflow["state"])
+            self.assertEqual(phase, workflow["phase"])
+            self.assertEqual(progress, workflow["progress"])
+        self.assertIn(("@RME DIALOG QUERY", "dialog_query"), deferred)
+
     def test_offset_calibration_dialog_emission(self):
         plugin = RmeCompatibilityPlugin()
         plugin._schedule_publish = lambda: None
