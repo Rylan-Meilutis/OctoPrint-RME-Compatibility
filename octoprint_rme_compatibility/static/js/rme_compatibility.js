@@ -648,9 +648,23 @@ $(function () {
         self.openNativeSpoolSelector = function (row) {
             var provider = String(self.spoolmanager().provider || "").toLowerCase();
             var tool = Number(row && row.tool);
+            if (!isFinite(tool) || tool < 0 || Math.floor(tool) !== tool) return;
+            // Bootstrap 2 cannot safely stack these modal dialogs. Finish
+            // hiding our mapping dialog before the provider takes focus.
+            var mappingDialog = $("#rme-spool-mapping-dialog");
+            if (mappingDialog.hasClass("in")) {
+                mappingDialog.one("hidden", function () {
+                    self.openNativeSpoolSelector(row);
+                }).modal("hide");
+                return;
+            }
             if (provider === "spoolmanager") {
                 var spoolManagerElement = document.getElementById("sidebar_spool_select");
                 var spoolManager = spoolManagerElement && ko.dataFor(spoolManagerElement);
+                if (!spoolManager || typeof spoolManager.sidebarOpenSelectSpoolDialog !== "function") {
+                    var overview = document.getElementById("tab_spoolOverview");
+                    spoolManager = overview && ko.dataFor(overview);
+                }
                 if (spoolManager && typeof spoolManager.sidebarOpenSelectSpoolDialog === "function") {
                     var current = null;
                     var selected = typeof spoolManager.selectedSpoolsForSidebar === "function" ?
@@ -1460,6 +1474,7 @@ $(function () {
         self.onAllBound = function () {
             self.allViewModelsBound = true;
             installSpoolManagerPanel();
+            installSpoolManagerSidebar();
             updateCorePrintClock();
         };
         self.onSettingsShown = function () {
@@ -1585,6 +1600,36 @@ $(function () {
             tab.prepend(panel);
             ko.applyBindings(self, panel[0]);
             self.spoolManagerPanelInstalled = true;
+        }
+
+        function installSpoolManagerSidebar() {
+            var sidebar = $("#sidebar_spool_select");
+            if (!sidebar.length) return;
+            // Provider rows are regenerated when a spool changes. Delegate
+            // interaction and observe replacement rows without rebinding them.
+            sidebar.on("click.rme keydown.rme", ".spool-label", function (event) {
+                if (event.type === "keydown" && event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                var context = ko.contextFor(this);
+                if (context && context.$index) {
+                    self.openNativeSpoolSelector({tool: Number(ko.unwrap(context.$index))});
+                }
+            });
+            function refreshSidebar() {
+                var active = self.activeTool().physical;
+                sidebar.find(".spool-label").each(function () {
+                    var context = ko.contextFor(this);
+                    if (!context || !context.$index) return;
+                    var tool = Number(ko.unwrap(context.$index));
+                    $(this).attr({role: "button", tabindex: "0", title: "Select spool for T" + tool});
+                    $(this).parent().toggleClass("rme-sidebar-tool-active",
+                        active !== null && active !== undefined && Number(active) === tool);
+                });
+            }
+            self.activeTool.subscribe(refreshSidebar);
+            var observer = new MutationObserver(refreshSidebar);
+            observer.observe(sidebar[0], {childList: true, subtree: true});
+            refreshSidebar();
         }
 
         function ensureRmeSpoolMappingDialog() {

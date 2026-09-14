@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0b87 — 2026-09-14
+
+- Make SpoolManager sidebar labels open the native selector for their tool and
+  highlight the active physical tool, retaining native edit/deselect controls.
+- Keep filament integration panels within the viewport with vertical scrolling
+  and keyboard-accessible scroll regions.
+- Fit mapping tables to the available width, use a compact tool-number column,
+  and stack labeled fields on smaller screens for all providers.
+- Close the RME mapping dialog before opening native provider selectors so the
+  picker receives focus. Locate SpoolManager through its overview if its sidebar
+  binding is unavailable.
+
 ## 0.1.0b86 — 2026-09-14
 
 - Read the firmware's live `RME_SESSION active_tool` value, including `none`,
