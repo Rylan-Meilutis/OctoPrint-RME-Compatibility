@@ -2963,12 +2963,15 @@ class RmeCompatibilityPlugin(
             )
             if supported and connected and not transfer_busy and not recovery_required:
                 try:
-                    # QUERY works without an event lease. Continue reconciling
-                    # LCD tool changes and slow P0 commands when OPEN is disabled
-                    # or the lease has expired; never infer parking from an ok.
-                    self._send_command(
-                        "@RME SESSION KEEPALIVE" if active else "@RME SESSION QUERY"
-                    )
+                    if active:
+                        self._send_command("@RME SESSION KEEPALIVE")
+                    elif self._settings.get_boolean(["auto_open_session"]):
+                        # QUERY and KEEPALIVE cannot reopen an expired lease.
+                        # Recover during prints too; OPEN is a service frame,
+                        # not a configuration batch or a motion command.
+                        self._open_session()
+                    else:
+                        self._send_command("@RME SESSION QUERY")
                 except Exception:
                     self._logger.debug("RME keepalive could not be queued", exc_info=True)
             if not transfer_busy and not recovery_required:
@@ -5464,6 +5467,10 @@ class RmeCompatibilityPlugin(
 
     def _reconcile_firmware_stage(self):
         """Refresh stage truth, using the authoritative current protocol."""
+        # A session can be recovered in the middle of a print. Reopening its
+        # event lease must not start a printer-storage transaction.
+        if self._print_job_active():
+            return False
         # SESSION can arrive before deferred FILE service initialization. The
         # storage initializer performs this reconciliation again once ready.
         if self._file_service is None:

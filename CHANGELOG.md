@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0b91 — 2026-09-15
+
+- Automatically reopen expired RME sessions when automatic sessions are enabled,
+  including during printing and paused jobs. This restores the firmware's RME
+  icon and event subscriptions instead of querying an expired lease forever.
+- Preserve query-only mode when automatic sessions are disabled, and preserve
+  file-transfer, firmware-upload, and recovery transport isolation.
+- Add regression coverage for print-time recovery and transport ownership.
+
 ## 0.1.0b90 — 2026-09-14
 
 - Handle live G427 and tool-offset wizard emissions from the updated RME
