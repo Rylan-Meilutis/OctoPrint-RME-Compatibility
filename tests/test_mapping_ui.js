@@ -25,6 +25,26 @@ const {jQueryFactory} = require('jquery/factory');
     vm.physicalTools([0, 1, 2]);
     vm.mappingRows([0, 1, 2].map(i => ({logical: i, physical: ko.observable(i)})));
     const template = fs.readFileSync('octoprint_rme_compatibility/templates/rme_compatibility_tab.jinja2', 'utf8');
+    const controls = w.document.createElement('div');
+    controls.innerHTML = template.slice(template.indexOf('<section id="rme-print-controls"'), template.indexOf('</section>') + 10);
+    w.document.body.append(controls);
+    ko.applyBindings(vm, controls);
+    state.connected = true;
+    state.machine = {tune: 1};
+    state.tune = {lcd: 1, light: 1, screen_print: 80, chamber_print: 50, status_print: 20, updated: Date.now() / 1000};
+    vm.state.valueHasMutated();
+    const sent = [];
+    vm.command = (command, data) => { sent.push({command, data}); return $.Deferred().resolve().promise(); };
+    const lcd = controls.querySelector('input[aria-label="LCD Off or On"]');
+    lcd.value = '0';
+    lcd.dispatchEvent(new w.Event('change', {bubbles: true}));
+    assert.equal(sent[0].data.kind, 'lcd');
+    assert.equal(sent[0].data.value, 0);
+    assert.equal(vm.tuneLight(), 1); // LCD never changes the chamber selector.
+    assert.equal(lcd.value, '1'); // Wait for firmware acknowledgement.
+    state.tune.lcd = 0;
+    vm.state.valueHasMutated();
+    assert.equal(lcd.value, '0');
     const start = template.indexOf('<div class="rme-routing-cards"');
     const end = template.indexOf('<label class="checkbox"><input type="checkbox" data-bind="checked: mappingEnabled">', start);
     const host = w.document.createElement('div');

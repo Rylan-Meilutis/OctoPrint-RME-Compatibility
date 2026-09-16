@@ -1,5 +1,14 @@
 # OctoPrint RME Compatibility
 
+### Pending independent lighting controls
+
+With matching firmware, Control/RME provides a separate LCD Off/On slider and
+individual current-print LCD, chamber and status brightness controls. Settings
+supplies saved four-state brightness sliders. Chamber On/Locked respects Active
+profile channel settings. LCD Off is temporary: door/local activity wakes it;
+LCD On briefly uses saved Active brightness before normal policy resumes.
+New controls stay hidden on firmware without the corresponding TUNE fields.
+
 ### INDX temperatures
 
 INDX tools are passive when parked. The Temperature tab shows **Parked /

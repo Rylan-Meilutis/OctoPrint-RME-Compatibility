@@ -184,6 +184,19 @@ $(function () {
                 !(self.state().lock || {}).locked;
         });
         self.tuneLight = ko.pureComputed(function () { return self.tune().light === undefined ? -1 : Number(self.tune().light); });
+        self.tuneLcd = ko.pureComputed(function () { return self.tune().lcd === undefined ? -1 : Number(self.tune().lcd); });
+        self.changeTuneLcd = function (_, event) {
+            self.command("set_print_override", {kind: "lcd", value: Number(event.target.value)});
+            event.target.value = self.tuneLcd();
+        };
+        self.printBrightnessRows = [
+            {kind: "screen", label: "LCD", draft: ko.observable(100)},
+            {kind: "chamber", label: "Chamber", draft: ko.observable(100)},
+            {kind: "status", label: "Status LEDs", draft: ko.observable(100)}
+        ];
+        self.applyPrintBrightness = function (row) {
+            self.command("set_print_override", {kind: row.kind, value: Number(row.draft())});
+        };
         self.applyTuneSpeed = function () { self.command("set_print_override", {kind: "speed", value: Number(self.tuneSpeed())}); };
         self.applyTuneFlow = function (row) { self.command("set_print_override", {kind: "flow", tool: row.tool, value: Number(row.draft())}); };
         self.toggleTuneStealth = function () { self.command("set_print_override", {kind: "stealth", value: Number(self.tune().stealth) ? 0 : 1}); };
@@ -1018,6 +1031,10 @@ $(function () {
             if (value.tune) {
                 var editingTune = $(document.activeElement).closest("#rme-print-controls").length;
                 if (!editingTune && value.tune.speed !== undefined) self.tuneSpeed(value.tune.speed);
+                if (!editingTune) self.printBrightnessRows.forEach(function (row) {
+                    var actual = value.tune[row.kind + "_print"];
+                    if (actual !== undefined && Number(actual) >= 0) row.draft(Number(actual));
+                });
                 var count = Math.min(8, Number((value.machine || {}).tool_capacity) || 0);
                 if (self.tuneFlows().length !== count) {
                     self.tuneFlows(Array.from({length: count}, function (_, tool) {

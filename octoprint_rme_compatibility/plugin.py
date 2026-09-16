@@ -1944,7 +1944,7 @@ class RmeCompatibilityPlugin(
             elif kind == "tune":
                 # Replace one bounded snapshot, never append it to event history.
                 capacity = min(8, int(self._state["machine"].get("tool_capacity", 0)))
-                keys = ("speed", "stealth", "light") + tuple("F%d" % i for i in range(capacity))
+                keys = ("speed", "stealth", "light", "lcd", "screen_print", "chamber_print", "status_print") + tuple("F%d" % i for i in range(capacity))
                 self._state["tune"] = {key: record[key] for key in keys if key in record}
                 self._state["tune"]["updated"] = time.time()
                 self._tune_query_pending = False
@@ -3128,6 +3128,16 @@ class RmeCompatibilityPlugin(
             command = "M9150" if value else "M9140"
         elif kind == "light" and value in (0, 1, 2):
             command = "@RME LIGHT MODE value=%d" % value
+        elif kind == "lcd" and value in (0, 1):
+            if self._state.get("tune", {}).get("lcd", -1) < 0:
+                raise ValueError("Firmware does not support independent LCD control")
+            command = "@RME LIGHT LCD value=%d" % value
+        elif kind in ("screen", "chamber", "status") and 0 <= value <= 100:
+            if not self._print_job_active():
+                raise ValueError("Temporary brightness requires an active print")
+            if self._state.get("tune", {}).get(kind + "_print", -1) < 0:
+                raise ValueError("Firmware does not support this lighting channel")
+            command = "@RME LIGHT TEMP %s=%d" % (kind, value)
         else:
             raise ValueError("Invalid print override")
         # One deliberate change per second; never enqueue every slider movement.

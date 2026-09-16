@@ -251,9 +251,9 @@
         <label class="control-label">Print lighting</label>
         <div class="controls">
             <p data-bind="text: currentLightsText"></p>
-            <label>Screen <input class="input-mini" type="number" min="0" max="100" data-bind="value: lightScreen">%</label>
-            <label>Chamber <input class="input-mini" type="number" min="0" max="100" data-bind="value: lightChamber">%</label>
-            <label>Status <input class="input-mini" type="number" min="0" max="100" data-bind="value: lightStatus">%</label>
+            <label>LCD <input type="range" min="0" max="100" data-bind="value: lightScreen"> <span data-bind="text: lightScreen"></span>%</label>
+            <label>Chamber <input type="range" min="0" max="100" data-bind="value: lightChamber"> <span data-bind="text: lightChamber"></span>%</label>
+            <label>Status <input type="range" min="0" max="100" data-bind="value: lightStatus"> <span data-bind="text: lightStatus"></span>%</label>
             <button type="button" class="btn" data-bind="click: applyLights, enable: state().supported">Apply temporary print values</button>
         </div>
     </div>
@@ -264,10 +264,10 @@
                 <thead><tr><th>Light</th><th>Deep idle</th><th>Idle</th><th>Active</th><th>Printing</th></tr></thead>
                 <tbody data-bind="foreach: persistentLightProfiles"><tr>
                     <th><span data-bind="text: label"></span> <small data-bind="visible: !supported()">unsupported</small></th>
-                    <td><input class="input-mini" type="number" min="0" max="100" data-bind="value: deepIdle, enable: supported">%</td>
-                    <td><input class="input-mini" type="number" min="0" max="100" data-bind="value: idle, enable: supported">%</td>
-                    <td><input class="input-mini" type="number" min="0" max="100" data-bind="value: active, enable: supported">%</td>
-                    <td><input class="input-mini" type="number" min="0" max="100" data-bind="value: printing, enable: supported">%</td>
+                    <td><input class="input-small" type="range" min="0" max="100" data-bind="value: deepIdle, enable: supported, attr: {'aria-label': label + ' deep idle brightness'}"><span data-bind="text: deepIdle"></span>%</td>
+                    <td><input class="input-small" type="range" min="0" max="100" data-bind="value: idle, enable: supported, attr: {'aria-label': label + ' idle brightness'}"><span data-bind="text: idle"></span>%</td>
+                    <td><input class="input-small" type="range" min="0" max="100" data-bind="value: active, enable: supported, attr: {'aria-label': label + ' active brightness'}"><span data-bind="text: active"></span>%</td>
+                    <td><input class="input-small" type="range" min="0" max="100" data-bind="value: printing, enable: supported, attr: {'aria-label': label + ' printing brightness'}"><span data-bind="text: printing"></span>%</td>
                 </tr></tbody>
             </table>
             <button type="button" class="btn btn-primary" data-bind="click: applyPersistentLights, enable: state().supported">Save lighting profiles</button>

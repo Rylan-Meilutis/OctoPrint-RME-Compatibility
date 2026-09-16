@@ -43,6 +43,28 @@ class PrintControlsTests(unittest.TestCase):
                 self.plugin()._set_print_override(data)
         self.assertEqual(self.commands, [])
 
+    def test_independent_lcd_and_single_channel_print_brightness(self):
+        for kind, value, expected in [
+            ("lcd", 0, "@RME LIGHT LCD value=0"),
+            ("lcd", 1, "@RME LIGHT LCD value=1"),
+            ("screen", 35, "@RME LIGHT TEMP screen=35"),
+            ("chamber", 0, "@RME LIGHT TEMP chamber=0"),
+            ("status", 27, "@RME LIGHT TEMP status=27"),
+        ]:
+            plugin = self.plugin()
+            plugin._state["tune"] = dict(lcd=1, screen_print=100, chamber_print=100, status_print=100)
+            plugin._print_job_active = lambda: True
+            plugin._set_print_override(dict(kind=kind, value=value))
+            self.assertEqual(self.commands[-1], expected)
+
+    def test_new_lighting_controls_require_capability_and_print(self):
+        plugin = self.plugin()
+        plugin._print_job_active = lambda: False
+        for kind in ("lcd", "screen", "chamber", "status"):
+            with self.assertRaises(ValueError):
+                plugin._set_print_override(dict(kind=kind, value=0))
+        self.assertEqual(self.commands, [])
+
     def test_poll_backpressure_and_rate_limit(self):
         plugin = self.plugin()
         for _ in range(10000):

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — independent lighting controls
+
+- Separate firmware-authoritative LCD Off/On slider in Control/RME.
+- Individual current-print LCD/chamber/status brightness controls, leaving
+  other channels and saved profiles unchanged.
+- Brightness sliders for persistent four-state profiles in Settings.
+- Capability-gated using new TUNE fields; no additional polling.
+- 208 Python tests (four skipped), DOM interactions and temperature regressions
+  pass. Requires firmware lighting follow-up; hardware validation pending.
+
 ## 0.1.0b97 — 2026-09-16
 
 - Graphical tool and spool mapping cards with color swatches, explicit routing,

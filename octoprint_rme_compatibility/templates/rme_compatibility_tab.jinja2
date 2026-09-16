@@ -8,6 +8,22 @@
                 data-bind="rmeLightState: tuneLight, event: {change: changeTuneLight}, enable: tuneEnabled">
             <div class="rme-light-positions"><span>Off</span><span>On (timed)</span><span>Locked on</span></div>
         </div>
+        <div data-bind="visible: tuneLcd() >= 0">
+            <label>LCD: <strong data-bind="text: tuneLcd() > 0 ? 'On' : 'Off'"></strong></label>
+            <input type="range" min="0" max="1" step="1" aria-label="LCD Off or On"
+                data-bind="rmeLightState: tuneLcd, event: {change: changeTuneLcd}, enable: tuneEnabled">
+            <small>Independent of chamber lights. Local activity or opening the door wakes the LCD.</small>
+        </div>
+        <details data-bind="visible: chamberLightPrinterBusy"><summary>Current-print brightness</summary>
+            <p>Temporary overrides only; saved profiles are unchanged.</p>
+            <div data-bind="foreach: printBrightnessRows">
+                <div data-bind="visible: $root.tune()[kind + '_print'] >= 0">
+                    <label><span data-bind="text: label"></span>: <span data-bind="text: $root.tune()[kind + '_print']"></span>%</label>
+                    <input type="range" min="0" max="100" step="1" data-bind="value: draft, enable: $root.tuneEnabled, attr: {'aria-label': label + ' print brightness'}">
+                    <button class="btn" data-bind="click: $root.applyPrintBrightness, enable: $root.tuneEnabled">Apply</button>
+                </div>
+            </div>
+        </details>
         <label>Speed (%) — printer: <span data-bind="text: tune().speed"></span>%</label>
         <input type="number" min="10" max="300" class="input-small" data-bind="value: tuneSpeed, enable: tuneEnabled">
         <button class="btn" data-bind="click: applyTuneSpeed, enable: tuneEnabled">Apply speed</button>
