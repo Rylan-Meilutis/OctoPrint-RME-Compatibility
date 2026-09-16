@@ -819,26 +819,18 @@ $(function () {
             if (spool.is_active === false) availability.push("inactive");
             if (remaining !== null && remaining !== undefined && Number(remaining) <= 0) availability.push("empty");
             if (spool.is_template === true) availability.push("template profile");
-            return (spool.alias ? spool.alias + " — " : "") + spool.display_name +
-                (spool.vendor ? " · " + spool.vendor : "") + " · " + spool.material +
+            return (spool.material || "Unassigned") +
                 (remaining === null || remaining === undefined ? "" : " · " + Number(remaining).toFixed(0) + " g left") +
                 (availability.length ? " · " + availability.join(", ") : "");
         };
         self.loadedFilamentLabel = function (filament) {
             if (!filament) return "Nothing reported";
-            var profile = filament.firmware_profile || filament.profile || filament.firmware_alias || "";
-            var material = filament.material || filament.firmware_material || "Unassigned";
-            var details = [];
-            // A resolved RME alias is transport metadata, not the spool name
-            // or material. Prefer the inventory provider's native name and
-            // retain the short profile only as a fallback for unknown records.
-            if (filament.display_name) details.push(filament.display_name);
-            else if (profile && profile !== material) details.push(profile);
-            details.push(material);
-            var manufacturer = filament.manufacturer || filament.vendor;
-            if (manufacturer) details.push("Manufacturer: " + manufacturer);
-            if (filament.color_name && filament.color_name !== "None") details.push(filament.color_name);
-            return details.join(" · ");
+            // Profile/alias is an internal spool identity. Never fall back to
+            // it for a visible material label, including unresolved records.
+            var material = filament.material || filament.firmware_material || "";
+            var profile = filament.firmware_profile || filament.profile || filament.firmware_alias;
+            var internalAlias = material === profile && /^(?:[A-Z]{1,3}-[0-9A-Z]{3}|S[0-9A-Z]{6})$/.test(material);
+            return material && !internalAlias ? material : "Unassigned";
         };
         self.openNativeSpoolSelector = function (row) {
             var provider = String(self.spoolmanager().provider || "").toLowerCase();

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0b100 — 2026-09-16
+
+- Resolve printer-side spool aliases against the full provider inventory, not
+  only the seven published presets. Ambiguous identities are never guessed.
+- Read printer assignments on reconnect even when a provider-sync prompt exists.
+- Import printer selections without writing stale assignments back during a
+  multi-tool snapshot. Internal spool identifiers remain unchanged.
+- Display material and color swatches rather than internal profile suffixes in
+  RME loaded-filament and spool mapping labels.
+- Automated Python and mapping UI tests cover these changes; live printer and
+  SpoolManager confirmation remains required.
+
 ## 0.1.0b99 — 2026-09-16
 
 - Fix INDX identification for firmware reporting eight physical hotend slots.

@@ -17,6 +17,12 @@ const {jQueryFactory} = require('jquery/factory');
     const ko = w.ko;
     const vm = new w.OCTOPRINT_VIEWMODELS[0].construct([{}, {}, {}, {}]);
     vm.command = () => $.Deferred().resolve().promise();
+    const linked = {material: 'PLA', profile: 'PLA-00D', firmware_profile: 'PLA-00D', color: '#808080'};
+    assert.equal(vm.loadedFilamentLabel(linked), 'PLA');
+    assert.equal(linked.profile, 'PLA-00D'); // Internal identity is untouched.
+    assert.equal(vm.loadedFilamentLabel({profile: 'PLA', material: 'PLA'}), 'PLA');
+    assert.equal(vm.loadedFilamentLabel({profile: 'PLA-00D', material: 'PLA-00D'}), 'Unassigned');
+    assert(!vm.spoolLabel({alias: 'PLA-00D', material: 'PLA', display_name: 'PLA-00D'}).includes('PLA-00D'));
     const state = {supported: true, prompt: {kind: 'toolmap', requirements: [
         {logical: 0, material: 'PLA', color: '#ffffff'}], recommendation: {0: 1, 1: 0, 2: 2}},
         loaded_filaments: [{tool: 0, material: 'PLA', color: '#000000'},

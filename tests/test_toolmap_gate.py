@@ -1077,6 +1077,11 @@ class ToolmapGateTests(unittest.TestCase):
 
         self.assertEqual(["M865 Q"], plugin._printer.command_batches)
 
+        plugin._state["spoolmanager"]["pending_provider_sync"] = {"tool": 0}
+        plugin._printer.command_batches.clear()
+        plugin._initialize_spool_sync()
+        self.assertEqual(["M865 Q"], plugin._printer.command_batches)
+
     def test_terminal_firmware_records_tolerate_absent_prompt(self):
         plugin = RmeCompatibilityPlugin()
         plugin._settings = _Settings()
@@ -1724,7 +1729,8 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("self.mappingSelectionLabel", javascript)
         self.assertIn("self.chooseMappingSpool", javascript)
         self.assertIn("foreach: availableSpools", javascript)
-        self.assertIn("if (filament.display_name) details.push(filament.display_name)", javascript)
+        self.assertIn("var internalAlias", javascript)
+        self.assertNotIn("if (filament.display_name) details.push(filament.display_name)", javascript)
         self.assertIn("installSpoolManagerPanel", javascript)
         self.assertIn("ensureRmeSpoolMappingDialog", javascript)
         self.assertIn("rme-spool-mapping-dialog", javascript)
@@ -1736,7 +1742,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("Only matching known materials may be assigned", javascript)
         self.assertIn('self.command("refresh_spool_inventory")', javascript)
         self.assertIn("rme-route-choices", javascript)
-        self.assertIn("Manufacturer: ", javascript)
+        self.assertNotIn("Manufacturer: ", javascript)
         self.assertIn("spoolManager.addNewSpool()", javascript)
         self.assertIn('self.command("apply_spool_selections"', javascript)
         spoolmanager_panel = javascript[
@@ -2709,7 +2715,27 @@ class ToolmapGateTests(unittest.TestCase):
         })
 
         self.assertEqual([(2, 13)], provider.selections)
-        self.assertEqual([(True, True)], syncs)
+        self.assertEqual([(True, False)], syncs)
+        self.assertIsNone(plugin._state["spoolmanager"]["pending_new"])
+
+    def test_machine_import_resolves_alias_outside_published_slots(self):
+        class Provider(object):
+            def inventory(self, include_unavailable=False):
+                return [{"database_id": 13, "material": "PLA"}]
+
+            def select(self, tool, database_id):
+                selections.append((tool, database_id))
+
+        selections, syncs = [], []
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-unpublished-alias-test")
+        plugin._active_spool_provider = lambda: (Provider(), "spoolmanager")
+        plugin._sync_spoolmanager = lambda *args: syncs.append(args)
+        plugin._accept_firmware_spool({
+            "tool": 7, "material": "PLA", "profile": "PLA-00D",
+        })
+        self.assertEqual([(7, 13)], selections)
+        self.assertEqual([(True, False)], syncs)
         self.assertIsNone(plugin._state["spoolmanager"]["pending_new"])
 
     def test_machine_to_provider_sync_imports_all_five_mmu_tools(self):
