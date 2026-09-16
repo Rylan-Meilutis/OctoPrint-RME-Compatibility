@@ -4159,6 +4159,10 @@ class RmeCompatibilityPlugin(
                     -1 if entry.get("tool") is None else int(entry.get("tool"))
                 )
             )
+            # Provider inventory refreshes can repeat every tool selection.
+            # Do not rewrite timestamps, persist, or broadcast an unchanged set.
+            if changes == pending.get("changes"):
+                return
             if len(changes) == 1:
                 if tool is None:
                     message = "The filament provider configuration changed. Apply it to the printer?"

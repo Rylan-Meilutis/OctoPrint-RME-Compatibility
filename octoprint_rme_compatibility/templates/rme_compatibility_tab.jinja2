@@ -73,8 +73,16 @@
         <p data-bind="visible: loadedFilaments().length"><strong>Printer-reported loadout:</strong>
             <span data-bind="foreach: loadedFilaments"><span class="rme-assignment"><span class="rme-color-dot" data-bind="style: {backgroundColor: color}"></span> <span data-bind="text: $parent.loadedFilamentLabel($data)"></span></span></span>
         </p>
-        <p><button class="btn" data-bind="click: showFilamentMapping"><i class="fa fa-random"></i> Map printer tools to spools</button></p>
+        <div class="rme-firmware-action-row">
+            <button type="button" class="btn" data-bind="click: syncFilamentsFromPrinter, enable: canSyncFilaments">Printer → provider</button>
+            <button type="button" class="btn" data-bind="click: syncFilamentsToPrinter, enable: canSyncFilaments">Provider → printer</button>
+            <button type="button" class="btn" data-bind="click: showFilamentMapping"><i class="fa fa-random"></i> Map printer tools to spools</button>
+        </div>
         <p><small>All tools can be staged together; material filtering and complete inventory access are available in the mapping page.</small></p>
+    </div>
+
+    <div id="rme-tab-firmware" class="rme-card form-horizontal">
+        {% include "rme_compatibility_firmware_controls.jinja2" %}
     </div>
 
     <div class="rme-card rme-prompt" data-bind="visible: hasToolmapPrompt, event: {focusin: touchToolmap, mousedown: touchToolmap, keydown: touchToolmap}">

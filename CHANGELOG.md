@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0b93 — 2026-09-15
+
+- Stop spool resynchronization popup floods and automatic mapping-page opens;
+  show pending changes inline and leave reconciliation under user control.
+- Deduplicate repeated multi-tool provider prompts without dropping real changes.
+- Add both filament sync directions and firmware update controls to the RME tab,
+  accessible without opening Settings. Do not add controls to Dashboard.
+- Share firmware controls between Settings and the RME tab, preserving transfer
+  and flash safeguards. Validate with 188 passing tests and JavaScript checks.
+
 ## 0.1.0b92 — 2026-09-15
 
 - Add an Object overview tab with first-layer extrusion paths on the slicer's

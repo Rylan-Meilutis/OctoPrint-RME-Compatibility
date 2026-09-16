@@ -1014,6 +1014,22 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("T2 to Black PETG", pending["message"])
         self.assertIn("Apply all 2 changes", pending["message"])
 
+    def test_repeated_multitool_prompts_do_not_publish_again(self):
+        plugin = RmeCompatibilityPlugin()
+        published = []
+        plugin._persist_and_publish = lambda: published.append(True)
+        for tool in range(5):
+            plugin._queue_provider_sync_prompt(tool, tool + 10)
+        pending = plugin._state["spoolmanager"]["pending_provider_sync"]
+        for _ in range(100):
+            for tool in range(5):
+                plugin._queue_provider_sync_prompt(tool, tool + 10)
+        self.assertEqual(5, len(published))
+        self.assertIs(pending, plugin._state["spoolmanager"]["pending_provider_sync"])
+        plugin._queue_provider_sync_prompt(2, 99)
+        self.assertEqual(6, len(published))
+        self.assertEqual(5, len(plugin._state["spoolmanager"]["pending_provider_sync"]["changes"]))
+
     def test_identical_spoolmanager_read_event_is_a_noop(self):
         plugin = RmeCompatibilityPlugin()
         plugin._active_spool_provider = lambda: (None, "spoolmanager")
@@ -1578,6 +1594,10 @@ class ToolmapGateTests(unittest.TestCase):
             "octoprint_rme_compatibility/templates/rme_compatibility_settings.jinja2"
         ) as template_file:
             settings_template = template_file.read()
+        shared_firmware = "rme_compatibility_firmware_controls.jinja2"
+        self.assertIn('{% include "' + shared_firmware + '" %}', settings_template)
+        with open("octoprint_rme_compatibility/templates/" + shared_firmware) as template_file:
+            settings_template += template_file.read()
         self.assertIn("Plugin status", settings_template)
         self.assertIn("Firmware update", settings_template)
         self.assertNotIn("Restart required after installation or update", settings_template)
@@ -1607,6 +1627,15 @@ class ToolmapGateTests(unittest.TestCase):
             "octoprint_rme_compatibility/static/js/rme_compatibility.js"
         ) as javascript_file:
             javascript = javascript_file.read()
+        self.assertNotIn("updateProviderSyncNotice", javascript)
+        self.assertNotIn("setTimeout(self.showFilamentMapping", javascript)
+        self.assertNotIn("rme-dashboard-actions", javascript)
+        self.assertNotIn("renderDashboardQuickActions", javascript)
+        with open("octoprint_rme_compatibility/templates/rme_compatibility_tab.jinja2") as template_file:
+            main_tab = template_file.read()
+        self.assertIn('{% include "' + shared_firmware + '" %}', main_tab)
+        self.assertIn("click: syncFilamentsFromPrinter, enable: canSyncFilaments", main_tab)
+        self.assertIn("click: syncFilamentsToPrinter, enable: canSyncFilaments", main_tab)
         self.assertIn("OctoPrint.postForm", javascript)
         self.assertIn('request.upload.addEventListener("progress"', javascript)
         self.assertIn("scheduleCoreWorkflowRender", javascript)
@@ -1673,7 +1702,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("applyPackedBrightness", javascript)
         self.assertIn("applyDecodedBrightness", javascript)
         self.assertIn("lightPolicyText", javascript)
-        self.assertIn("Filament resynchronization required", javascript)
+        self.assertIn("pendingProviderSync", main_tab)
         self.assertIn("MMU · idle", javascript)
         self.assertIn("deleteFirmware", javascript)
         self.assertIn('self.command("storage_download"', javascript)

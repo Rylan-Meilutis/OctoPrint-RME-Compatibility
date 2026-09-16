@@ -141,8 +141,6 @@ $(function () {
         ko.utils.arrayForEach(self.themePresets, function (preset) {
             preset.swatches = self.themeKeys.map(function (entry) { return preset.colors[entry.key]; });
         });
-        self.providerSyncNotice = null;
-        self.providerSyncNoticeKey = "";
         self.toolmapNotice = null;
         self.toolmapNoticeKey = "";
         self.firmwareRecoveryNotice = null;
@@ -877,30 +875,14 @@ $(function () {
                     new PNotify({title: "RME command failed", text: responseError(xhr), type: "error", hide: false});
                 });
         };
-        self.updateProviderSyncNotice = function (pending) {
-            var key = pending ? [pending.tool, pending.database_id, pending.updated].join(":") : "";
-            if (key === self.providerSyncNoticeKey) return;
-            if (self.providerSyncNotice && typeof self.providerSyncNotice.remove === "function") {
-                self.providerSyncNotice.remove();
-            }
-            self.providerSyncNotice = null;
-            self.providerSyncNoticeKey = key;
-            if (pending) {
-                // Reconciliation always uses the complete per-tool mapper:
-                // SpoolManager's native page when installed, otherwise RME's
-                // provider-aware dialog for Spoolman or internal inventory.
-                window.setTimeout(self.showFilamentMapping, 0);
-                self.providerSyncNotice = new PNotify({
-                    title: "Filament resynchronization required",
-                    text: (pending.message || "Filament selections changed.") +
-                        (self.spoolManagerProvider() ?
-                            " Review every tool on the SpoolManager mapping page." :
-                            " Review every tool in the RME mapping page."),
-                    type: "notice",
-                    hide: false
-                });
-            }
-        };
+        // Provider reconciliation is shown inline, never as a popup or an
+        // automatically opened mapping page. Repeated provider events must not
+        // navigate away from the operator or trigger inventory-refresh loops.
+        self.canSyncFilaments = ko.pureComputed(function () {
+            return !!ko.unwrap(self.loginState.isUser) && self.state().connected &&
+                self.state().supported && !self.chamberLightPrinterBusy() &&
+                !self.navbarTransferActive() && !self.transportRecoveryRequired();
+        });
         self.updateToolmapNotice = function (prompt) {
             var key = prompt && prompt.kind === "toolmap" ?
                 [prompt.updated, prompt.filename, prompt.count].join(":") : "";
@@ -999,9 +981,6 @@ $(function () {
                     new PNotify({title: "Printer file stored on Pi", text: download.name, type: "success"});
                 }
             }
-            self.updateProviderSyncNotice(
-                value.spoolmanager && value.spoolmanager.pending_provider_sync
-            );
             var prompt = value.prompt || {};
             self.updateToolmapNotice(prompt);
             self.updateFirmwareRecoveryNotice(value.workflow, prompt);
