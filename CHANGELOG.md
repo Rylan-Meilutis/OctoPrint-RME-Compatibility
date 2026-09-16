@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.0b101 — 2026-09-16
+
+- Keep one INDX tool entry in Temperature and Dashboard, showing the mounted
+  tool's temperature or an explicit Unloaded state. Cover OctoPrint's native
+  Temperature tab container as well as customized layouts.
+- Limit the INDX temperature graph and legend to one tool plus bed and chamber;
+  preserve the full physical telemetry array and history internally.
+- Retain bed/chamber preheat controls when unloaded and prevent heating parked
+  tools. Refresh the plotted selection on tool-state changes.
+- Place the first-layer object preview above the native Cancel Object list.
+  Preserve both plugins' bindings and hide the redundant overview tab/list when
+  integrated; retain the standalone fallback if Cancel Object is unavailable.
+- Add DOM coverage for unload/tool-change/preheat transitions and the embedded
+  object preview. Hardware/browser confirmation remains required.
+
 ## 0.1.0b100 — 2026-09-16
 
 - Resolve printer-side spool aliases against the full provider inventory, not

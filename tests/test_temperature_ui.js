@@ -3,13 +3,13 @@ const assert = require('node:assert/strict');
 const {JSDOM} = require('jsdom');
 const fs = require('node:fs');
 const api = require('../octoprint_rme_compatibility/static/js/passive_tools.js');
-const dom = new JSDOM(`<!doctype html><div id="temperature"><table><tbody>
+const dom = new JSDOM(`<!doctype html><div id="temp"><table><tbody>
 <!-- ko foreach: tools --><tr data-bind="template: {name: 'temprow-template'}"></tr><!-- /ko -->
 <tr data-bind="template: {name: 'temprow-template', data: bedTemp}"></tr>
 <tr data-bind="template: {name: 'temprow-template', data: chamberTemp}"></tr>
 </tbody></table></div>
 <div id="tab_plugin_dashboard"><!-- ko foreach: temperatureModel.tools -->
-<span class="tool" data-bind="text: key"></span><!-- /ko -->
+<span class="tool" data-bind="text: Math.round($parent.convertTemp(actual())) + $parent.tempSymbol()"></span><!-- /ko -->
 <span data-bind="text: temperatureModel.bedTemp.actual"></span>
 <span data-bind="text: temperatureModel.chamberTemp.actual"></span></div>
 <script type="text/html" id="temprow-template"><td data-bind="text: key"></td>
@@ -31,24 +31,49 @@ const vm = {tools: ko.observableArray(Array.from({length: 8}, (_, n) => item('to
 const template = w.document.getElementById('temprow-template');
 template.innerHTML = api.install(vm, state, ko.unwrap, template.innerHTML, String, () => 'rejected');
 api.installRows(w.document);
-ko.applyBindings(vm, w.document.getElementById('temperature'));
-ko.applyBindings({temperatureModel: vm}, w.document.getElementById('tab_plugin_dashboard'));
-assert.equal(w.document.querySelectorAll('#temperature tr').length, 3);
+ko.applyBindings(vm, w.document.getElementById('temp'));
+ko.applyBindings({temperatureModel: vm, convertTemp: x => x, tempSymbol: () => '°C'}, w.document.getElementById('tab_plugin_dashboard'));
+assert.equal(w.document.querySelectorAll('#temp tr').length, 3);
 assert.equal(w.document.querySelectorAll('#tab_plugin_dashboard .tool').length, 1);
-assert(!w.document.getElementById('temperature').textContent.includes('-1'));
-const form = w.document.querySelector('#temperature form');
+assert(!w.document.getElementById('temp').textContent.includes('-1'));
+const form = w.document.querySelector('#temp form');
 form.dispatchEvent(new w.Event('submit', {bubbles: true, cancelable: true}));
 assert.equal(sent[0], 'M104 S200'); // Not T3: the physical slot is mapped to logical T0.
 vm.setTargetToValue(vm.chamberTemp, 45);
 vm.setTargetToValue(vm.bedTemp, 70);
 assert.equal(sent[1], 'M141 S45');
 assert.deepEqual(sent[2], ['bed', 70]);
+// Native preheat-all walks all physical rows. Only the mounted tool may send
+// a nozzle command; bed and chamber keep their independent targets.
+function preheat() {
+    vm.tools().forEach(entry => vm.setTargetToValue(entry, 215));
+    vm.setTargetToValue(vm.bedTemp, 60);
+    vm.setTargetToValue(vm.chamberTemp, 35);
+}
+sent.length = 0;
+preheat();
+assert.deepEqual(sent, ['M104 S215', ['bed', 60], 'M141 S35']);
 state({...state(), active_tool: {physical: null}});
-assert.equal(w.document.querySelectorAll('#temperature tr').length, 2);
-assert.equal(w.document.querySelectorAll('#tab_plugin_dashboard .tool').length, 0);
+assert.equal(w.document.querySelectorAll('#temp tr').length, 3);
+assert.equal(w.document.querySelectorAll('#tab_plugin_dashboard .tool').length, 1);
+assert.equal(w.document.querySelector('#tab_plugin_dashboard .tool').textContent, 'Unloaded');
+assert(w.document.getElementById('temp').textContent.includes('Unloaded'));
+assert(w.document.getElementById('temp').textContent.includes('60'));
+assert(w.document.getElementById('temp').textContent.includes('35'));
 assert.equal(vm.tools().length, 8); // Never corrupt telemetry indexing.
+sent.length = 0;
+preheat();
+assert.deepEqual(sent, [['bed', 60], 'M141 S35']);
+vm.tools()[3].actual(-1);
+vm.tools()[7].actual(225);
+state({...state(), active_tool: {physical: 7}});
+assert.equal(w.document.querySelector('#tab_plugin_dashboard .tool').textContent, '225°C');
+assert.equal(w.document.querySelectorAll('#temp tr').length, 3);
+sent.length = 0;
+preheat();
+assert.deepEqual(sent, ['M104 S215', ['bed', 60], 'M141 S35']);
 state({...state(), supported: false});
-assert.equal(w.document.querySelectorAll('#temperature tr').length, 10);
+assert.equal(w.document.querySelectorAll('#temp tr').length, 10);
 assert.equal(w.document.querySelectorAll('#tab_plugin_dashboard .tool').length, 8);
 dom.window.close();
 console.log('INDX Temperature/Dashboard bindings and heater controls passed');

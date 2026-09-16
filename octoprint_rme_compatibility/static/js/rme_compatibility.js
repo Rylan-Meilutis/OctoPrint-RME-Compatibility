@@ -95,6 +95,7 @@ $(function () {
             };
             self.state.subscribe(function (state) {
                 if (RmePassiveTools.isIndx(state)) parameters[4].hasChamber(true);
+                parameters[4].updatePlot();
             });
         }
         self.transportRecoveryRequired = ko.pureComputed(function () {
@@ -1662,7 +1663,18 @@ $(function () {
                 }
             }, 1000);
         };
+        self.integrateCancelObjectPreview = function () {
+            var list = $("#tab_plugin_cancelobject #cancel-table");
+            var preview = $("#rme-object-overview");
+            if (!list.length || !preview.length) return;
+            // Both plugins have bound their own roots already. Moving the node
+            // retains RME's context without rebinding Cancel Object's controls.
+            preview.detach().insertBefore(list);
+            preview.find(".rme-object-list").hide();
+            $("a[href='#tab_plugin_rme_compatibility_objects']").closest("li").hide();
+        };
         self.onAllBound = function () {
+            self.integrateCancelObjectPreview();
             // Move the already-bound controls once, preserving their KO context.
             if ($("#control").length) $("#rme-print-controls").detach().appendTo("#control");
             self.allViewModelsBound = true;
