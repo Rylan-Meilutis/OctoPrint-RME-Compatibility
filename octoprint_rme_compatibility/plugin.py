@@ -42,6 +42,7 @@ from .spoolmanager import (
     spool_alias,
 )
 from .storage import StateStore, TransferManifestStore
+from .preview import read_preview
 from .uploader import FirmwareUploader, UploadError, firmware_metadata
 
 
@@ -231,6 +232,7 @@ class RmeCompatibilityPlugin(
             "workflow": None,
             "prompt": None,
             "dialog": None,
+            "spooljoin": {"supported": None, "entries": []},
             "firmware": {
                 "status": "idle",
                 "filename": None,
@@ -439,6 +441,8 @@ class RmeCompatibilityPlugin(
                 "data_bind": "visible: chamberLightAvailable",
             },
             {"type": "tab", "name": "RME", "custom_bindings": True},
+            {"type": "tab", "name": "Object overview", "suffix": "_objects",
+             "template": "rme_compatibility_objects.jinja2", "custom_bindings": True},
             {"type": "settings", "name": "RME Compatibility", "custom_bindings": True},
         ]
 
@@ -501,6 +505,9 @@ class RmeCompatibilityPlugin(
             "reset_toolmap": [],
             "apply_machine_profile": [],
             "query_controls": [],
+            "query_spooljoin": [],
+            "add_spooljoin": ["from", "to"],
+            "reset_spooljoin": [],
             "ui_control": ["action", "value"],
             "lock_now": [],
             "lock_unlock": ["pin"],
@@ -602,6 +609,21 @@ class RmeCompatibilityPlugin(
             self._apply_machine_profile()
         elif command == "query_controls":
             self._schedule_configuration_refresh("all")
+        elif command == "query_spooljoin":
+            self._schedule_configuration_refresh("spooljoin")
+        elif command in ("add_spooljoin", "reset_spooljoin"):
+            with self._state_lock:
+                if self._state["spooljoin"].get("supported") is not True:
+                    raise ValueError("SpoolJoin support has not been confirmed")
+                capacity = int(self._state["machine"].get("tool_capacity", 0))
+            if command == "add_spooljoin":
+                source, target = str(data["from"]), str(data["to"])
+                if not all(re.fullmatch(r"\d+", v) and int(v) < capacity for v in (source, target)) or source == target:
+                    raise ValueError("Select two different valid physical tools")
+                frame = "@RME SPOOLJOIN ADD from=%d to=%d" % (int(source), int(target))
+            else:
+                frame = "@RME SPOOLJOIN RESET"
+            self._send_commands([self._with_transaction(frame), "@RME SPOOLJOIN QUERY"])
         elif command == "ui_control":
             action = str(data["action"]).upper()
             value = int(data.get("value", 0))
@@ -819,6 +841,18 @@ class RmeCompatibilityPlugin(
     def file_extension_hook(*args, **kwargs):
         """Expose RME firmware and Buddy dumps in OctoPrint's Files UI."""
         return {"model": {"rme_artifact": ["bbf", "bin"]}}
+
+    @octoprint.plugin.BlueprintPlugin.route("/object-preview", methods=["GET"])
+    def object_preview(self):
+        if not Permissions.STATUS.can():
+            flask.abort(403)
+        file_info = (self._printer.get_current_data().get("job") or {}).get("file") or {}
+        path = file_info.get("path")
+        if file_info.get("origin") != "local" or not path or not path.lower().endswith((".gcode", ".gco")):
+            return flask.jsonify(error="Select a local text G-code file first."), 409
+        result = read_preview(self._file_manager.path_on_disk("local", path))
+        result["file"] = path
+        return flask.jsonify(result)
 
     @octoprint.plugin.BlueprintPlugin.route("/selected-spools", methods=["GET"])
     @octoprint.plugin.BlueprintPlugin.route("/filament-report", methods=["GET"])
@@ -1049,6 +1083,7 @@ class RmeCompatibilityPlugin(
                 self._state["workflow"] = None
                 self._state["prompt"] = None
                 self._state["dialog"] = None
+                self._state["spooljoin"] = {"supported": None, "entries": []}
                 self._suppressed_refresh_transactions.clear()
                 self._provider_firmware_signature = None
                 self._pending_provider_profile_sync = None
@@ -1885,6 +1920,12 @@ class RmeCompatibilityPlugin(
                     }
                 elif (self._state.get("prompt") or {}).get("kind") == "firmware" and not (self._state.get("prompt") or {}).get("slot_selection"):
                     self._state["prompt"] = None
+            elif kind == "spooljoin":
+                self._state["spooljoin"] = {"supported": True, "entries": [], "count": record.get("count", 0)}
+            elif kind == "spooljoin_entry":
+                self._state["spooljoin"]["entries"].append({
+                    key: record[key] for key in ("index", "from", "to")
+                })
             elif kind == "toolmap":
                 self._toolmap_supported = True
                 self._toolmap_probe_sent = False
@@ -2142,6 +2183,8 @@ class RmeCompatibilityPlugin(
                 self._defer(self._accept_firmware_spool, dict(record))
             elif kind == "rme_error":
                 message = record["message"].lower()
+                if "unsupported" in message and "spool_join" in message:
+                    self._state["spooljoin"] = {"supported": False, "entries": []}
                 if "workflow=indx" in message:
                     follow_up.append("query_dialog_priority")
                 unsupported_toolmap = (
@@ -2156,7 +2199,7 @@ class RmeCompatibilityPlugin(
                     # injecting a query/error into later configuration batches.
                     self._toolmap_supported = False
                     self._toolmap_probe_sent = False
-                else:
+                elif not ("unsupported" in message and "spool_join" in message):
                     errors = self._state["errors"]
                     errors.append({
                         "message": record["message"], "time": int(time.time())
@@ -2523,6 +2566,7 @@ class RmeCompatibilityPlugin(
                 self._toolmap_probe_sent = True
                 toolmap_queries = ["@RME TOOLMAP QUERY"]
         queries = {
+            "spooljoin": ["@RME SPOOLJOIN QUERY"] if self._state["spooljoin"].get("supported") is not False else [],
             "lock": ["@RME LOCK QUERY"],
             "theme": ["@RME THEME QUERY"],
             "light": ["@RME LIGHT QUERY"],
@@ -2534,7 +2578,7 @@ class RmeCompatibilityPlugin(
         if domain in queries:
             return list(queries[domain])
         result = []
-        for name in ("lock", "theme", "light", "filament", "manufacturer", "toolmap"):
+        for name in ("lock", "theme", "light", "filament", "manufacturer", "toolmap", "spooljoin"):
             for command in queries[name]:
                 if command not in result:
                     result.append(command)

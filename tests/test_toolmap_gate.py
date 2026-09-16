@@ -2162,6 +2162,26 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual("Calibration failed", plugin._state["prompt"]["message"])
         self.assertEqual(["Retry", "Abort"], plugin._state["prompt"]["actions"])
 
+    def test_spooljoin_snapshots_and_commands(self):
+        from octoprint.access.permissions import Permissions
+        Permissions.CONTROL = types.SimpleNamespace(can=lambda: True)
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        plugin._state["machine"]["tool_capacity"] = 5
+        sent = []
+        plugin._send_commands = sent.extend
+        plugin._handle_record(parse_line("RME_SPOOLJOIN count=1"))
+        plugin._handle_record(parse_line("RME_SPOOLJOIN_ENTRY index=0 from=0 to=2"))
+        self.assertEqual(2, plugin._state["spooljoin"]["entries"][0]["to"])
+        plugin.on_api_command("add_spooljoin", {"from": 2, "to": 4})
+        self.assertTrue(sent[0].startswith("@RME SPOOLJOIN ADD from=2 to=4 tx="))
+        self.assertEqual(409, plugin.on_api_command("add_spooljoin", {"from": 2, "to": 2})[1])
+        plugin._handle_record(parse_line("RME_SPOOLJOIN count=0"))
+        self.assertEqual([], plugin._state["spooljoin"]["entries"])
+        plugin._handle_record(parse_line("echo:RME_ERROR workflow=spool_join code=unsupported feature=spool_join"))
+        self.assertFalse(plugin._state["spooljoin"]["supported"])
+        self.assertEqual([], plugin._state["errors"])
+
     def test_startup_controls_refresh_is_deferred(self):
         from octoprint.access.permissions import Permissions
         Permissions.CONTROL = types.SimpleNamespace(can=lambda: True)

@@ -81,13 +81,13 @@
         <h4>Tool mapping before print</h4>
         <p data-bind="text: promptMessage"></p>
         <p><small data-bind="text: toolmapTimeoutText"></small></p>
-        <table class="table table-condensed">
+        <table class="table table-condensed rme-tool-routing">
             <thead><tr><th>Logical tool</th><th>Use physical tool</th></tr></thead>
             <tbody data-bind="foreach: mappingRows">
                 <tr>
-                    <td data-bind="text: 'T' + logical"></td>
+                    <td><strong data-bind="text: 'T' + logical"></strong><small> Slicer tool →</small></td>
                     <td>
-                        <select class="input-small" data-bind="options: $parent.physicalTools, value: physical, optionsText: function(i) { return 'Tool ' + i; }"></select>
+                        <select aria-label="Physical tool and loaded material" data-bind="options: $parent.physicalTools, value: physical, optionsText: $parent.mappingToolLabel"></select>
                     </td>
                 </tr>
             </tbody>
@@ -98,6 +98,21 @@
         <p class="help-block">No print-file G-code is sent until this mapping is confirmed. Validation runs afterward against the remapped physical tools.</p>
     </div>
 
+    <div class="rme-card" data-bind="visible: hasMachine() && spooljoin().supported !== false">
+        <h4>SpoolJoin — automatic fallback</h4>
+        <p>Physical tools are used in chain order when filament runs out. These joins apply to the print session, not a saved printer setting.</p>
+        <button class="btn" data-bind="click: querySpooljoin">Refresh</button>
+        <div data-bind="visible: spooljoin().supported === true">
+            <ul data-bind="foreach: spooljoin().entries || []"><li data-bind="text: 'T' + from + ' → T' + to"></li></ul>
+            <div class="rme-join-editor">
+                <label>From <select data-bind="options: physicalTools, value: spooljoinFrom, optionsText: mappingToolLabel"></select></label>
+                <label>Fallback <select data-bind="options: physicalTools, value: spooljoinTo, optionsText: mappingToolLabel"></select></label>
+                <button class="btn btn-primary" data-bind="click: addSpooljoin">Append fallback</button>
+                <button class="btn" data-bind="click: resetSpooljoin">Clear all joins</button>
+            </div>
+            <p class="help-block">Choose compatible loaded materials. The firmware rejects disabled tools, duplicate destinations and loops.</p>
+        </div>
+    </div>
     <div class="rme-card" data-bind="visible: hasMachine">
         <h4>Discovered machine</h4>
         <p data-bind="text: machineSummary"></p>

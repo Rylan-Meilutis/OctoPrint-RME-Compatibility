@@ -1,0 +1,26 @@
+<div class="rme-panel">
+    <h3>Cancel objects</h3>
+    <p>Requires the Cancel Object plugin and object labels in the G-code.
+       Click a first-layer shape to cancel that object after confirmation.
+       Objects without a first-layer footprint are not drawn.</p>
+    <button class="btn" data-bind="click: refreshObjects">Refresh objects</button>
+    <p data-bind="text: objectStatus"></p>
+    <svg class="rme-object-map" data-bind="attr: {viewBox: objectBedBox}" aria-label="First-layer bed view">
+        <polygon fill="none" stroke="#888" stroke-width="0.5" data-bind="attr: {points: objectBedPoints}"></polygon>
+        <!-- ko foreach: objectMap -->
+        <g data-bind="css: {cancelled: cancelled}">
+            <path fill="none" stroke="#08c" stroke-width="0.6" data-bind="attr: {d: path}"></path>
+            <path class="rme-object-hit" fill="none" stroke="transparent" stroke-width="2" role="button" tabindex="0"
+                  data-bind="attr: {d: path, 'aria-label': 'Cancel ' + object}, click: $root.cancelOverviewObject, event: {keydown: function(d,e) { if(e.key === 'Enter') $root.cancelOverviewObject(d); return true; }}">
+                <title data-bind="text: object"></title>
+            </path>
+        </g>
+        <!-- /ko -->
+    </svg>
+    <div class="rme-object-list" data-bind="foreach: cancelObjects">
+        <p><strong data-bind="text: object"></strong>
+            <span data-bind="visible: cancelled"> — canceled</span>
+            <button class="btn btn-mini" data-bind="click: $root.cancelOverviewObject, enable: !cancelled">Cancel object</button>
+        </p>
+    </div>
+</div>

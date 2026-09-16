@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.0b91 — 2026-09-15
+
+- Add an Object overview tab with first-layer extrusion paths on the slicer's
+  bed outline. Select a part visually and confirm cancellation through the
+  installed Cancel Object plugin; preserve one selection per object label.
+- Support linear paths and relative-center XY arcs in labeled Orca/Prusa text
+  G-code, with explicit warnings for unsupported arcs or preview limits.
+- Limit Cancel Object's top-bar label width and retain the full name on hover.
+- Improve tool mapping with physical-tool/material labels and responsive sizing.
+- Add RME SpoolJoin query, append-fallback and reset controls with capability
+  detection and firmware validation.
+- Leave OctoPrint and Dashboard time/height metadata untouched; do not ship
+  the experimental metadata display overrides.
+
 ## 0.1.0b90 — 2026-09-14
 
 - Handle live G427 and tool-offset wizard emissions from the updated RME

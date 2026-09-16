@@ -5,6 +5,62 @@ $(function () {
         self.loginState = parameters[1];
         self.printerState = parameters[2];
         self.files = parameters[3];
+        self.cancelObjects = ko.observableArray([]);
+        self.objectPreview = ko.observable({objects: [], bed: []});
+        self.previewFile = null;
+        function updateSelectedPreview() {
+            var path = ko.unwrap(self.printerState.filepath);
+            if (path !== self.previewFile) {
+                self.previewFile = path;
+                self.objectPreview({objects: [], bed: []});
+                if (path) $.getJSON(BASEURL + "plugin/rme_compatibility/object-preview").done(function (data) {
+                    if (self.previewFile === path && data.file === path) self.objectPreview(data);
+                });
+            }
+        }
+        self.objectBedBox = ko.pureComputed(function () {
+            var bed = self.objectPreview().bed || [];
+            if (bed.length < 3) return "0 0 250 250";
+            var xs = bed.map(function (p) { return p[0]; }), ys = bed.map(function (p) { return p[1]; });
+            return [Math.min(...xs), -Math.max(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)].join(" ");
+        });
+        self.objectBedPoints = ko.pureComputed(function () {
+            return (self.objectPreview().bed || []).map(function (p) { return p[0] + "," + (-p[1]); }).join(" ");
+        });
+        self.objectStatus = ko.observable("Refresh to load the current object list.");
+        self.refreshObjects = function () {
+            self.objectPreview({objects: [], bed: []});
+            $.getJSON(BASEURL + "plugin/rme_compatibility/object-preview").done(function (data) {
+                self.objectPreview(data);
+                self.objectStatus("First-layer extrusion paths. " + (data.warnings || []).join(" "));
+            }).fail(function (xhr) { self.objectStatus(responseError(xhr)); });
+            OctoPrint.simpleApiCommand("cancelobject", "objlist", {})
+                .fail(function (xhr) { self.objectStatus(responseError(xhr)); });
+        };
+        self.cancelOverviewObject = function (obj) {
+            if (obj.id === undefined || obj.id === null) {
+                self.objectStatus("No unique Cancel Object mapping for this shape. Refresh the object list first.");
+                return;
+            }
+            if (obj.cancelled || !window.confirm("Cancel object " + obj.object + "?")) return;
+            var file = self.objectPreview().file;
+            $.getJSON(BASEURL + "plugin/rme_compatibility/object-preview").done(function (data) {
+                if (!file || data.file !== file) { self.refreshObjects(); return; }
+                OctoPrint.simpleApiCommand("cancelobject", "cancel", {cancelled: obj.id})
+                .done(self.refreshObjects)
+                .fail(function (xhr) { self.objectStatus(responseError(xhr)); });
+            }).fail(function (xhr) { self.objectStatus(responseError(xhr)); });
+        };
+        self.objectMap = ko.pureComputed(function () {
+            return (self.objectPreview().objects || []).map(function (o) {
+                var matches = self.cancelObjects().filter(function (c) { return c.object === o.name; });
+                var match = matches.length === 1 ? matches[0] : {};
+                return {object: o.name, id: match.id, cancelled: !!match.cancelled,
+                    path: o.segments.map(function (s) {
+                        return "M" + s[0] + " " + (-s[1]) + "L" + s[2] + " " + (-s[3]);
+                    }).join(" ")};
+            });
+        });
         self.state = ko.observable({
             connected: false,
             supported: false,
@@ -40,6 +96,22 @@ $(function () {
         self.selectedFirmware = ko.observable();
         self.partialCleanupPath = ko.observable("");
         self.mappingRows = ko.observableArray([]);
+        self.spooljoinFrom = ko.observable(0);
+        self.spooljoinTo = ko.observable(1);
+        self.spooljoin = ko.pureComputed(function () { return self.state().spooljoin || {}; });
+        self.querySpooljoin = function () { self.command("query_spooljoin"); };
+        self.addSpooljoin = function () {
+            self.command("add_spooljoin", {from: self.spooljoinFrom(), to: self.spooljoinTo()});
+        };
+        self.resetSpooljoin = function () {
+            if (window.confirm("Clear all SpoolJoin chains for this print session?")) self.command("reset_spooljoin");
+        };
+        self.mappingToolLabel = function (tool) {
+            var rows = self.state().loaded_filaments || [];
+            var loaded = rows.filter(function (row) { return Number(row.tool) === Number(tool); })[0] || {};
+            return "T" + tool + " · " + (loaded.material || "Unknown material") +
+                (loaded.color_name ? " · " + loaded.color_name : "");
+        };
         self.mappingEnabled = ko.observable(true);
         self.physicalTools = ko.observableArray([]);
         self.spoolSelectionRows = ko.observableArray([]);
@@ -1484,6 +1556,7 @@ $(function () {
             window.setInterval(function () {
                 self.tick(Date.now());
                 updateCorePrintClock();
+                updateSelectedPreview();
                 if (self.workflowVisible() || $("#rme-workflow-overlay, .rme-dashboard-workflow-active").length) {
                     scheduleCoreWorkflowRender();
                 }
@@ -1504,6 +1577,12 @@ $(function () {
         };
         self.onDataUpdaterPluginMessage = function (plugin, data) {
             if (plugin === "rme_compatibility") self.acceptState(data);
+            if (plugin === "cancelobject" && Array.isArray(data.objects)) {
+                self.cancelObjects(data.objects.filter(function (o) { return !o.ignore; }));
+            }
+            if (plugin === "cancelobject" && data.navBarActive) {
+                $("#navbar_plugin_cancelobject .navbar-text").attr("title", "Current Object: " + data.navBarActive);
+            }
         };
 
         function normalizeDatabaseId(value) {
@@ -2109,6 +2188,6 @@ $(function () {
         construct: RmeCompatibilityViewModel,
         dependencies: ["settingsViewModel", "loginStateViewModel", "printerStateViewModel", "filesViewModel"],
         elements: ["#navbar_plugin_rme_compatibility", "#navbar_plugin_rme_compatibility_light",
-            "#tab_plugin_rme_compatibility", "#settings_plugin_rme_compatibility"]
+            "#tab_plugin_rme_compatibility", "#tab_plugin_rme_compatibility_objects", "#settings_plugin_rme_compatibility"]
     });
 });
