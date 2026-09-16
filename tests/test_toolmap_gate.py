@@ -10,6 +10,7 @@ import threading
 import time
 import types
 import unittest
+from unittest.mock import patch
 
 
 def _install_octoprint_stubs():
@@ -211,7 +212,8 @@ class ToolmapGateTests(unittest.TestCase):
                 commands.append(command)
                 plugin._state["session"]["active"] = True
             plugin._send_command = send
-            plugin._keepalive_loop()
+            with patch("time.monotonic", side_effect=[0, 0, 11, 11]):
+                plugin._keepalive_loop()
             self.assertEqual(["@RME SESSION OPEN events=31 legacy=0",
                               "@RME SESSION KEEPALIVE"], commands)
 

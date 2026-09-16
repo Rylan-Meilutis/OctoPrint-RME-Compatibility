@@ -178,6 +178,7 @@ def parse_line(raw_line):
         result["name"] = unquote(str(result.get("name", "")))
         return result
     for prefix, record in (
+        ("RME_TUNE ", "tune"),
         ("RME_LIGHT_STATE ", "light_state"),
         ("RME_SPOOLJOIN_ENTRY ", "spooljoin_entry"),
         ("RME_SPOOLJOIN ", "spooljoin"),

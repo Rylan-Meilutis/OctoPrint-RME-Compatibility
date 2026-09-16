@@ -184,6 +184,8 @@ class RmeCompatibilityPlugin(
         # event, so retain a synthetic parent from transmission until the
         # command's terminal serial record arrives.
         self._auto_pa_active = False
+        self._tune_query_pending = False
+        self._tune_last_mutation = 0.0
 
     @staticmethod
     def _empty_state():
@@ -200,6 +202,7 @@ class RmeCompatibilityPlugin(
             "lock": {},
             "theme": {},
             "light": {},
+            "tune": {},
             "filaments": [],
             "manufacturers": {"profiles": [], "loaded": []},
             # M865 loadout metadata is keyed by the firmware's physical tool
@@ -517,6 +520,7 @@ class RmeCompatibilityPlugin(
             "set_persistent_lights": ["screen", "chamber", "status"],
             "set_chamber_light_mode": ["mode"],
             "query_chamber_light": [],
+            "set_print_override": ["kind", "value"],
             "set_filament": ["slot", "name", "nozzle", "preheat", "bed", "visible"],
             "stage_firmware": ["filename"],
             "stage_and_flash_firmware": ["filename"],
@@ -682,8 +686,15 @@ class RmeCompatibilityPlugin(
             self._send_command(self._with_transaction(
                 "@RME LIGHT SET screen=0x%08X chamber=0x%08X status=0x%08X" % tuple(values)
             ))
+        elif command == "set_print_override":
+            self._set_print_override(data)
         elif command == "set_chamber_light_mode":
             mode = str(data["mode"]).lower()
+            with self._state_lock:
+                modern_light = self._state["machine"].get("tune") == 1
+            if modern_light:
+                self._set_print_override({"kind": "light", "value": {"off": 0, "temporary": 1, "latched": 2}.get(mode, -1)})
+                return flask.jsonify({"ok": True})
             if mode == "temporary":
                 # A settings-free M154 is RME's normal activity wake. It uses
                 # the configured Active brightness and expires through the
@@ -1074,6 +1085,8 @@ class RmeCompatibilityPlugin(
                 # reboot. In particular, an old live chamber value otherwise
                 # leaves the navbar bulb lit until discovery eventually runs.
                 self._state["light"] = {}
+                self._state["tune"] = {}
+                self._tune_query_pending = False
                 self._active_tool_was_single_tool_default = False
                 self._pending_tool_park = False
                 self._auto_pa_active = False
@@ -1926,6 +1939,13 @@ class RmeCompatibilityPlugin(
                 self._state["spooljoin"]["entries"].append({
                     key: record[key] for key in ("index", "from", "to")
                 })
+            elif kind == "tune":
+                # Replace one bounded snapshot, never append it to event history.
+                capacity = min(8, int(self._state["machine"].get("tool_capacity", 0)))
+                keys = ("speed", "stealth", "light") + tuple("F%d" % i for i in range(capacity))
+                self._state["tune"] = {key: record[key] for key in keys if key in record}
+                self._state["tune"]["updated"] = time.time()
+                self._tune_query_pending = False
             elif kind == "toolmap":
                 self._toolmap_supported = True
                 self._toolmap_probe_sent = False
@@ -3033,7 +3053,8 @@ class RmeCompatibilityPlugin(
 
     def _keepalive_loop(self):
         """Renew the required RME lease without polling configuration state."""
-        while not self._stop.wait(10):
+        next_keepalive = 0.0
+        while not self._stop.wait(2):
             with self._state_lock:
                 active = self._state["session"].get("active")
                 connected = self._state["connected"]
@@ -3049,6 +3070,10 @@ class RmeCompatibilityPlugin(
             )
             if supported and connected and not transfer_busy and not recovery_required:
                 try:
+                    self._query_tune()
+                    if time.monotonic() < next_keepalive:
+                        continue
+                    next_keepalive = time.monotonic() + 10
                     if active:
                         self._send_command("@RME SESSION KEEPALIVE")
                     elif self._settings.get_boolean(["auto_open_session"]):
@@ -3063,6 +3088,53 @@ class RmeCompatibilityPlugin(
             if not transfer_busy and not recovery_required:
                 if self._stats_supported is None:
                     self._defer(self._probe_stats)
+
+    def _query_tune(self):
+        with self._state_lock:
+            if self._state["machine"].get("tune") != 1 or self._tune_query_pending:
+                return
+            self._tune_query_pending = True
+        try:
+            self._send_command("@RME TUNE QUERY")
+        except Exception:
+            with self._state_lock:
+                self._tune_query_pending = False
+            raise
+
+    def _set_print_override(self, data):
+        if (self._uploader and self._uploader.busy) or (self._file_service and self._file_service.busy):
+            raise RuntimeError("Print controls are unavailable during a transfer")
+        with self._state_lock:
+            if self._state["machine"].get("tune") != 1:
+                raise ValueError("Firmware does not support synchronized print controls")
+            if self._state.get("lock", {}).get("locked"):
+                raise ValueError("Printer is locked")
+            capacity = min(8, int(self._state["machine"].get("tool_capacity", 0)))
+        kind = data.get("kind")
+        raw = str(data.get("value", ""))
+        if not re.fullmatch(r"\d{1,3}", raw):
+            raise ValueError("Override must be a whole number")
+        value = int(raw)
+        if kind == "speed" and 10 <= value <= 300:
+            command = "M220 S%d" % value
+        elif kind == "flow" and 50 <= value <= 150:
+            tool = str(data.get("tool", ""))
+            if not re.fullmatch(r"\d", tool) or not 0 <= int(tool) < capacity:
+                raise ValueError("Invalid physical tool slot")
+            command = "M221 T%d P1 S%d" % (int(tool), value)
+        elif kind == "stealth" and value in (0, 1):
+            command = "M9150" if value else "M9140"
+        elif kind == "light" and value in (0, 1, 2):
+            command = "@RME LIGHT MODE value=%d" % value
+        else:
+            raise ValueError("Invalid print override")
+        # One deliberate change per second; never enqueue every slider movement.
+        with self._state_lock:
+            now = time.monotonic()
+            if now - self._tune_last_mutation < 1:
+                raise ValueError("Wait a moment before changing another override")
+            self._tune_last_mutation = now
+        self._send_command(command)
 
     def _print_job_active(self):
         """Return whether OctoPrint's job state owns the serial queue."""

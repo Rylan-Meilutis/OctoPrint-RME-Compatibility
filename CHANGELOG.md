@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0b95 — 2026-09-16
+
+- Add print-time Control tab light Off/On/Locked selector, speed, physical-tool
+  flow, and stealth controls with firmware-authoritative state.
+- Show live tool mapping in Control and RME, matching firmware Tune.
+- Capability-gate controls with `tune=1`; preserve older firmware behavior.
+- Bound polling to one outstanding snapshot, throttle changes, and retain
+  transfer/recovery and printer-lock guards. Expired snapshots disable edits.
+- Validated with 198 tests (four skipped) and JavaScript syntax checks.
+  Requires the matching updated 6.10.1-RME firmware for the new controls.
+  Physical two-screen checks and a long-print memory soak remain outstanding.
+
 ## 0.1.0b94 — 2026-09-15
 
 - Suppress expected OctoPrint connection/autodetection, communication timeout,

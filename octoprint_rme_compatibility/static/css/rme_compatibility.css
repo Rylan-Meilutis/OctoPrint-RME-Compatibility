@@ -409,3 +409,6 @@
     padding-top: 8px;
     width: 100%;
 }
+.rme-light-positions { display: flex; justify-content: space-between; max-width: 280px; }
+#rme-light-mode { width: 280px; }
+#rme-print-controls { margin: 12px 0; padding: 12px; }

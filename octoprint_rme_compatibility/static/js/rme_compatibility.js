@@ -1,4 +1,8 @@
 $(function () {
+    // Read-only firmware state: never write a browser slider value into it.
+    ko.bindingHandlers.rmeLightState = {
+        update: function (element, valueAccessor) { element.value = ko.unwrap(valueAccessor()); }
+    };
     function RmeCompatibilityViewModel(parameters) {
         var self = this;
         self.settings = parameters[0];
@@ -118,6 +122,33 @@ $(function () {
         self.newSpoolTool = ko.observable(0);
         self.unlockPin = ko.observable("");
         self.lightScreen = ko.observable(100);
+        self.tuneSpeed = ko.observable(100);
+        self.tuneFlows = ko.observableArray([]);
+        self.tune = ko.pureComputed(function () { return self.state().tune || {}; });
+        self.tuneAvailable = ko.pureComputed(function () {
+            return !!self.state().connected && Number((self.state().machine || {}).tune) === 1;
+        });
+        self.tuneEnabled = ko.pureComputed(function () {
+            var updated = Number(self.tune().updated || 0) * 1000;
+            return self.tuneAvailable() && self.tick() - updated < 15000 &&
+                !self.transportRecoveryRequired() && !self.navbarTransferActive() &&
+                !(self.state().lock || {}).locked;
+        });
+        self.tuneLight = ko.pureComputed(function () { return self.tune().light === undefined ? -1 : Number(self.tune().light); });
+        self.applyTuneSpeed = function () { self.command("set_print_override", {kind: "speed", value: Number(self.tuneSpeed())}); };
+        self.applyTuneFlow = function (row) { self.command("set_print_override", {kind: "flow", tool: row.tool, value: Number(row.draft())}); };
+        self.toggleTuneStealth = function () { self.command("set_print_override", {kind: "stealth", value: Number(self.tune().stealth) ? 0 : 1}); };
+        self.changeTuneLight = function (_, event) {
+            self.command("set_print_override", {kind: "light", value: Number(event.target.value)});
+            event.target.value = self.tuneLight();
+        };
+        self.liveMapping = ko.pureComputed(function () {
+            var map = self.state().toolmap || {}, mapping = map.mapping || {};
+            return Object.keys(mapping).slice(0, 8).map(function (logical) {
+                var physical = map.enabled ? Number(mapping[logical]) : Number(logical);
+                return "T" + logical + " → " + (physical >= 0 ? "Tool " + (physical + 1) : "Unmapped");
+            }).join(" · ");
+        });
         self.lightChamber = ko.observable(100);
         self.lightStatus = ko.observable(100);
         self.lockPinConfig = ko.observable("");
@@ -419,6 +450,7 @@ $(function () {
                 Object.prototype.hasOwnProperty.call(live, "hold");
         });
         self.chamberLightReportedOn = ko.pureComputed(function () {
+            if (self.tuneAvailable()) return self.tuneLight() > 0;
             var live = (self.state().light || {}).live || {};
             // Brightness is authoritative across Active, Idle, and any future
             // firmware lighting state. The state name describes why the light
@@ -426,17 +458,20 @@ $(function () {
             return Number(live.chamber) > 0;
         });
         self.chamberLightOn = ko.pureComputed(function () {
+            if (self.tuneAvailable()) return self.tuneLight() > 0;
             // The firmware snapshot is authoritative, including lighting
             // entered from the printer itself or another host. Keep the local
             // flag only as optimistic feedback while its reply is in flight.
             return self.chamberLightTemporary() || self.chamberLightReportedOn() || self.chamberLightHeld();
         });
         self.chamberLightHeld = ko.pureComputed(function () {
+            if (self.tuneAvailable()) return self.tuneLight() === 2;
             var live = (self.state().light || {}).live || {};
             return Number(live.hold) > 0 || self.chamberLightLatchPending();
         });
         self.chamberLightTitle = ko.pureComputed(function () {
             if (self.chamberLightDisabled()) return self.chamberLightBlockedReason();
+            if (self.tuneAvailable()) return "Press to toggle the chamber light; select Locked in Control to keep it on";
             if (self.chamberLightHeld()) return "Chamber light latched on; press to turn off";
             return self.chamberLightOn() ?
                 "Chamber light temporarily on; double-press within two seconds to latch, or press later to turn off" :
@@ -553,7 +588,8 @@ $(function () {
             return "Chamber light control is unavailable";
         });
         self.chamberLightBlocked = ko.pureComputed(function () {
-            return self.chamberLightPrinterBusy() || self.transportRecoveryRequired() || self.navbarTransferActive();
+            if (self.tuneAvailable()) return !self.tuneEnabled();
+            return (self.chamberLightPrinterBusy() && !self.tuneAvailable()) || self.transportRecoveryRequired() || self.navbarTransferActive();
         });
         self.chamberLightDisabled = ko.pureComputed(function () {
             // Printing owns its lighting profile, and raw RME transfers own
@@ -931,6 +967,23 @@ $(function () {
             if (!value) return;
             var oldPrompt = self.state().prompt || {};
             self.state(value);
+            if (value.tune) {
+                var editingTune = $(document.activeElement).closest("#rme-print-controls").length;
+                if (!editingTune && value.tune.speed !== undefined) self.tuneSpeed(value.tune.speed);
+                var count = Math.min(8, Number((value.machine || {}).tool_capacity) || 0);
+                if (self.tuneFlows().length !== count) {
+                    self.tuneFlows(Array.from({length: count}, function (_, tool) {
+                        return {tool: tool, label: "Tool " + (tool + 1), draft: ko.observable(100), actual: ko.observable(100)};
+                    }));
+                }
+                self.tuneFlows().forEach(function (row) {
+                    var actual = value.tune["F" + row.tool];
+                    if (actual !== undefined) {
+                        row.actual(actual);
+                        if (!editingTune) row.draft(actual);
+                    }
+                });
+            }
             var reportedLightHold = Number((((value.light || {}).live || {}).hold));
             if (reportedLightHold > 0 && self.chamberLightLatchPending()) {
                 self.chamberLightLatchPending(false);
@@ -1225,6 +1278,10 @@ $(function () {
         self.pressChamberLightButton = function () {
             var now = Date.now();
             if (self.chamberLightDisabled()) return;
+            if (self.tuneAvailable()) {
+                self.command("set_print_override", {kind: "light", value: self.tuneLight() > 0 ? 0 : 1});
+                return;
+            }
             if (self.chamberLightHeld()) {
                 self.chamberLightLastPressAt = 0;
                 self.chamberLightTemporary(false);
@@ -1542,6 +1599,8 @@ $(function () {
             }, 1000);
         };
         self.onAllBound = function () {
+            // Move the already-bound controls once, preserving their KO context.
+            if ($("#control").length) $("#rme-print-controls").detach().appendTo("#control");
             self.allViewModelsBound = true;
             installSpoolManagerPanel();
             installSpoolManagerSidebar();

@@ -1,4 +1,27 @@
 <div class="rme-panel">
+    <section id="rme-print-controls" class="rme-card" data-bind="visible: tuneAvailable">
+        <h4>RME print controls</h4>
+        <p>Live printer state. Changes apply during printing without changing saved light profiles.</p>
+        <div data-bind="visible: tuneLight() >= 0">
+            <label for="rme-light-mode">Chamber light: <strong data-bind="text: ['Off', 'On', 'Locked'][tuneLight()]"></strong></label>
+            <input id="rme-light-mode" type="range" min="0" max="2" step="1" aria-label="Chamber light: Off, On, Locked"
+                data-bind="rmeLightState: tuneLight, event: {change: changeTuneLight}, enable: tuneEnabled">
+            <div class="rme-light-positions"><span>Off</span><span>On (timed)</span><span>Locked on</span></div>
+        </div>
+        <label>Speed (%) — printer: <span data-bind="text: tune().speed"></span>%</label>
+        <input type="number" min="10" max="300" class="input-small" data-bind="value: tuneSpeed, enable: tuneEnabled">
+        <button class="btn" data-bind="click: applyTuneSpeed, enable: tuneEnabled">Apply speed</button>
+        <button class="btn" data-bind="click: toggleTuneStealth, enable: tuneEnabled, text: Number(tune().stealth) ? 'Stealth: On' : 'Stealth: Off', attr: {'aria-pressed': !!Number(tune().stealth)}"></button>
+        <div data-bind="foreach: tuneFlows">
+            <label><span data-bind="text: label"></span> flow — printer: <span data-bind="text: actual"></span>%</label>
+            <input type="number" min="50" max="150" class="input-small" data-bind="value: draft, enable: $root.tuneEnabled">
+            <button class="btn" data-bind="click: $root.applyTuneFlow, enable: $root.tuneEnabled">Apply flow</button>
+        </div>
+        <p data-bind="visible: !tuneEnabled()">Waiting for current printer state, or controls are locked by a transfer/printer lock.</p>
+        <h5>Live tool mapping</h5><p data-bind="text: liveMapping"></p>
+        <small>Logical G-code tools are zero-based; printer tool labels are one-based. Mapping changes are made before a print.</small>
+    </section>
+    <div class="rme-card" data-bind="visible: liveMapping"><h4>Live tool mapping</h4><p data-bind="text: liveMapping"></p></div>
     <div class="rme-status-line">
         <span class="label" data-bind="css: connectionClass, text: connectionText"></span>
         <span class="rme-active-tool" data-bind="visible: activeToolVisible, attr: {title: activeToolText}">
