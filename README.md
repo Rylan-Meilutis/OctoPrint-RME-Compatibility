@@ -1,5 +1,15 @@
 # OctoPrint RME Compatibility
 
+### INDX temperatures
+
+INDX tools are passive when parked. The Temperature tab shows **Parked /
+unavailable** instead of -1°C and hides their target controls; this is not a
+filament-unloaded indication. A tool with a valid reading retains its normal
+temperature controls. All eight tools remain selectable, and bed and chamber
+controls are unchanged. Unavailable graph samples are gaps, not fake zero-degree
+readings. This requires RME machine capability detection and does not change
+raw serial telemetry. Terminal commands and other plugins are not intercepted.
+
 An OctoPrint plugin for the custom Prusa RME Buddy firmware in
 `prusa-firmware-buddy`. It implements the firmware contracts documented in
 `doc/rme_serial_handler_integration.md`, `doc/rme_serial_remote_protocol.md`,

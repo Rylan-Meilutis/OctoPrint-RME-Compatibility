@@ -420,7 +420,7 @@ class RmeCompatibilityPlugin(
 
     def get_assets(self):
         return {
-            "js": ["js/rme_compatibility.js"],
+            "js": ["js/passive_tools.js", "js/rme_compatibility.js"],
             "css": ["css/rme_compatibility.css"],
         }
 

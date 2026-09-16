@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0b96 — 2026-09-16
+
+- INDX Temperature rows show “Parked / unavailable” for tools without a
+  temperature reading, rather than -1°C. This does not mean filament unloaded.
+- Hide unavailable-tool target controls and reject positive target changes
+  from Temperature presets/autosend for those tools. Global Off still works.
+- Omit unavailable INDX tool samples/targets from the temperature graph.
+  Keep all eight logical tools, offsets and raw firmware telemetry unchanged;
+  other printer types retain normal temperature behavior.
+- Validated with 198 Python tests (four skipped), Node regression tests and
+  JavaScript syntax checks. Live browser/tool-change validation is pending.
+
 ## 0.1.0b95 — 2026-09-16
 
 - Add print-time Control tab light Off/On/Locked selector, speed, physical-tool

@@ -78,6 +78,14 @@ $(function () {
             spoolmanager: {},
             firmware_files: []
         });
+        // Constructors run before any view model is bound. Patch the shared
+        // row template here, not in onBeforeBinding (temperature binds first).
+        var temperatureTemplate = $("#temprow-template");
+        if (temperatureTemplate.length && parameters[4]) {
+            temperatureTemplate.html(RmePassiveTools.install(parameters[4], self.state, ko.unwrap,
+                temperatureTemplate.html(), formatTemperature,
+                function () { return OctoPrintClient.createRejectedDeferred(); }));
+        }
         self.transportRecoveryRequired = ko.pureComputed(function () {
             return !!((self.state().firmware || {}).recovery_required);
         });
@@ -2224,7 +2232,7 @@ $(function () {
 
     OCTOPRINT_VIEWMODELS.push({
         construct: RmeCompatibilityViewModel,
-        dependencies: ["settingsViewModel", "loginStateViewModel", "printerStateViewModel", "filesViewModel"],
+        dependencies: ["settingsViewModel", "loginStateViewModel", "printerStateViewModel", "filesViewModel", "temperatureViewModel"],
         elements: ["#navbar_plugin_rme_compatibility", "#navbar_plugin_rme_compatibility_light",
             "#tab_plugin_rme_compatibility", "#tab_plugin_rme_compatibility_objects", "#settings_plugin_rme_compatibility"]
     });
