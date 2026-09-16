@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0b91 — 2026-09-15
+## 0.1.0b92 — 2026-09-15
 
 - Add an Object overview tab with first-layer extrusion paths on the slicer's
   bed outline. Select a part visually and confirm cancellation through the
@@ -13,6 +13,15 @@
   detection and firmware validation.
 - Leave OctoPrint and Dashboard time/height metadata untouched; do not ship
   the experimental metadata display overrides.
+
+## 0.1.0b91 — 2026-09-15
+
+- Automatically reopen expired RME sessions when automatic sessions are enabled,
+  including during printing and paused jobs. This restores the firmware's RME
+  icon and event subscriptions instead of querying an expired lease forever.
+- Preserve query-only mode when automatic sessions are disabled, and preserve
+  file-transfer, firmware-upload, and recovery transport isolation.
+- Add regression coverage for print-time recovery and transport ownership.
 
 ## 0.1.0b90 — 2026-09-14
 

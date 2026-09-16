@@ -185,6 +185,8 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_tool_state_polling_without_active_lease(self):
         plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._settings.values["auto_open_session"] = False
         plugin._state.update(supported=True, connected=True)
         plugin._stats_supported = True
         waits = iter([False, True])
@@ -193,6 +195,42 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._send_command = commands.append
         plugin._keepalive_loop()
         self.assertEqual(["@RME SESSION QUERY"], commands)
+
+    def test_expired_session_reopens_during_print_and_paused_states(self):
+        for state in ("OPERATIONAL", "PRINTING", "PAUSED", "CANCELLING"):
+            plugin = RmeCompatibilityPlugin()
+            plugin._settings = _Settings()
+            plugin._settings.values["auto_open_session"] = True
+            plugin._printer = types.SimpleNamespace(get_state_id=lambda: state)
+            plugin._state.update(supported=True, connected=True)
+            plugin._stats_supported = True
+            waits = iter([False, False, True])
+            plugin._stop = types.SimpleNamespace(wait=lambda seconds: next(waits))
+            commands = []
+            def send(command):
+                commands.append(command)
+                plugin._state["session"]["active"] = True
+            plugin._send_command = send
+            plugin._keepalive_loop()
+            self.assertEqual(["@RME SESSION OPEN events=31 legacy=0",
+                              "@RME SESSION KEEPALIVE"], commands)
+
+    def test_session_recovery_respects_transport_ownership(self):
+        for blocked in ("upload", "file", "recovery", "disconnected"):
+            plugin = RmeCompatibilityPlugin()
+            plugin._settings = _Settings()
+            plugin._settings.values["auto_open_session"] = True
+            plugin._state.update(supported=True, connected=blocked != "disconnected")
+            plugin._state["firmware"]["recovery_required"] = blocked == "recovery"
+            plugin._uploader = types.SimpleNamespace(busy=blocked == "upload")
+            plugin._file_service = types.SimpleNamespace(busy=blocked == "file")
+            plugin._stats_supported = True
+            waits = iter([False, True])
+            plugin._stop = types.SimpleNamespace(wait=lambda seconds: next(waits))
+            commands = []
+            plugin._send_command = commands.append
+            plugin._keepalive_loop()
+            self.assertEqual([], commands)
 
     def test_partial_recovery_can_be_deferred_without_usb_storage(self):
         plugin = RmeCompatibilityPlugin()
