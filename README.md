@@ -344,3 +344,18 @@ For integration testing, follow the matrix in the firmware's
 blocking heater/probing commands, MMU and filament errors, tool changes,
 pressure-advance calibration, UI lock transitions, emergency stop, and both
 legacy notification modes.
+### INDX temperatures
+
+For INDX, the Temperature tab and Dashboard plugin display the mounted tool,
+bed and chamber only. With every tool parked, only bed and chamber are shown:
+passive nozzles cannot report their cooling temperature or be preheated.
+Tool controls address the currently mounted head, not a remapped logical slot.
+The printer profile retains all eight tools for slicing/tool selection.
+
+Chamber targets use M141 and the firmware's existing regulation. Cooling needs
+the chamber fans configured for automatic operation. Heating assistance uses
+heat from the independently set bed target; it does not change that target or
+provide an independent chamber heater. A target may be unreachable with a cold
+bed or unfavorable ambient conditions. During printing, normal print-fan control
+is preserved. Reconnect after updating and synchronize the printer profile if
+automatic profile synchronization is disabled.

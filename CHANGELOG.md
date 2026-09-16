@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Fix INDX identification for firmware reporting eight physical hotend slots.
+- Temperature and Dashboard now show only the mounted, readable INDX tool,
+  plus bed and chamber; parked tools cannot receive temperature requests.
+- Send mounted-head temperature requests without a logical tool index, avoiding
+  tool-map redirection. Chamber controls send M141 even with legacy profiles.
+- INDX profile synchronization enables bed and chamber heater controls.
+- Retain all eight internal telemetry slots without adding polling or changing
+  firmware bed targets. Added DOM regression tests for both temperature displays.
+
 ## 0.1.0b98 — 2026-09-16
 
 - Separate firmware-authoritative LCD Off/On slider in Control/RME.

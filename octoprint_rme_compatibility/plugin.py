@@ -4727,6 +4727,11 @@ class RmeCompatibilityPlugin(
             raise RuntimeError("Machine discovery has not completed")
         manager = self._printer_profile_manager
         profile = copy.deepcopy(manager.get_current_or_default())
+        if int(machine.get("tool_capacity", 0)) == 8 and int(machine.get("hotends", 0)) in (1, 8):
+            # INDX's passive slots do not remove the bed/chamber controls.
+            # OctoPrint rejects its chamber API unless this capability is set.
+            profile["heatedBed"] = True
+            profile["heatedChamber"] = True
         profile["volume"].update(
             width=float(machine["x_max"]) - float(machine["x_min"]),
             depth=float(machine["y_max"]) - float(machine["y_min"]),

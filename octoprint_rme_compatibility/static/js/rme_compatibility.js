@@ -82,9 +82,20 @@ $(function () {
         // row template here, not in onBeforeBinding (temperature binds first).
         var temperatureTemplate = $("#temprow-template");
         if (temperatureTemplate.length && parameters[4]) {
+            parameters[4].rmeSendTemperature = function (command) { return OctoPrint.printer.commands(command); };
             temperatureTemplate.html(RmePassiveTools.install(parameters[4], self.state, ko.unwrap,
                 temperatureTemplate.html(), formatTemperature,
                 function () { return OctoPrintClient.createRejectedDeferred(); }));
+            RmePassiveTools.installRows(document);
+            var profileUpdated = parameters[4]._printerProfileUpdated;
+            parameters[4]._printerProfileUpdated = function () {
+                var result = profileUpdated.apply(this, arguments);
+                if (RmePassiveTools.isIndx(self.state())) parameters[4].hasChamber(true);
+                return result;
+            };
+            self.state.subscribe(function (state) {
+                if (RmePassiveTools.isIndx(state)) parameters[4].hasChamber(true);
+            });
         }
         self.transportRecoveryRequired = ko.pureComputed(function () {
             return !!((self.state().firmware || {}).recovery_required);

@@ -671,7 +671,7 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._printer_profile_manager = ProfileManager()
         plugin._logger = logging.getLogger("rme-indx-profile-test")
         plugin._state["machine"] = {
-            "hotends": 1, "logical_tools": 8,
+            "hotends": 8, "logical_tools": 8,
             "tool_capacity": 8, "single_nozzle": 1,
             "x_min": 0, "x_max": 250,
             "y_min": 0, "y_max": 220,
@@ -683,6 +683,8 @@ class ToolmapGateTests(unittest.TestCase):
 
         extruder = plugin._printer_profile_manager.saved["extruder"]
         self.assertEqual(8, extruder["count"])
+        self.assertTrue(plugin._printer_profile_manager.saved["heatedBed"])
+        self.assertTrue(plugin._printer_profile_manager.saved["heatedChamber"])
         self.assertFalse(extruder["sharedNozzle"])
         self.assertEqual([(0, 0)] * 8, extruder["offsets"])
 
