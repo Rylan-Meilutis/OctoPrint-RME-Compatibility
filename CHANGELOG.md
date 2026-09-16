@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b99 — 2026-09-16
 
 - Fix INDX identification for firmware reporting eight physical hotend slots.
 - Temperature and Dashboard now show only the mounted, readable INDX tool,
