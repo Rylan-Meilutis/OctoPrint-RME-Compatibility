@@ -1483,6 +1483,57 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertFalse(ordinary_disconnect._attempt_firmware_reconnect())
         self.assertEqual(0, ordinary_disconnect._printer.connect_calls)
 
+    def test_reboot_filters_expected_connection_notifications_only(self):
+        plugin = RmeCompatibilityPlugin()
+        # Uploads alone must never hide an unexpected lost connection.
+        plugin._state["firmware"]["status"] = "uploading"
+        notifications = [
+            {"type": "Error", "payload": {"reason": reason, "error": "Serial unavailable"}}
+            for reason in ("connection", "autodetect", "timeout", "resend", "resend_loop")
+        ] + [
+            {"type": "Error", "payload": {"error": "No more candidates to test, and no working port/baudrate combination detected."}},
+            {"type": "PrinterReset", "payload": {"idle": True}},
+        ]
+        for notification in notifications:
+            self.assertTrue(plugin.sockjs_emit_hook(None, None, "event", notification))
+        plugin._arm_firmware_reconnect()
+        for notification in notifications:
+            self.assertFalse(plugin.sockjs_emit_hook(None, None, "event", notification))
+        plugin._cancel_firmware_reconnect()
+        for notification in notifications:
+            self.assertTrue(plugin.sockjs_emit_hook(None, None, "event", notification))
+
+    def test_reboot_keeps_real_faults_and_lifecycle_messages(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._arm_firmware_reconnect()
+        for event, details in (
+            ("Error", {"reason": "firmware", "error": "THERMAL RUNAWAY"}),
+            ("Error", {"reason": "start_print", "error": "Cannot start"}),
+            ("Error", {"error": "Unexpected server failure"}),
+            ("PrinterReset", {"idle": False}),
+            ("Disconnected", {}), ("Connected", {}), ("PrintCancelling", {}),
+            ("Error", None),
+        ):
+            self.assertTrue(plugin.sockjs_emit_hook(None, None, "event", {"type": event, "payload": details}))
+        self.assertTrue(plugin.sockjs_emit_hook(None, None, "current", {"state": "Offline"}))
+        self.assertTrue(plugin.sockjs_emit_hook(None, None, "plugin", {"status": "restarting"}))
+        self.assertTrue(plugin.sockjs_emit_hook(None, None, "event", None))
+
+    def test_reboot_notification_filter_expiry_preserves_timeout_watchdog(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._arm_firmware_reconnect()
+        plugin._firmware_reconnect_deadline = time.monotonic() - 1
+        notification = {"type": "Error", "payload": {"reason": "autodetect", "error": "No candidates"}}
+        self.assertTrue(plugin.sockjs_emit_hook(None, None, "event", notification))
+        # Filtering must not cancel the timer before it publishes the timeout.
+        self.assertTrue(plugin._firmware_reconnect_armed)
+        plugin._logger = logging.getLogger("rme-reboot-filter-test")
+        published = []
+        plugin._persist_and_publish = lambda: published.append(True)
+        self.assertFalse(plugin._attempt_firmware_reconnect())
+        self.assertEqual("reconnect_timeout", plugin._state["firmware"]["status"])
+        self.assertEqual([True], published)
+
     def test_sd_upload_hook_uses_verified_rme_file_transfer(self):
         class FileService(object):
             def __init__(self):

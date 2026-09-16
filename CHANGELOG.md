@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0b94 — 2026-09-15
+
+- Suppress expected OctoPrint connection/autodetection, communication timeout,
+  and idle-reset notifications during RME's bounded firmware-reboot recovery.
+- Keep backend events and logs intact; retain connection-state updates, real
+  firmware faults, and normal errors outside the reboot window. Uploading alone
+  does not silence errors, and timeout/manual-reconnect status remains visible.
+- Add regression tests for scoped suppression, lifecycle passthrough, and
+  recovery-window expiration.
+
 ## 0.1.0b93 — 2026-09-15
 
 - Stop spool resynchronization popup floods and automatic mapping-page opens;

@@ -2300,6 +2300,48 @@ class RmeCompatibilityPlugin(
                     self._firmware_reconnect_timer = None
             return bool(self._firmware_reconnect_armed)
 
+    def sockjs_emit_hook(self, connection, user, message_type, payload):
+        """Hide expected reboot connection notices, not server errors or state.
+
+        Filtering at emission covers OctoPrint's own error popup before it is
+        created, including browsers opened halfway through the reboot. The
+        original events still reach backend listeners and remain in the logs.
+        """
+        if message_type != "event" or not isinstance(payload, dict):
+            return True
+        with self._firmware_reconnect_lock:
+            expected = (
+                self._firmware_reconnect_armed
+                and time.monotonic() < self._firmware_reconnect_deadline
+            )
+        if not expected:
+            return True
+        event = payload.get("type")
+        details = payload.get("payload")
+        if not isinstance(details, dict):
+            return True
+        if event == "PrinterReset" and details.get("idle"):
+            return False
+        if event != "Error":
+            return True
+        reason = details.get("reason")
+        if reason in ("connection", "autodetect", "timeout", "resend", "resend_loop"):
+            return False
+        # Older OctoPrint versions omit the reason for some serial failures.
+        # Do not silence arbitrary errors, especially firmware/thermal faults.
+        error = str(details.get("error") or "").lower()
+        if not reason and any(text in error for text in (
+            "no more candidates to test",
+            "no working port/baudrate combination",
+            "serial connection closed",
+            "device reports readiness to read but returned no data",
+            "no response from printer after",
+            "failed to autodetect serial port",
+            "could not open port",
+        )):
+            return False
+        return True
+
     def _arm_firmware_reconnect(self):
         """Scope automatic reconnect to one explicit plugin flash request."""
         with self._firmware_reconnect_lock:
@@ -5766,6 +5808,7 @@ __plugin_name__ = "RME Compatibility"
 __plugin_pythoncompat__ = ">=3.8,<4"
 __plugin_implementation__ = RmeCompatibilityPlugin()
 __plugin_hooks__ = {
+    "octoprint.server.sockjs.emit": __plugin_implementation__.sockjs_emit_hook,
     "octoprint.comm.protocol.action": __plugin_implementation__.action_command_hook,
     "octoprint.comm.protocol.atcommand.sending": __plugin_implementation__.atcommand_sending_hook,
     "octoprint.comm.protocol.gcode.received": __plugin_implementation__.gcode_received_hook,
