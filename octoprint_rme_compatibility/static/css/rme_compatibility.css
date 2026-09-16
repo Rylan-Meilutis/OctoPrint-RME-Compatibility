@@ -412,3 +412,11 @@
 .rme-light-positions { display: flex; justify-content: space-between; max-width: 280px; }
 #rme-light-mode { width: 280px; }
 #rme-print-controls { margin: 12px 0; padding: 12px; }
+.rme-route-card { border: 1px solid #aaa; border-radius: 8px; padding: 12px; margin: 12px 0; }
+.rme-route-source { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.rme-route-arrow { font-size: 24px; margin: 0 10px; }
+.rme-route-choices { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.rme-tool-choice { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; white-space: normal; text-align: left; }
+.rme-tool-choice.selected { outline: 3px solid #337ab7; outline-offset: 1px; font-weight: bold; }
+.rme-tool-choice:disabled { opacity: .4; }
+.rme-spool-swatch { display: inline-block; width: 26px; height: 26px; border-radius: 50%; border: 2px solid #777; box-shadow: inset 0 0 0 5px rgba(255,255,255,.55); flex-shrink: 0; }

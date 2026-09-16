@@ -101,7 +101,7 @@
             <button type="button" class="btn" data-bind="click: syncFilamentsToPrinter, enable: canSyncFilaments">Provider → printer</button>
             <button type="button" class="btn" data-bind="click: showFilamentMapping"><i class="fa fa-random"></i> Map printer tools to spools</button>
         </div>
-        <p><small>All tools can be staged together; material filtering and complete inventory access are available in the mapping page.</small></p>
+        <p><small>All tools can be staged together; graphical mapping offers same-material spools only.</small></p>
     </div>
 
     <div id="rme-tab-firmware" class="rme-card form-horizontal">
@@ -112,19 +112,25 @@
         <h4>Tool mapping before print</h4>
         <p data-bind="text: promptMessage"></p>
         <p><small data-bind="text: toolmapTimeoutText"></small></p>
-        <table class="table table-condensed rme-tool-routing">
-            <thead><tr><th>Logical tool</th><th>Use physical tool</th></tr></thead>
-            <tbody data-bind="foreach: mappingRows">
-                <tr>
-                    <td><strong data-bind="text: 'T' + logical"></strong><small> Slicer tool →</small></td>
-                    <td>
-                        <select aria-label="Physical tool and loaded material" data-bind="options: $parent.physicalTools, value: physical, optionsText: $parent.mappingToolLabel"></select>
-                    </td>
-                </tr>
-            </tbody>
-        </table>
+        <button class="btn" data-bind="click: useRecommendedMapping, enable: prompt().recommendation">Use suggested mapping</button>
+        <p class="help-block">Suggestions match material first, then minimize total RGB color difference without assigning a tool twice. Review before continuing.</p>
+        <p class="text-warning" data-bind="visible: !graphicalMappingRows().length">Slicer material metadata unavailable. No verified suggestion can be made; default mapping still requires the normal filament validation.</p>
+        <div class="rme-routing-cards" data-bind="foreach: graphicalMappingRows">
+            <section class="rme-route-card">
+                <div class="rme-route-source"><span class="rme-spool-swatch" data-bind="style: {backgroundColor: $root.mappingColor($root.mappingRequirement($data).color)}"></span>
+                    <strong data-bind="text: 'Slicer T' + logical"></strong> <span data-bind="text: $root.mappingRequirement($data).material"></span>
+                    <span class="rme-route-arrow" aria-label="maps to">→</span><strong data-bind="text: 'Physical T' + physical()"></strong>
+                </div>
+                <div class="rme-route-choices" data-bind="foreach: $root.mappingChoices($data)">
+                    <button type="button" class="btn rme-tool-choice" data-bind="enable: compatible, css: {selected: $parent.physical() === tool}, attr: {'aria-pressed': $parent.physical() === tool}, click: function() {$root.chooseMappingTool($parent, $data);}">
+                        <span class="rme-spool-swatch" data-bind="style: {backgroundColor: color}"></span><span data-bind="text: label"></span>
+                        <small data-bind="visible: suggested">Suggested</small>
+                    </button>
+                </div>
+            </section>
+        </div>
         <label class="checkbox"><input type="checkbox" data-bind="checked: mappingEnabled"> Enable remapping</label>
-        <button class="btn btn-primary" data-bind="click: applyToolmap">Apply mapping and continue print</button>
+        <button class="btn btn-primary" data-bind="click: applyToolmap, enable: materialMappingValid">Apply mapping and continue print</button>
         <button class="btn" data-bind="click: resetToolmap">Use default mapping and continue</button>
         <p class="help-block">No print-file G-code is sent until this mapping is confirmed. Validation runs afterward against the remapped physical tools.</p>
     </div>

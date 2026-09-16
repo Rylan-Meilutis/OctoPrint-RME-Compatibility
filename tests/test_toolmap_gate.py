@@ -1720,22 +1720,20 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertNotIn("Native select…", javascript)
         self.assertIn("Select spool…", javascript)
         self.assertIn("self.mappingSelectionLabel", javascript)
-        self.assertIn("visible: $parent.externalSpoolProvider", javascript)
-        self.assertIn("visible: $parent.internalSpoolProvider", javascript)
+        self.assertIn("self.chooseMappingSpool", javascript)
+        self.assertIn("foreach: availableSpools", javascript)
         self.assertIn("if (filament.display_name) details.push(filament.display_name)", javascript)
         self.assertIn("installSpoolManagerPanel", javascript)
         self.assertIn("ensureRmeSpoolMappingDialog", javascript)
         self.assertIn("rme-spool-mapping-dialog", javascript)
         self.assertIn("Loaded on printer", javascript)
-        self.assertIn("Provider spool", javascript)
+        self.assertIn("text: mappingProviderName", javascript)
         self.assertIn("Printer loadout mapping", javascript)
         self.assertIn('$("#settings_dialog").modal("hide")', javascript)
-        self.assertIn("showAllMappingSpools", javascript)
-        self.assertIn("self.showAllMappingSpools = ko.observable(true)", javascript)
-        self.assertIn("matching.concat(otherMaterials)", javascript)
-        self.assertIn("Show all materials (complete inventory)", javascript)
+        self.assertNotIn("matching.concat(otherMaterials)", javascript)
+        self.assertIn("Only matching known materials may be assigned", javascript)
         self.assertIn('self.command("refresh_spool_inventory")', javascript)
-        self.assertIn("options: availableSpools", javascript)
+        self.assertIn("rme-route-choices", javascript)
         self.assertIn("Manufacturer: ", javascript)
         self.assertIn("spoolManager.addNewSpool()", javascript)
         self.assertIn('self.command("apply_spool_selections"', javascript)
@@ -2062,6 +2060,8 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertTrue(plugin._state["prompt"]["timer_paused"])
         self.assertIsNone(plugin._state["prompt"]["deadline"])
 
+        plugin._state["prompt"]["requirements"] = [{"logical": 0, "material": "PLA"}, {"logical": 1, "material": "PLA"}]
+        plugin._state["loaded_filaments"] = [{"tool": 0, "material": "PLA"}, {"tool": 1, "material": "PLA"}]
         plugin._apply_toolmap({0: 1, 1: 0}, True, release_hold=True)
         self.assertEqual({0: 1, 1: 0}, validator.mapping)
         self.assertEqual([True, False], plugin._printer.holds)
@@ -2108,6 +2108,14 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._defer = lambda callback, *args: None
 
         plugin.gcode_script_hook(None, "gcode", "beforePrintStarted")
+        plugin._expire_toolmap_prompt()
+        # Unknown metadata must not silently approve an existing remap.
+        self.assertIsNone(validator.mapping)
+        self.assertEqual([True], plugin._printer.holds)
+        self.assertTrue(plugin._state["prompt"]["timer_paused"])
+        plugin._state["prompt"]["requirements"] = [{"logical": 0, "material": "PLA"}, {"logical": 1, "material": "PLA"}]
+        plugin._state["loaded_filaments"] = [{"tool": 0, "material": "PLA"}, {"tool": 1, "material": "PLA"}]
+        plugin._state["prompt"]["timer_paused"] = False
         plugin._expire_toolmap_prompt()
         self.assertEqual({0: 1, 1: 0}, validator.mapping)
         self.assertEqual([], plugin._printer.command_batches)
@@ -2862,7 +2870,7 @@ class ToolmapGateTests(unittest.TestCase):
                 self.refreshes = 0
 
             def get(self, database_id):
-                return {"database_id": database_id} if database_id in (41, 44) else None
+                return {"database_id": database_id, "material": "PLA"} if database_id in (41, 44) else None
 
             def select(self, tool, database_id):
                 self.selected.append((tool, database_id))
@@ -2888,6 +2896,8 @@ class ToolmapGateTests(unittest.TestCase):
         for tool in range(3):
             plugin._begin_new_spool(tool)
 
+        plugin._state["loaded_filaments"] = [{"tool": i, "material": "PLA"} for i in range(3)]
+
         plugin._apply_spool_selections([
             {"tool": 0, "database_id": 41},
             {"tool": 1, "database_id": None},
@@ -2904,6 +2914,30 @@ class ToolmapGateTests(unittest.TestCase):
             [item["tool"] for item in
              plugin._state["spoolmanager"]["pending_new_queue"]],
         )
+
+    def test_material_mapping_rechecks_latest_loadout(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._state["prompt"] = {"kind": "toolmap", "requirements": [{"logical": 0, "material": "PLA"}]}
+        plugin._state["loaded_filaments"] = [{"tool": 1, "material": "PLA"}]
+        plugin._validate_material_mapping({0: 1}, True)
+        plugin._state["loaded_filaments"][0]["material"] = "PETG"
+        with self.assertRaises(ValueError):
+            plugin._validate_material_mapping({0: 1}, True)
+        with self.assertRaises(ValueError):
+            plugin._validate_material_mapping({}, False)
+
+    def test_spool_material_mismatch_rejects_whole_batch(self):
+        class Provider:
+            def get(self, database_id):
+                return {"material": "PLA" if database_id == 1 else "PETG"}
+            def select(self, *args):
+                raise AssertionError("No partial selection is allowed")
+        plugin = RmeCompatibilityPlugin()
+        plugin._state["machine"] = {"logical_tools": 2, "tool_capacity": 2}
+        plugin._state["loaded_filaments"] = [{"tool": i, "material": "PLA"} for i in range(2)]
+        plugin._active_spool_provider = lambda: (Provider(), "internal")
+        with self.assertRaises(ValueError):
+            plugin._apply_spool_selections([{"tool": 0, "database_id": 1}, {"tool": 1, "database_id": 2}])
 
     def test_legacy_loaded_profile_provider_enrichment_does_not_edit_m976(self):
         plugin = RmeCompatibilityPlugin()

@@ -43,6 +43,7 @@ from .spoolmanager import (
 )
 from .storage import StateStore, TransferManifestStore
 from .preview import read_preview
+from .mapping import read_requirements, recommend, validate, compatible
 from .uploader import FirmwareUploader, UploadError, firmware_metadata
 
 
@@ -604,6 +605,7 @@ class RmeCompatibilityPlugin(
         elif command == "apply_toolmap":
             self._apply_toolmap(data["mapping"], bool(data["enabled"]), release_hold=True)
         elif command == "reset_toolmap":
+            self._validate_material_mapping({}, False)
             self._send_commands(["@RME TOOLMAP RESET", "@RME TOOLMAP QUERY"])
             self._configure_validator_mapping({})
             self._release_toolmap_hold()
@@ -3233,6 +3235,17 @@ class RmeCompatibilityPlugin(
         elif self._stats_supported is None:
             self._probe_stats()
 
+    def _validate_material_mapping(self, mapping, enabled):
+        with self._state_lock:
+            prompt = self._state.get("prompt") or {}
+            requirements = copy.deepcopy(prompt.get("requirements") or [])
+            loaded = copy.deepcopy(self._state.get("loaded_filaments") or [])
+        if prompt.get("kind") == "toolmap" and not requirements and enabled and any(
+            int(key) != int(value) for key, value in mapping.items()
+        ):
+            raise ValueError("Slicer material metadata is unavailable; cannot verify a new mapping")
+        validate(requirements, loaded, mapping, enabled)
+
     def _apply_toolmap(self, mapping, enabled, release_hold=False):
         machine = self._state.get("machine", {})
         count = int(machine.get("logical_tools", 0))
@@ -3243,6 +3256,7 @@ class RmeCompatibilityPlugin(
         ):
             raise ValueError("A mapping for every discovered logical tool is required")
         commands = toolmap_commands(normalized, enabled)
+        self._validate_material_mapping(normalized, enabled)
         # NFV's logical slicer slots must be checked against the selected
         # physical tool before its first-command validation gate is released.
         self._configure_validator_mapping(normalized if enabled else {})
@@ -3368,10 +3382,21 @@ class RmeCompatibilityPlugin(
                 self._settings.get_int(["toolmap_timeout_seconds"]) or 0
             )))
             now = int(time.time())
+            requirements = []
+            try:
+                file_info = (self._printer.get_current_data().get("job") or {}).get("file") or {}
+                path = file_info.get("path") or file_info.get("name")
+                if path and str(path).lower().endswith((".gcode", ".gco")):
+                    requirements = read_requirements(
+                        self._file_manager.path_on_disk(file_info.get("origin"), path), count)
+            except (OSError, AttributeError, TypeError, ValueError):
+                self._logger.info("Slicer material/color metadata unavailable for mapping")
             with self._state_lock:
                 self._toolmap_hold_active = True
                 self._state["prompt"] = {
                     "kind": "toolmap",
+                    "requirements": requirements,
+                    "recommendation": recommend(requirements, self._state.get("loaded_filaments") or [], count),
                     "message": "Choose the physical tool for each logical tool before printing",
                     "mapping": mapping,
                     "enabled": bool(current_toolmap.get("enabled")),
@@ -3498,6 +3523,14 @@ class RmeCompatibilityPlugin(
                 return
             current = copy.deepcopy(self._state.get("toolmap") or {})
         mapping = current.get("mapping") if current.get("enabled") else {}
+        try:
+            self._validate_material_mapping(mapping or {}, bool(current.get("enabled")))
+        except ValueError as error:
+            self._pause_toolmap_timeout()
+            with self._state_lock:
+                self._state["prompt"]["message"] = str(error)
+            self._defer(self._persist_and_publish)
+            return
         self._configure_validator_mapping(mapping or {})
         self._logger.info("Tool mapping prompt timed out; continuing with current firmware mapping")
         # Deliberately do not send TOOLMAP commands: timeout means leave the
@@ -4394,8 +4427,14 @@ class RmeCompatibilityPlugin(
                 database_id = None
             else:
                 database_id = int(database_id)
-                if provider.get(database_id) is None:
+                spool = provider.get(database_id)
+                if spool is None:
                     raise ValueError("Spool %d does not exist" % database_id)
+                with self._state_lock:
+                    loaded = next((row for row in self._state.get("loaded_filaments", [])
+                                   if int(row.get("tool", -1)) == tool), {})
+                if not compatible(loaded.get("firmware_material") or loaded.get("material"), spool.get("material")):
+                    raise ValueError("Spool material must match the known loaded material for T%d" % tool)
             normalized.append((tool, database_id))
 
         for tool, database_id in sorted(normalized):

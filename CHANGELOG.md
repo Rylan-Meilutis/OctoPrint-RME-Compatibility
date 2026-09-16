@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.0b97 — 2026-09-16
+
+- Graphical tool and spool mapping cards with color swatches, explicit routing,
+  selected state, keyboard-accessible buttons and same-material choices.
+- Suggest unique physical tools using slicer material requirements first and
+  minimum total RGB color distance second. Suggestions are operator-reviewed.
+- Support staged graphical spool mapping with all three inventory providers;
+  validate the entire batch before changing provider selections.
+- Recheck print material compatibility on Apply, defaults and timeout. Missing
+  metadata has no recommendation; nonidentity remapping is blocked, including
+  timeout with an existing remap. Identity/default continuation retains the
+  filament validator. Specialty names remain distinct.
+- No firmware changes or extra serial polling. Bounded metadata reads and
+  assignment search. Live printer/browser validation remains pending.
+- Validated with 206 Python tests (four skipped), graphical mapping DOM
+  interaction tests, passive-temperature regression tests and JS syntax checks.
+
 ## 0.1.0b96 — 2026-09-16
 
 - INDX Temperature rows show “Parked / unavailable” for tools without a

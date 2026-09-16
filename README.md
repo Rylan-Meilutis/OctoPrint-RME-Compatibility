@@ -197,13 +197,27 @@ On connection the plugin first builds the seven-slot alias table, then reads
 the printer's current `M865` assignments into the provider. Provider-originated
 selection changes wait for confirmation rather than silently overwriting the
 printer; both synchronization directions are also available as manual buttons.
-SpoolManager uses an injected panel on its native Spools tab. Spoolman and the
-built-in provider use RME's full-width mapping dialog. Both workflows display
-all tools in order, filter choices by the printer-reported material family,
-offer an explicit all-materials view, show the machine manufacturer, stage all
-changes for one batch apply, and prefill new-spool creation from printer data.
+RME's graphical mapping dialog supports SpoolManager, Spoolman and the built-in
+provider. Colored cards show each loaded tool and its assigned spool, with
+same-material choices only and one batch Apply. Unknown loaded material has
+no compatible choices. The full inventory remains accessible in the provider's
+own UI. New-spool creation is prefilled from printer data.
 Empty and inactive concrete spools remain visible for deliberate manual mapping
 but do not consume firmware preset slots unless selected.
+
+Print-start tool mapping displays slicer material/color cards pointing to physical
+tool cards. Recommendations require matching materials and minimize total RGB
+color distance with unique destinations. Click **Use suggested mapping**, review,
+then **Apply mapping and continue print**; suggestions never apply themselves.
+The backend rechecks current loaded materials, including the default/timeout path.
+Specialty names such as PLA-CF remain distinct from PLA (firmware aliases PET/PETG
+and FLEX/TPU/TPE are normalized). This is an approximate color ranking, not a
+filament-property or color-accuracy guarantee. Text Orca/Prusa G-code metadata is
+read from bounded header/tail windows; missing/binary metadata produces no
+recommendation and disallows nonidentity remapping (an existing remap also holds
+the timeout for review). Identity/default continuation retains the
+existing filament-validator gate. Refresh the print prompt after changing loadout
+to regenerate suggestions; stale choices are checked again before applying.
 
 Only one inventory backend is active at a time. SpoolManager and Spoolman each
 disable the built-in RME inventory when selected, and events from an inactive
