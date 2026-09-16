@@ -1,6 +1,6 @@
 # OctoPrint RME Compatibility
 
-### Pending independent lighting controls
+### Independent lighting controls (b98)
 
 With matching firmware, Control/RME provides a separate LCD Off/On slider and
 individual current-print LCD, chamber and status brightness controls. Settings

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — independent lighting controls
+## 0.1.0b98 — 2026-09-16
 
 - Separate firmware-authoritative LCD Off/On slider in Control/RME.
 - Individual current-print LCD/chamber/status brightness controls, leaving
