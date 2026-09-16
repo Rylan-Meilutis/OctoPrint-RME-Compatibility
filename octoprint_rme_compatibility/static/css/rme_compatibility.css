@@ -20,6 +20,21 @@
 .rme-object-map .cancelled path:not(.rme-object-hit) { stroke: #888; }
 .rme-object-map text { fill: currentColor; font-size: 10px; pointer-events: none; }
 .rme-object-list { max-height: 45vh; overflow-y: auto; overflow-wrap: anywhere; }
+/* Keep icon + SVG inside each Dashboard grid track, including narrow themes. */
+#tab_plugin_dashboard .rme-dashboard-heaters > .dashboard_threeQuarterGauge {
+    min-width: 0;
+    box-sizing: border-box;
+}
+#tab_plugin_dashboard .rme-dashboard-heaters > .dashboard_threeQuarterGauge > svg {
+    max-width: calc(100% - 55px);
+    box-sizing: border-box;
+    padding-left: 0;
+    padding-right: 0;
+}
+#tab_plugin_dashboard .rme-dashboard-heaters > .dashboard_threeQuarterGauge > .dashboardIcon {
+    max-width: 45px;
+    box-sizing: border-box;
+}
 .rme-tool-routing { table-layout: fixed; width: 100%; }
 .rme-tool-routing td:first-child { width: 25%; }
 .rme-tool-routing select { width: 100%; max-width: 100%; box-sizing: border-box; }

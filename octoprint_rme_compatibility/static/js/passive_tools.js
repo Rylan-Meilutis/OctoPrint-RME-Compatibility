@@ -52,6 +52,15 @@
         vm.rmeTemperatureText = function (item) {
             return vm.rmePassiveTool(item) ? "Unloaded" : format(unwrap(item.actual));
         };
+        vm.rmeGaugesCentreInGrid = function (dashboard, type, index, css) {
+            if (!isIndx(getState())) return dashboard.gaugesCentreInGrid(type, index, css);
+            var tools = vm.tools, visible = vm.rmeVisibleTools();
+            // Dashboard closes over its temperature model. Give its layout
+            // calculation the displayed count, never mutate telemetry storage.
+            vm.tools = function () { return visible; };
+            try { return dashboard.gaugesCentreInGrid(type, index, css); }
+            finally { vm.tools = tools; }
+        };
         var setTarget = vm.setTargetToValue;
         vm.setTargetToValue = function (item, value) {
             // Covers presets/autosend as well as the individual control.
@@ -117,12 +126,21 @@
             if (id === "tab_plugin_dashboard") {
                 host.querySelectorAll("[data-bind]").forEach(function (element) {
                     var binding = element.getAttribute("data-bind");
+                    binding = binding.replace(/(\$parent\.)?gaugesCentreInGrid\(/g, function (_, parent) {
+                        return parent ? "$parent.temperatureModel.rmeGaugesCentreInGrid($parent, " :
+                            "temperatureModel.rmeGaugesCentreInGrid($data, ";
+                    });
                     binding = binding.replace("text: Math.round($parent.convertTemp(actual())) + $parent.tempSymbol()",
                         "text: $parent.temperatureModel.rmePassiveTool($data) ? 'Unloaded' : Math.round($parent.convertTemp(actual())) + $parent.tempSymbol()");
                     if (element.matches("text.dashboardGauge")) {
                         binding = binding.replace("text: name()", "text: $parent.temperatureModel.rmeToolName($data)");
                     }
                     element.setAttribute("data-bind", binding);
+                });
+                host.querySelectorAll(".dashboard_threeQuarterGauge").forEach(function (gauge) {
+                    if (gauge.parentElement.classList.contains("dashboardGridContainer")) {
+                        gauge.parentElement.classList.add("rme-dashboard-heaters");
+                    }
                 });
             }
         });

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0b102 — 2026-09-16
+
+- Restore Temperature control rows by preserving the native Knockout script
+  template as text rather than passing table-cell markup through jQuery.
+- Centre Dashboard gauges using the displayed INDX tool count, and constrain
+  gauge contents to their grid tracks so chamber controls remain in frame.
+- Reject empty file-selection entries safely during thumbnail initialization.
+- Exercise the real RME constructor in Temperature DOM regression tests,
+  including unloaded preheat controls and Dashboard layout calculations.
+  Automated tests pass; live themed-browser confirmation remains required.
+
 ## 0.1.0b101 — 2026-09-16
 
 - Keep one INDX tool entry in Temperature and Dashboard, showing the mounted

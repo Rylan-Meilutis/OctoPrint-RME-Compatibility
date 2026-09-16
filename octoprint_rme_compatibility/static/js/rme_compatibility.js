@@ -83,9 +83,12 @@ $(function () {
         var temperatureTemplate = $("#temprow-template");
         if (temperatureTemplate.length && parameters[4]) {
             parameters[4].rmeSendTemperature = function (command) { return OctoPrint.printer.commands(command); };
-            temperatureTemplate.html(RmePassiveTools.install(parameters[4], self.state, ko.unwrap,
-                temperatureTemplate.html(), formatTemperature,
-                function () { return OctoPrintClient.createRejectedDeferred(); }));
+            // jQuery.html() parses table-cell fragments and can insert element
+            // children into this script. Knockout reads script.text, which then
+            // contains only whitespace: every heater row becomes empty.
+            temperatureTemplate[0].textContent = RmePassiveTools.install(parameters[4], self.state, ko.unwrap,
+                temperatureTemplate[0].textContent, formatTemperature,
+                function () { return OctoPrintClient.createRejectedDeferred(); });
             RmePassiveTools.installRows(document);
             var profileUpdated = parameters[4]._printerProfileUpdated;
             parameters[4]._printerProfileUpdated = function () {
@@ -1971,10 +1974,12 @@ $(function () {
             var originalEnableSelectAndPrint = self.files.enableSelectAndPrint;
             var originalEnableSlicing = self.files.enableSlicing;
             self.files.enableSelect = function (entry) {
+                if (!entry) return false;
                 return entry && entry.rme && entry.type !== "machinecode" ? false :
                     originalEnableSelect.apply(self.files, arguments);
             };
             self.files.enableSelectAndPrint = function (entry) {
+                if (!entry) return false;
                 return entry && entry.rme && entry.type !== "machinecode" ? false :
                     originalEnableSelectAndPrint.apply(self.files, arguments);
             };
