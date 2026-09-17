@@ -74,6 +74,28 @@ const {jQueryFactory} = require('jquery/factory');
     assert(w.document.querySelector('#rme-spool-mapping-dialog .rme-tool-choice'));
     w.document.querySelector('#rme-spool-mapping-dialog .rme-tool-choice').click();
     assert.equal(vm.spoolSelectionRows()[0].selected(), 1);
+    const dashboard = w.document.createElement('div');
+    dashboard.id = 'tab_plugin_dashboard';
+    dashboard.innerHTML = '<div><div class="dashboardProgressContainer"><span>Native print time</span></div></div>';
+    w.document.body.append(dashboard);
+    const nativeMarkup = dashboard.firstChild.firstChild.outerHTML;
+    vm.settings.settings = {plugins: {rme_compatibility: {dashboard_rme_progress: ko.observable(true)}}};
+    async function renderDashboard(workflow) {
+        vm.state({supported: true, connected: true, workflow});
+        vm.onAllBound();
+        await new Promise(resolve => w.setTimeout(resolve, 30));
+    }
+    await renderDashboard(null);
+    assert.equal(dashboard.querySelector('.rme-dashboard-logo').textContent, 'RME');
+    assert.equal(dashboard.querySelector('.rme-dashboard-workflow-caption').textContent, 'Ready');
+    await renderDashboard({workflow: 'tool_change', state: 'active', progress: 50});
+    assert(dashboard.querySelector('.rme-dashboard-workflow-caption').textContent.includes('50%'));
+    assert.equal(dashboard.firstChild.firstChild.outerHTML, nativeMarkup);
+    await renderDashboard(null);
+    assert.equal(dashboard.querySelectorAll('#rme-dashboard-progress').length, 1);
+    vm.settings.settings.plugins.rme_compatibility.dashboard_rme_progress(false);
+    await renderDashboard(null);
+    assert.equal(dashboard.querySelectorAll('#rme-dashboard-progress').length, 0);
     console.log('Graphical tool/spool mapping DOM bindings and interaction passed');
     dom.window.close();
 })().catch(error => { console.error(error); process.exitCode = 1; });

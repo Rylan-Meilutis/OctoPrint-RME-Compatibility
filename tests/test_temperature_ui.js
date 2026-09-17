@@ -84,6 +84,7 @@ function preheat() {
 sent.length = 0;
 preheat();
 assert.deepEqual(sent, ['M104 S215', ['bed', 60], 'M141 S35']);
+vm.tools()[3].actual(-1);
 state({...state(), active_tool: {physical: null}});
 assert.equal(w.document.querySelectorAll('#temp tr').length, 3);
 assert.equal(w.document.querySelectorAll('#tab_plugin_dashboard .tool').length, 1);
@@ -97,12 +98,21 @@ preheat();
 assert.deepEqual(sent, [['bed', 60], 'M141 S35']);
 vm.tools()[3].actual(-1);
 vm.tools()[7].actual(225);
+// The readable head arrives before the delayed session/tool-state snapshot.
+assert.equal(w.document.querySelector('#tab_plugin_dashboard .tool').textContent, '225°C');
+assert.equal(vm.rmeToolName(vm.rmeVisibleTools()[0]), 'Tool T7');
+sent.length = 0;
+preheat();
+assert.deepEqual(sent, [['bed', 60], 'M141 S35']); // No unconfirmed heater writes.
 state({...state(), active_tool: {physical: 7}});
 assert.equal(w.document.querySelector('#tab_plugin_dashboard .tool').textContent, '225°C');
 assert.equal(w.document.querySelectorAll('#temp tr').length, 3);
 sent.length = 0;
 preheat();
 assert.deepEqual(sent, ['M104 S215', ['bed', 60], 'M141 S35']);
+// Likewise, parking clears the display before the session catches up.
+vm.tools()[7].actual(-1);
+assert.equal(w.document.querySelector('#tab_plugin_dashboard .tool').textContent, 'Unloaded');
 state({...state(), supported: false});
 assert.equal(vm.rmeGaugesCentreInGrid(dashboard, 'chamber').centreInGrid2, true);
 assert.equal(w.document.querySelectorAll('#temp tr').length, 10);

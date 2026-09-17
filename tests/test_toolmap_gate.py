@@ -1703,7 +1703,8 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("rme-dashboard-workflow-gauge", javascript)
         self.assertIn('target.append(overlay)', javascript)
         self.assertIn('target.removeClass("rme-workflow-active rme-workflow-indeterminate")', javascript)
-        self.assertIn('#rme-workflow-overlay, .rme-dashboard-workflow-active', javascript)
+        self.assertIn('id="rme-dashboard-progress"', javascript)
+        self.assertTrue(plugin.get_settings_defaults()["dashboard_rme_progress"])
         self.assertNotIn('target.after(strip)', javascript)
         self.assertNotIn("self.printerState.printTime(", javascript)
         self.assertNotIn("self.printerState.printTimeLeft(", javascript)
@@ -2510,6 +2511,27 @@ class ToolmapGateTests(unittest.TestCase):
             "message": "Tool change complete",
         })
         self.assertIn(("@RME SESSION QUERY",), deferred)
+
+    def test_mid_print_filtration_does_not_replace_foreground_workflow(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        plugin._defer = lambda *args: None
+        foreground = {"workflow": "tool_change", "state": "active"}
+        plugin._state["workflow"] = foreground.copy()
+        for seq, state, code in ((1, "open", None), (2, "active", "mid_print"), (3, "closed", None)):
+            plugin._handle_record(dict(record="event", seq=seq, type="progress",
+                workflow="filtration", state=state, code=code))
+            self.assertEqual(foreground, plugin._state["workflow"])
+            self.assertEqual(seq, plugin._state["session"]["last_seq"])
+        plugin._handle_record(dict(record="event", seq=4, type="progress",
+            workflow="filtration", state="active", code="post_print"))
+        self.assertEqual("post_print", plugin._state["workflow"]["code"])
+        plugin._handle_record(dict(record="event", seq=5, type="workflow",
+            workflow="filtration", state="closed"))
+        self.assertIsNone(plugin._state["workflow"])
+        plugin._handle_record(dict(record="event", seq=6, type="error",
+            workflow="filtration", state="waiting", message="Filter fault"))
+        self.assertEqual("error", plugin._state["workflow"]["type"])
 
     def test_legacy_session_preserves_tool_fallback(self):
         plugin = RmeCompatibilityPlugin()

@@ -34,6 +34,7 @@ assert.equal(vm.rmeTemperatureText(parked), 'Unloaded');
 assert.equal(vm.setTargetToValue(parked, 220), 'rejected');
 assert.equal(sent, 0);
 assert.equal(vm.setTargetToValue(parked, 0), 'rejected');
+vm.tools = () => [{key: 'tool3', actual: 220}];
 vm.setTargetToValue({key: 'tool3', actual: 220, newTarget: () => {}}, 215);
 vm.setTargetToValue({key: 'chamber', actual: 30, newTarget: () => {}}, 45);
 vm.setTargetToValue({key: 'bed', actual: 60}, 70);

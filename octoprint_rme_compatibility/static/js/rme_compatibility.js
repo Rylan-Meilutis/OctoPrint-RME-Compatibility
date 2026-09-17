@@ -1661,9 +1661,7 @@ $(function () {
                 self.tick(Date.now());
                 updateCorePrintClock();
                 updateSelectedPreview();
-                if (self.workflowVisible() || $("#rme-workflow-overlay, .rme-dashboard-workflow-active").length) {
-                    scheduleCoreWorkflowRender();
-                }
+                scheduleCoreWorkflowRender();
             }, 1000);
         };
         self.integrateCancelObjectPreview = function () {
@@ -1684,6 +1682,7 @@ $(function () {
             installSpoolManagerPanel();
             installSpoolManagerSidebar();
             updateCorePrintClock();
+            scheduleCoreWorkflowRender();
         };
         self.onSettingsShown = function () {
             if (self.state().supported) {
@@ -2106,43 +2105,34 @@ $(function () {
         function renderDashboardWorkflow(active, workflow) {
             var root = $("#tab_plugin_dashboard");
             if (!root.length) return;
-            var bar = root.find(".dashboardProgressBar").filter(function () {
-                return $(this).find("[title='GCode Progress']").length > 0;
-            }).first();
-            var circle = root.find(".dashboardProgressContainer").filter(function () {
-                return $(this).find("circle[data-bind*='printerStateModel.progressString']").length > 0;
-            }).first();
-            var targets = bar.add(circle);
-            if (!active) {
-                targets.removeClass("rme-dashboard-workflow-active rme-dashboard-workflow-indeterminate");
-                targets.find(".rme-dashboard-workflow-gauge, .rme-dashboard-workflow-caption").remove();
+            var settings = (((self.settings || {}).settings || {}).plugins || {}).rme_compatibility || {};
+            var circle = root.find("#rme-dashboard-progress");
+            if (ko.unwrap(settings.dashboard_rme_progress) === false) {
+                circle.remove();
                 return;
             }
-            var progress = Number(self.workflowProgress());
-            var determinate = isFinite(progress);
-            var bounded = determinate ? Math.max(0, Math.min(100, progress)) : 50;
-            var offset = 339.292 * (1 - bounded / 100);
-            var label = self.workflowTitle() + " — " + (workflow.message || self.workflowState());
+            if (!circle.length) {
+                circle = $('<div id="rme-dashboard-progress" role="group" aria-label="RME workflow progress">' +
+                    '<svg viewBox="0 0 140 140" role="img" aria-label="RME">' +
+                    '<circle class="rme-dashboard-track" cx="70" cy="70" r="54" />' +
+                    '<circle class="rme-dashboard-workflow-gauge" cx="70" cy="70" r="54" stroke-dasharray="339.292" transform="rotate(-90 70 70)" />' +
+                    '<text class="rme-dashboard-logo" x="70" y="78" text-anchor="middle">RME</text></svg>' +
+                    '<div class="rme-dashboard-workflow-caption"></div></div>');
+                var progressArea = root.find(".dashboardProgressContainer").first().parent();
+                if (progressArea.length) circle.appendTo(progressArea);
+                else circle.appendTo(root);
+            }
+            var raw = self.workflowProgress();
+            var progress = Number(raw);
+            var determinate = active && raw !== null && raw !== undefined && isFinite(progress);
+            var bounded = determinate ? Math.max(0, Math.min(100, progress)) : 0;
+            var label = active ? self.workflowTitle() + " — " + (workflow.message || self.workflowState()) : "Ready";
+            if (!active && !self.state().connected) label = "Disconnected";
             if (determinate) label += " · " + Math.round(bounded) + "%";
-            targets.each(function () {
-                var target = $(this);
-                target.addClass("rme-dashboard-workflow-active")
-                    .toggleClass("rme-dashboard-workflow-indeterminate", !determinate);
-                var gauge = target.find(".rme-dashboard-workflow-gauge");
-                if (!gauge.length) {
-                    var source = target.find("path.dashboardGauge, circle.dashboardGauge").first();
-                    if (source.length) {
-                        gauge = source.clone(false)
-                            .removeAttr("data-bind")
-                            .addClass("rme-dashboard-workflow-gauge")
-                            .appendTo(source.parent());
-                    }
-                }
-                gauge.attr("stroke-dashoffset", offset);
-                var caption = target.find(".rme-dashboard-workflow-caption");
-                if (!caption.length) caption = $('<div class="rme-dashboard-workflow-caption"></div>').appendTo(target);
-                caption.text(label).attr("title", label);
-            });
+            circle.toggleClass("rme-dashboard-workflow-active", active)
+                .toggleClass("rme-dashboard-workflow-indeterminate", active && !determinate);
+            circle.find(".rme-dashboard-workflow-gauge").attr("stroke-dashoffset", 339.292 * (1 - bounded / 100));
+            circle.find(".rme-dashboard-workflow-caption").text(label).attr("title", label);
         }
 
         function updateCorePrintClock() {

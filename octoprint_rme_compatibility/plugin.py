@@ -406,6 +406,7 @@ class RmeCompatibilityPlugin(
     def get_settings_defaults(self):
         return {
             "auto_open_session": True,
+            "dashboard_rme_progress": True,
             "legacy_notifications": False,
             "auto_machine_profile": True,
             "prompt_toolmap_on_print": True,
@@ -1846,7 +1847,23 @@ class RmeCompatibilityPlugin(
                     follow_up.extend(["@RME SESSION QUERY", "@RME DIALOG QUERY"])
                     follow_up.append("refresh_configuration:all")
                 self._state["session"]["last_seq"] = sequence
-                if _retain_extrusion_fault(previous_workflow, record):
+                background_filtration = (
+                    original_workflow == "filtration"
+                    and record.get("type") != "error"
+                    and event_state not in ("waiting", "failed")
+                    and record.get("code") != "post_print"
+                    and "post-print" not in str(record.get("message", "")).lower()
+                )
+                if background_filtration:
+                    # Mid-print filtering is background activity, not a
+                    # blocking workflow. Consume its sequence without hiding
+                    # tool changes/calibration or leaving a permanent banner.
+                    if (previous_workflow.get("workflow") == "filtration"
+                            and (workflow_is_terminal(record)
+                                 or previous_workflow.get("type") != "error"
+                                 and previous_workflow.get("state") != "waiting")):
+                        self._state["workflow"] = None
+                elif _retain_extrusion_fault(previous_workflow, record):
                     retained = dict(previous_workflow)
                     retained["recovery"] = dict(record)
                     retained["updated_at"] = now

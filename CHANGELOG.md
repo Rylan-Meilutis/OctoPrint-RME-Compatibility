@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.0b103 — 2026-09-17
+
+- Add a persistent, independent Dashboard RME progress circle with a centered
+  RME wordmark and Ready/Disconnected status. A default-on Dashboard setting
+  allows hiding it. Native Dashboard print progress and time gauges stay intact.
+- Display the readable INDX head as soon as its temperature arrives, without
+  waiting for the session selection to catch up. Heater writes still require
+  the authoritative selection to agree; parking clears the display promptly.
+- Keep routine mid-print filtration out of foreground workflow progress while
+  retaining post-print filtration and actionable errors.
+- Add regression coverage for these transitions and Dashboard toggle behavior.
+- FSR maximum-height and Normal/Stealth ETA investigation remain outstanding.
+
 ## 0.1.0b102 — 2026-09-16
 
 - Restore Temperature control rows by preserving the native Knockout script

@@ -30,24 +30,40 @@
         if (vm.rmePassiveTool) return template;
         var unloaded = vm._createToolEntry ? vm._createToolEntry() : null;
         if (unloaded) { unloaded.key("tool0"); unloaded.name("Tool"); }
+        function displayedTool() {
+            var state = getState(), tools = unwrap(vm.tools);
+            // INDX exposes a readable sensor only on its mounted head. A full
+            // physical snapshot can precede the next RME session response.
+            // Never infer this from an incomplete/shared-nozzle profile.
+            var complete = tools.length === 8 && tools.every(function (item, index) {
+                return unwrap(item.key) === "tool" + index;
+            });
+            if (complete) {
+                var readable = tools.filter(function (item) {
+                    return !unavailable(state, unwrap(item.key), unwrap(item.actual));
+                });
+                if (readable.length === 1) return readable[0];
+                if (!readable.length) return null;
+            }
+            var physical = (state.active_tool || {}).physical;
+            return tools.find(function (item) { return unwrap(item.key) === "tool" + physical; });
+        }
         vm.rmePassiveTool = function (item) {
             var state = getState(), key = unwrap(item.key);
             if (!isIndx(state) || !/^tool\d+$/.test(key)) return false;
-            var active = state.active_tool || {};
-            return active.physical === null || active.physical === undefined ||
-                key !== "tool" + active.physical || unavailable(state, key, unwrap(item.actual));
+            var selected = displayedTool();
+            return !selected || key !== unwrap(selected.key) || unavailable(state, key, unwrap(item.actual));
         };
         vm.rmeVisibleTools = function () {
             var tools = unwrap(vm.tools);
             if (!isIndx(getState())) return tools;
-            var physical = (getState().active_tool || {}).physical;
-            var active = tools.find(function (item) { return unwrap(item.key) === "tool" + physical; });
+            var active = displayedTool();
             // Keep an explicit unloaded row instead of removing the heater UI.
             return active ? [active] : (tools.length ? tools.slice(0, 1) : (unloaded ? [unloaded] : []));
         };
         vm.rmeToolName = function (item) {
             return isIndx(getState()) && /^tool\d+$/.test(unwrap(item.key)) ?
-                (vm.rmePassiveTool(item) ? "Tool" : "Tool T" + getState().active_tool.physical) : unwrap(item.name);
+                (vm.rmePassiveTool(item) ? "Tool" : "Tool T" + unwrap(item.key).slice(4)) : unwrap(item.name);
         };
         vm.rmeTemperatureText = function (item) {
             return vm.rmePassiveTool(item) ? "Unloaded" : format(unwrap(item.actual));
@@ -66,6 +82,10 @@
             // Covers presets/autosend as well as the individual control.
             if (vm.rmePassiveTool(item)) return reject();
             var key = unwrap(item.key);
+            // Display may lead the session snapshot; do not heat a head until
+            // the authoritative selection agrees with that displayed sensor.
+            if (isIndx(getState()) && /^tool\d+$/.test(key) &&
+                key !== "tool" + (getState().active_tool || {}).physical) return reject();
             if (isIndx(getState()) && (key === "chamber" || /^tool\d+$/.test(key))) {
                 if (String(value).trim() === "" || !Number.isInteger(Number(value)) ||
                     Number(value) < 0 || Number(value) > 999) return reject();
