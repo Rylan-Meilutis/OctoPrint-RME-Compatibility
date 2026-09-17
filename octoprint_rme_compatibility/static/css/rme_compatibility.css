@@ -342,7 +342,7 @@
     flex-direction: column;
     align-items: center;
     vertical-align: top;
-    width: 180px;
+    width: 100%;
     max-width: 100%;
     box-sizing: border-box;
     padding: 8px;
@@ -353,41 +353,22 @@
     max-width: 100%;
     height: auto;
 }
-#rme-dashboard-progress circle {
-    fill: none;
-    stroke-width: 9px;
+#tab_plugin_dashboard .rme-dashboard-fan-neighbor {
+    /* The native last-row centering does not count the adjacent RME gauge. */
+    left: 0;
 }
-#rme-dashboard-progress .rme-dashboard-track {
-    stroke: currentColor;
-    opacity: .25;
-}
-#rme-dashboard-progress .rme-dashboard-logo {
-    fill: currentColor;
-    font-size: 26px;
-    font-weight: bold;
+#rme-dashboard-progress .rme-dashboard-logo circle {
+    fill: #fff;
+    stroke: none;
 }
 
 #tab_plugin_dashboard .rme-dashboard-workflow-gauge {
-    stroke: #f5a623;
     transition: stroke-dashoffset .25s linear;
 }
 
-#tab_plugin_dashboard .rme-dashboard-workflow-caption {
-    color: #f5a623;
-    font-size: 11px;
-    font-weight: bold;
-    line-height: 14px;
-    margin-top: 2px;
-    overflow-wrap: anywhere;
-}
-
 #tab_plugin_dashboard .rme-dashboard-workflow-indeterminate .rme-dashboard-workflow-gauge {
-    animation: rme-dashboard-dash 1.2s linear infinite;
-    stroke-dasharray: 70 269.292;
-}
-
-@keyframes rme-dashboard-dash {
-    to { stroke-dashoffset: -339.292; }
+    animation: rme-pulse 1.4s ease-in-out infinite;
+    stroke-dashoffset: 0;
 }
 
 @keyframes rme-pulse {

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0b104 — 2026-09-17
+
+- Replace the Dashboard RME wordmark with the firmware's RME host icon.
+- Position the persistent RME gauge beside Fan Speed in the same heater grid,
+  matching the native gauge dimensions, arc geometry, colors and text styling.
+- Show workflow percentage inside the gauge, with a status label below and
+  detailed workflow text in its tooltip. Unknown progress pulses instead of
+  displaying a fabricated percentage.
+- Preserve the default-on settings toggle and native print/time gauges.
+- Verify icon geometry, placement, progress and toggle behavior in DOM tests.
+  FSR maximum-height and mode-aware ETA issues remain outstanding.
+
 ## 0.1.0b103 — 2026-09-17
 
 - Add a persistent, independent Dashboard RME progress circle with a centered
