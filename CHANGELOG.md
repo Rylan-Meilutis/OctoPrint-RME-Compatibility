@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0b105 — 2026-09-17
+
+- Center the firmware RME icon horizontally and vertically inside the Dashboard
+  gauge. Place active progress beneath it and remove the idle placeholder dash.
+- Add regression assertions for icon centering and idle presentation.
+
 ## 0.1.0b104 — 2026-09-17
 
 - Replace the Dashboard RME wordmark with the firmware's RME host icon.

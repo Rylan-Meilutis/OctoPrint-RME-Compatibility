@@ -2121,12 +2121,12 @@ $(function () {
                     '<path class="bg rme-dashboard-track" stroke="#ccc" fill="none" />' +
                     '<path class="dashboardGauge rme-dashboard-workflow-gauge" stroke="#09c" fill="none" />' +
                     // Same vector as firmware src/gui/res/svg/rme_host_16x16.svg.
-                    '<svg class="rme-dashboard-logo" x="36%" y="20%" width="28%" height="28%" viewBox="0 0 16 16">' +
+                    '<svg class="rme-dashboard-logo" x="36%" y="36%" width="28%" height="28%" viewBox="0 0 16 16">' +
                     '<circle cx="8" cy="8" r="7" fill="#ffffff" />' +
                     '<path fill="#4b2e83" d="M4.5 3.5h4.1c2.05 0 3.4 1.18 3.4 3.02 0 1.31-.68 2.28-1.86 2.72l2.18 3.26H9.75L7.9 9.55H6.75v2.95H4.5zm2.25 1.85v2.42h1.6c.88 0 1.4-.44 1.4-1.22 0-.77-.52-1.2-1.4-1.2z" />' +
                     '</svg>' +
-                    '<text class="dashboardGauge rme-dashboard-percentage" font-size="30" x="50%" y="60%" dominant-baseline="middle" text-anchor="middle" fill="#08c"></text>' +
-                    '<text class="dashboardGauge rme-dashboard-workflow-caption" font-size="20" x="50%" y="85%" dominant-baseline="middle" text-anchor="middle" fill="#08c"></text>' +
+                    '<text class="dashboardGauge rme-dashboard-percentage" font-size="20" x="50%" y="73%" dominant-baseline="middle" text-anchor="middle" fill="#08c"></text>' +
+                    '<text class="dashboardGauge rme-dashboard-workflow-caption" font-size="20" x="50%" y="90%" dominant-baseline="middle" text-anchor="middle" fill="#08c"></text>' +
                     '</svg></div>');
                 var progressArea = root.find(".dashboardProgressContainer").first().parent();
                 if (progressArea.length) circle.appendTo(progressArea);
@@ -2159,7 +2159,7 @@ $(function () {
             circle.find(".rme-dashboard-workflow-gauge").attr({
                 "stroke-dasharray": arcLength, "stroke-dashoffset": arcLength * (1 - bounded / 100)
             });
-            circle.find(".rme-dashboard-percentage").text(determinate ? Math.round(bounded) + "%" : (active ? "…" : "—"));
+            circle.find(".rme-dashboard-percentage").text(determinate ? Math.round(bounded) + "%" : (active ? "…" : ""));
             circle.find(".rme-dashboard-workflow-caption").text(active ? "RME" : (self.state().connected ? "Ready" : "Offline"));
             circle.attr("title", label).attr("aria-label", label);
         }
