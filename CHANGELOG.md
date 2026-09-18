@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Keep navbar and Control lighting overrides usable during long print commands
+  even when a status snapshot is delayed; preserve transfer/recovery/lock guards.
+- Show the last firmware-reported light mode and label stale navbar status.
+  Navbar accessibility pressed state now follows On/Off rather than Locked.
+- Requires the firmware print-stream wakeup fix to prevent streamed moves from
+  immediately undoing light Off.
+
 ## 0.1.0b99 — 2026-09-16
 
 - Fix INDX identification for firmware reporting eight physical hotend slots.

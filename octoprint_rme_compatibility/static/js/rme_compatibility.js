@@ -195,6 +195,13 @@ $(function () {
                 !(self.state().lock || {}).locked;
         });
         self.tuneLight = ko.pureComputed(function () { return self.tune().light === undefined ? -1 : Number(self.tune().light); });
+        self.tuneLightingEnabled = ko.pureComputed(function () {
+            // Long print commands can delay snapshots. Lighting remains safe
+            // to request without disabling it merely because telemetry is old.
+            return self.tuneAvailable() && self.tuneLight() >= 0 &&
+                !self.transportRecoveryRequired() && !self.navbarTransferActive() &&
+                !(self.state().lock || {}).locked;
+        });
         self.tuneLcd = ko.pureComputed(function () { return self.tune().lcd === undefined ? -1 : Number(self.tune().lcd); });
         self.changeTuneLcd = function (_, event) {
             self.command("set_print_override", {kind: "lcd", value: Number(event.target.value)});
@@ -543,7 +550,12 @@ $(function () {
         });
         self.chamberLightTitle = ko.pureComputed(function () {
             if (self.chamberLightDisabled()) return self.chamberLightBlockedReason();
-            if (self.tuneAvailable()) return "Press to toggle the chamber light; select Locked in Control to keep it on";
+            if (self.tuneAvailable()) {
+                var stale = self.tick() - Number(self.tune().updated || 0) * 1000 >= 15000;
+                return "Chamber light: " + (["Off", "On", "Locked"][self.tuneLight()] || "Unknown") +
+                    (stale ? " (last reported; awaiting printer update)" : "") +
+                    "; press to toggle, or select Locked in Control";
+            }
             if (self.chamberLightHeld()) return "Chamber light latched on; press to turn off";
             return self.chamberLightOn() ?
                 "Chamber light temporarily on; double-press within two seconds to latch, or press later to turn off" :
@@ -654,19 +666,21 @@ $(function () {
             );
         });
         self.chamberLightBlockedReason = ko.pureComputed(function () {
-            if (self.chamberLightPrinterBusy()) return "Chamber light control is unavailable while printing";
+            if ((self.state().lock || {}).locked) return "Printer is locked";
+            if (self.tuneAvailable() && self.tuneLight() < 0) return "Waiting for printer lighting state";
+            if (!self.tuneAvailable() && self.chamberLightPrinterBusy()) return "This firmware does not support light control while printing";
             if (self.transportRecoveryRequired()) return "Chamber light control is unavailable until the RME transport recovers";
             if (self.navbarTransferActive()) return "Chamber light control is unavailable during an RME transfer";
             return "Chamber light control is unavailable";
         });
         self.chamberLightBlocked = ko.pureComputed(function () {
-            if (self.tuneAvailable()) return !self.tuneEnabled();
+            if (!self.state().connected || !self.state().supported) return true;
+            if (self.tuneAvailable()) return !self.tuneLightingEnabled();
             return (self.chamberLightPrinterBusy() && !self.tuneAvailable()) || self.transportRecoveryRequired() || self.navbarTransferActive();
         });
         self.chamberLightDisabled = ko.pureComputed(function () {
-            // Printing owns its lighting profile, and raw RME transfers own
-            // the serial transport. Continue showing the reported light state
-            // while preventing a conflicting command in either case.
+            // Modern lighting overrides remain available during prints.
+            // Transfers, recovery and the printer lock still block commands.
             return self.chamberLightBlocked();
         });
         self.navbarTransferWidth = ko.pureComputed(function () {

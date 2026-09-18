@@ -3,7 +3,7 @@
    role="button"
    data-bind="click: pressChamberLightButton,
               css: {'rme-chamber-light-on': chamberLightOn, 'rme-chamber-light-held': chamberLightHeld, 'rme-chamber-light-disabled': chamberLightDisabled},
-              attr: {title: chamberLightTitle, 'aria-label': chamberLightTitle, 'aria-pressed': chamberLightHeld, 'aria-disabled': chamberLightDisabled}">
+              attr: {title: chamberLightTitle, 'aria-label': chamberLightTitle, 'aria-pressed': chamberLightOn, 'aria-disabled': chamberLightDisabled}">
     <span class="rme-chamber-light-icon" aria-hidden="true">
         <i data-bind="css: chamberLightIconClass"></i>
         <i class="fas fa-lock rme-chamber-light-lock" data-bind="visible: chamberLightHeld"></i>
