@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b107 — 2026-09-18
 
 - Handle printer-confirmed RME Reprint requests through OctoPrint's normal
   full-start/preflight path. Only the same completed local file is eligible;
