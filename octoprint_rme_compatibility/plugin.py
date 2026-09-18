@@ -188,6 +188,10 @@ class RmeCompatibilityPlugin(
         self._auto_pa_batch = True
         self._tune_query_pending = False
         self._tune_last_mutation = 0.0
+        self._retry_file = None
+        self._retry_job_path = None
+        self._retry_ready = False
+        self._retry_running = False
 
     @staticmethod
     def _empty_state():
@@ -1049,6 +1053,9 @@ class RmeCompatibilityPlugin(
             self._defer(self._handle_spoolman_event)
             return
         if event == Events.CONNECTED:
+            self._retry_file = None
+            self._retry_job_path = None
+            self._retry_ready = False
             self._complete_firmware_reconnect()
             with self._state_lock:
                 self._connection_generation += 1
@@ -1112,6 +1119,9 @@ class RmeCompatibilityPlugin(
             self._schedule_post_connect_reconciliation(connection_generation, 0)
             self._defer(self._sync_spoolmanager, True)
         elif event in (Events.DISCONNECTING, Events.DISCONNECTED):
+            self._retry_file = None
+            self._retry_job_path = None
+            self._retry_ready = False
             if (
                 event == Events.DISCONNECTING
                 and self._state.get("supported")
@@ -1144,6 +1154,11 @@ class RmeCompatibilityPlugin(
             if event == Events.DISCONNECTED and self._firmware_reconnect_pending():
                 self._begin_firmware_reconnect()
         elif event == Events.PRINT_STARTED:
+            with self._state_lock:
+                job = payload or {}
+                self._retry_job_path = (job.get("origin"), job.get("path"))
+                self._retry_file = None
+                self._retry_ready = False
             if self._printer_transfer_active():
                 self._stop_print_started_during_transfer()
                 return
@@ -1179,6 +1194,9 @@ class RmeCompatibilityPlugin(
         elif event in (Events.PRINT_DONE, Events.PRINT_FAILED, Events.PRINT_CANCELLED):
             self._release_toolmap_hold()
             with self._state_lock:
+                selected = self._selected_retry_file()
+                self._retry_file = selected if selected and selected[:2] == self._retry_job_path else None
+                self._retry_ready = self._retry_file is not None
                 self._priority_controls_sent.clear()
                 self._firmware_completed_controls.clear()
                 self._transfer_conflict_cancel = False
@@ -1357,11 +1375,74 @@ class RmeCompatibilityPlugin(
         host; completion events merely synchronize OctoPrint's state.
         """
         name = str(kwargs.get("name") or action or "").strip().lower()
+        if name == "rme_retry":
+            # Emitted only after the printer's bed-clear confirmation. Keep
+            # receive callbacks nonblocking and coalesce repeated presses.
+            with self._state_lock:
+                if not self._state.get("supported") or self._retry_running:
+                    return
+                self._retry_running = True
+                generation = self._connection_generation
+                file_identity = self._retry_file
+            self._defer(self._restart_confirmed_print, generation, file_identity)
+            return
         completed = {"paused": "pause", "resumed": "resume"}.get(name)
         if completed:
             with self._state_lock:
                 if self._state.get("supported"):
                     self._firmware_completed_controls.add(completed)
+
+    def _selected_retry_file(self):
+        try:
+            file_info = (self._printer.get_current_data().get("job") or {}).get("file") or {}
+        except (AttributeError, TypeError):
+            return None
+        if file_info.get("origin") != "local" or not file_info.get("path"):
+            return None
+        return tuple(file_info.get(key) for key in ("origin", "path", "size", "date"))
+
+    def _restart_confirmed_print(self, generation, file_identity):
+        """Restart the same completed streamed job, never resume/reselect one."""
+        try:
+            with self._state_lock:
+                if (generation != self._connection_generation
+                        or not self._state.get("connected")
+                        or not self._state.get("supported")
+                        or not self._retry_ready or file_identity is None
+                        or file_identity != self._retry_file):
+                    raise ValueError("No completed RME job is available to retry")
+                if self._state.get("lock", {}).get("locked"):
+                    raise ValueError("Unlock the printer before retrying")
+            if self._printer_transfer_active() or self._print_job_active():
+                raise ValueError("Wait until the printer and OctoPrint are idle")
+            if not self._printer.is_operational():
+                raise ValueError("Printer is not operational")
+            if self._selected_retry_file() != file_identity:
+                raise ValueError("Selected file changed; restart from OctoPrint")
+            with self._state_lock:
+                if generation != self._connection_generation or self._retry_file != file_identity:
+                    raise ValueError("Retry expired")
+                self._retry_ready = False
+            # Use OctoPrint's normal start path: mapping/preflight and all
+            # normal start G-code run again. Never resume an aborted stream.
+            self._printer.start_print()
+            self._retry_notice("Restart requested", False)
+        except Exception as exc:
+            if generation == self._connection_generation:
+                self._retry_notice(str(exc), True)
+        finally:
+            with self._state_lock:
+                self._retry_running = False
+
+    def _retry_notice(self, message, error):
+        if hasattr(self, "_plugin_manager"):
+            self._plugin_manager.send_plugin_message(self._identifier, {
+                "retry_notice": {"message": message, "error": error},
+            })
+        if error:
+            self._logger.warning("RME reprint refused: %s", message)
+            if self._state.get("connected"):
+                self._send_command("M117 RME retry unavailable - check OctoPrint")
 
     def atcommand_sending_hook(
         self, comm_instance, phase, command, parameters, *args, **kwargs

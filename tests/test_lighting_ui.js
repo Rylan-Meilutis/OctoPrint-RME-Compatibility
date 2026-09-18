@@ -11,7 +11,8 @@ const {jQueryFactory} = require('jquery/factory');
     w.eval(fs.readFileSync(require.resolve('knockout/build/output/knockout-latest.js'), 'utf8'));
     w.OCTOPRINT_VIEWMODELS = [];
     w.gettext = x => x;
-    w.PNotify = function () {};
+    const notices = [];
+    w.PNotify = function (notice) { notices.push(notice); };
     w.eval(fs.readFileSync('octoprint_rme_compatibility/static/js/rme_compatibility.js', 'utf8'));
     await new Promise(resolve => $(resolve));
     const vm = new w.OCTOPRINT_VIEWMODELS[0].construct([{}, {}, {isPrinting: () => true, stateString: () => 'Printing'}, {}]);
@@ -47,6 +48,16 @@ const {jQueryFactory} = require('jquery/factory');
     assert.equal(vm.chamberLightDisabled(), true);
     const navbar = fs.readFileSync('octoprint_rme_compatibility/templates/rme_compatibility_light_navbar.jinja2', 'utf8');
     assert(navbar.includes("'aria-pressed': chamberLightOn"));
+    const beforeNotice = vm.state();
+    vm.onDataUpdaterPluginMessage('rme_compatibility', {
+        retry_notice: {message: 'Restart requested', error: false}
+    });
+    assert.equal(vm.state(), beforeNotice); // Partial notice is not a state snapshot.
+    assert.equal(notices.at(-1).type, 'success');
+    vm.onDataUpdaterPluginMessage('rme_compatibility', {
+        retry_notice: {message: 'Selected file changed', error: true}
+    });
+    assert.equal(notices.at(-1).type, 'error');
     dom.window.close();
     console.log('In-print lighting UI tests passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

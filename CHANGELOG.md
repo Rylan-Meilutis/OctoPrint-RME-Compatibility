@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Handle printer-confirmed RME Reprint requests through OctoPrint's normal
+  full-start/preflight path. Only the same completed local file is eligible;
+  changed files, active jobs, transfers, locks and reconnects reject retries.
+- Coalesce repeated requests and report restart/refusal to connected web UIs.
+  Requires firmware with the bed-clear confirmation and rme_retry action.
+
 - Keep navbar and Control lighting overrides usable during long print commands
   even when a status snapshot is delayed; preserve transfer/recovery/lock guards.
 - Show the last firmware-reported light mode and label stale navbar status.

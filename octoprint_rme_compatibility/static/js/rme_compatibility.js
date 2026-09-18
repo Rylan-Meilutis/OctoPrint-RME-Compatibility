@@ -1743,6 +1743,11 @@ $(function () {
             }
         };
         self.onDataUpdaterPluginMessage = function (plugin, data) {
+            if (plugin === "rme_compatibility" && data.retry_notice) {
+                new PNotify({title: "RME reprint", text: data.retry_notice.message,
+                    type: data.retry_notice.error ? "error" : "success"});
+                return;
+            }
             if (plugin === "rme_compatibility") self.acceptState(data);
             if (plugin === "cancelobject" && Array.isArray(data.objects)) {
                 self.cancelObjects(data.objects.filter(function (o) { return !o.ignore; }));
