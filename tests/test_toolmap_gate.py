@@ -3609,6 +3609,34 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertFalse(plugin._auto_pa_active)
         self.assertIsNone(plugin._state["workflow"])
 
+    def test_single_pa_results_close_only_single_calibration(self):
+        for line in ("PA_CALIBRATION cached result=0.04 max_flow=15",
+                     "PA_CALIBRATION tool=3 slot=2 result=0.04 max_flow=15 confidence=0.9",
+                     "PA_CALIBRATION tool=3 slot=2 fallback=0.04 confidence=0.2 reason=low_confidence",
+                     "PA_CALIBRATION anchor slot cleared=2"):
+            for batch in (True, False):
+                plugin = RmeCompatibilityPlugin()
+                plugin._schedule_publish = lambda: None
+                plugin._start_pressure_advance_workflow(batch=batch)
+                plugin._observe_pressure_advance_output(line)
+                self.assertEqual(batch, plugin._auto_pa_active)
+                self.assertEqual(batch, plugin._state["workflow"] is not None)
+
+    def test_structured_status_snapshots_expire_not_physical_workflows(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._schedule_publish = lambda: None
+        plugin._defer = lambda *args: None
+        plugin._handle_record(dict(record="event", seq=1, type="progress",
+            workflow="heating", state="printing", progress=80, message="Heating bed"))
+        self.assertIn("legacy_expires_at", plugin._state["workflow"])
+        plugin._handle_record(dict(record="event", seq=2, type="workflow",
+            workflow="tool_change", state="open", message="Tool change in progress"))
+        self.assertNotIn("legacy_expires_at", plugin._state["workflow"])
+        plugin._start_pressure_advance_workflow()
+        plugin._handle_record(dict(record="event", seq=3, type="progress",
+            workflow="heating", state="printing", progress=80, message="Heating hotend"))
+        self.assertNotIn("legacy_expires_at", plugin._state["workflow"])
+
     def test_m976_nested_unload_remains_visible_as_pressure_advance(self):
         plugin = RmeCompatibilityPlugin()
         plugin._schedule_publish = lambda: None

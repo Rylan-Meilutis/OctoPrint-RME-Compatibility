@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0b106 — 2026-09-17
+
+- Correct Dashboard maximum height from the selected file's validated slicer
+  metadata, with layer-comment fallback. Reject impossible heights and reset
+  on file changes; leave print-time/ETA metadata and G-code untouched.
+- Verify the reported FSR test file's 92 mm height and add UI regression tests
+  for corrupt native metadata, late updates, file changes and time isolation.
+- Finish standalone Auto PA workflows on terminal calibration results without
+  prematurely closing batch calibration. Expire status-only heating snapshots
+  that have no corresponding workflow-close event.
+- Validate with 214 Python tests and browser/UI regression checks.
+
 ## 0.1.0b105 — 2026-09-17
 
 - Center the firmware RME icon horizontally and vertically inside the Dashboard

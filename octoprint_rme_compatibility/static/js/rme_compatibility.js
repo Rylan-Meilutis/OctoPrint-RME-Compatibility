@@ -12,6 +12,42 @@ $(function () {
         self.cancelObjects = ko.observableArray([]);
         self.objectPreview = ko.observable({objects: [], bed: []});
         self.previewFile = null;
+        self.installDashboardHeight = function () {
+            var element = document.getElementById("tab_plugin_dashboard");
+            var dashboard = element && ko.dataFor(element);
+            if (!dashboard || !ko.isObservable(dashboard.totalHeight) || dashboard._rmeHeightInstalled) return;
+            dashboard._rmeHeightInstalled = true;
+            var updating = false, previousFile = ko.unwrap(self.printerState.filepath);
+            function update() {
+                if (updating || !self.state().supported) return;
+                updating = true;
+                try {
+                    var file = ko.unwrap(self.printerState.filepath);
+                    if (file !== previousFile) {
+                        previousFile = file;
+                        dashboard.totalHeight("-");
+                    }
+                    var limit = Number((self.state().machine || {}).z_max);
+                    if (!isFinite(limit) || limit <= 0) limit = 10000;
+                    function valid(value) {
+                        return value !== null && value !== undefined && value !== "" &&
+                            isFinite(Number(value)) && Number(value) > 0 && Number(value) <= limit;
+                    }
+                    var preview = self.objectPreview();
+                    var height = file && preview.file === file && valid(preview.height) ?
+                        Number(preview.height) : Number(dashboard.totalHeight());
+                    dashboard.totalHeight(valid(height) ? height.toFixed(2) : "-");
+                    var current = Number(ko.unwrap(dashboard.currentHeight));
+                    var percent = valid(height) && isFinite(current) ? Math.max(0, Math.min(100, current / height * 100)) : 0;
+                    if (ko.isObservable(dashboard.heightProgressString)) dashboard.heightProgressString(percent);
+                    if (ko.isObservable(dashboard.heightProgressBarString)) dashboard.heightProgressBarString(valid(height) ? Math.round(percent) + "%" : "—");
+                } finally { updating = false; }
+            }
+            [dashboard.totalHeight, dashboard.currentHeight, self.objectPreview, self.state, self.printerState.filepath].forEach(function (value) {
+                if (ko.isObservable(value)) value.subscribe(update);
+            });
+            update();
+        };
         function updateSelectedPreview() {
             var path = ko.unwrap(self.printerState.filepath);
             if (path !== self.previewFile) {
@@ -1675,6 +1711,7 @@ $(function () {
             $("a[href='#tab_plugin_rme_compatibility_objects']").closest("li").hide();
         };
         self.onAllBound = function () {
+            self.installDashboardHeight();
             self.integrateCancelObjectPreview();
             // Move the already-bound controls once, preserving their KO context.
             if ($("#control").length) $("#rme-print-controls").detach().appendTo("#control");

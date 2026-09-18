@@ -8,6 +8,7 @@ def read_preview(path):
     bed = None
     estimate = None
     height = None
+    layer_height = None
     position = dict(X=None, Y=None, Z=None, E=0.0)
     relative = False
     relative_e = False
@@ -25,6 +26,13 @@ def read_preview(path):
                         height = value
                 except ValueError:
                     pass
+            # Slicer layer comments are coordinates, unlike arbitrary Z-like
+            # text in thumbnails, custom macros, or accumulated travel moves.
+            match = re.fullmatch(r";\s*(?:Z|Z_HEIGHT|LAYER_Z)\s*:\s*(\d+(?:\.\d+)?)\s*", line)
+            if match:
+                value = float(match.group(1))
+                if math.isfinite(value) and 0 < value < 10000:
+                    layer_height = max(layer_height or 0, value)
             if line.startswith("; estimated printing time (normal mode) ="):
                 duration = line.split("=", 1)[1].strip()
                 estimate = sum(int(n) * {"d": 86400, "h": 3600, "m": 60, "s": 1}[u]
@@ -81,4 +89,4 @@ def read_preview(path):
                     else:
                         warnings.add("Preview segment limit reached.")
     return dict(objects=[dict(name=n, segments=s) for n, s in objects.items() if s],
-                bed=bed, estimated_seconds=estimate, height=height, warnings=sorted(warnings))
+                bed=bed, estimated_seconds=estimate, height=height or layer_height, warnings=sorted(warnings))

@@ -185,6 +185,7 @@ class RmeCompatibilityPlugin(
         # event, so retain a synthetic parent from transmission until the
         # command's terminal serial record arrives.
         self._auto_pa_active = False
+        self._auto_pa_batch = True
         self._tune_query_pending = False
         self._tune_last_mutation = 0.0
 
@@ -1637,7 +1638,9 @@ class RmeCompatibilityPlugin(
             else:
                 self._set_active_tool(logical_tool)
         if supported and re.match(r"^\s*M976(?:\s|$)", str(cmd or ""), re.IGNORECASE):
-            self._start_pressure_advance_workflow()
+            self._start_pressure_advance_workflow(batch=bool(re.search(
+                r"(?:^|\s)[AK](?:\s|\d|$)", str(cmd).split(";", 1)[0], re.IGNORECASE
+            )))
         if supported and (tool_match or park_match):
             # Events can be disabled or the lease absent. Ask for the live
             # selection even when no workflow close event will arrive.
@@ -1837,6 +1840,15 @@ class RmeCompatibilityPlugin(
                     if workflow_is_terminal(record):
                         record["state"] = "active"
                 record["received_at"] = now
+                if (
+                    record.get("workflow") != "pressure_advance"
+                    and record.get("type") in ("notification", "progress")
+                    and not record.get("code")
+                    and event_state in ("printing", "busy", "ready", "unknown")
+                ):
+                    # notify_status uses printer device state, not workflow
+                    # lifecycle, and need not emit a matching close event.
+                    record["legacy_expires_at"] = now + 15
                 if previous_workflow.get("workflow") == record.get("workflow"):
                     record["phase_started_at"] = previous_workflow.get("phase_started_at", now)
                 else:
@@ -2926,12 +2938,13 @@ class RmeCompatibilityPlugin(
             re.IGNORECASE,
         ))
 
-    def _start_pressure_advance_workflow(self):
+    def _start_pressure_advance_workflow(self, batch=True):
         """Show M976 while firmware performs its nested blocking workflows."""
         now = int(time.time())
         with self._state_lock:
             self._pa_abort_requested = False
             self._auto_pa_active = True
+            self._auto_pa_batch = batch
             self._state["workflow"] = {
                 "record": "event",
                 "type": "progress",
@@ -2957,7 +2970,11 @@ class RmeCompatibilityPlugin(
             line,
             re.IGNORECASE,
         ) or re.match(r"^Error:\s*M976(?:\s|$)", line, re.IGNORECASE)
-        if not accepted and not terminal:
+        single_result = re.match(
+            r"^PA_CALIBRATION\s+(?:cached\s+result=|anchor\s+slot\s+cleared=|tool=\d+\s+slot=\d+\s+(?:result|fallback)=)",
+            line, re.IGNORECASE,
+        )
+        if not accepted and not terminal and not single_result:
             return
         changed = False
         with self._state_lock:
@@ -2967,6 +2984,10 @@ class RmeCompatibilityPlugin(
                 self._pa_abort_requested = False
             if not self._auto_pa_active:
                 return
+            if accepted:
+                self._auto_pa_batch = True
+            if single_result and not self._auto_pa_batch:
+                terminal = True
             workflow = self._state.get("workflow") or {}
             if accepted and workflow.get("workflow") == "pressure_advance":
                 workflow = dict(workflow)
