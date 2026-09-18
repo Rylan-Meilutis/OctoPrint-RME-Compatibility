@@ -9,6 +9,87 @@
 - Requires the firmware print-stream wakeup fix to prevent streamed moves from
   immediately undoing light Off.
 
+## 0.1.0b106 — 2026-09-17
+
+- Correct Dashboard maximum height from the selected file's validated slicer
+  metadata, with layer-comment fallback. Reject impossible heights and reset
+  on file changes; leave print-time/ETA metadata and G-code untouched.
+- Verify the reported FSR test file's 92 mm height and add UI regression tests
+  for corrupt native metadata, late updates, file changes and time isolation.
+- Finish standalone Auto PA workflows on terminal calibration results without
+  prematurely closing batch calibration. Expire status-only heating snapshots
+  that have no corresponding workflow-close event.
+- Validate with 214 Python tests and browser/UI regression checks.
+
+## 0.1.0b105 — 2026-09-17
+
+- Center the firmware RME icon horizontally and vertically inside the Dashboard
+  gauge. Place active progress beneath it and remove the idle placeholder dash.
+- Add regression assertions for icon centering and idle presentation.
+
+## 0.1.0b104 — 2026-09-17
+
+- Replace the Dashboard RME wordmark with the firmware's RME host icon.
+- Position the persistent RME gauge beside Fan Speed in the same heater grid,
+  matching the native gauge dimensions, arc geometry, colors and text styling.
+- Show workflow percentage inside the gauge, with a status label below and
+  detailed workflow text in its tooltip. Unknown progress pulses instead of
+  displaying a fabricated percentage.
+- Preserve the default-on settings toggle and native print/time gauges.
+- Verify icon geometry, placement, progress and toggle behavior in DOM tests.
+  FSR maximum-height and mode-aware ETA issues remain outstanding.
+
+## 0.1.0b103 — 2026-09-17
+
+- Add a persistent, independent Dashboard RME progress circle with a centered
+  RME wordmark and Ready/Disconnected status. A default-on Dashboard setting
+  allows hiding it. Native Dashboard print progress and time gauges stay intact.
+- Display the readable INDX head as soon as its temperature arrives, without
+  waiting for the session selection to catch up. Heater writes still require
+  the authoritative selection to agree; parking clears the display promptly.
+- Keep routine mid-print filtration out of foreground workflow progress while
+  retaining post-print filtration and actionable errors.
+- Add regression coverage for these transitions and Dashboard toggle behavior.
+- FSR maximum-height and Normal/Stealth ETA investigation remain outstanding.
+
+## 0.1.0b102 — 2026-09-16
+
+- Restore Temperature control rows by preserving the native Knockout script
+  template as text rather than passing table-cell markup through jQuery.
+- Centre Dashboard gauges using the displayed INDX tool count, and constrain
+  gauge contents to their grid tracks so chamber controls remain in frame.
+- Reject empty file-selection entries safely during thumbnail initialization.
+- Exercise the real RME constructor in Temperature DOM regression tests,
+  including unloaded preheat controls and Dashboard layout calculations.
+  Automated tests pass; live themed-browser confirmation remains required.
+
+## 0.1.0b101 — 2026-09-16
+
+- Keep one INDX tool entry in Temperature and Dashboard, showing the mounted
+  tool's temperature or an explicit Unloaded state. Cover OctoPrint's native
+  Temperature tab container as well as customized layouts.
+- Limit the INDX temperature graph and legend to one tool plus bed and chamber;
+  preserve the full physical telemetry array and history internally.
+- Retain bed/chamber preheat controls when unloaded and prevent heating parked
+  tools. Refresh the plotted selection on tool-state changes.
+- Place the first-layer object preview above the native Cancel Object list.
+  Preserve both plugins' bindings and hide the redundant overview tab/list when
+  integrated; retain the standalone fallback if Cancel Object is unavailable.
+- Add DOM coverage for unload/tool-change/preheat transitions and the embedded
+  object preview. Hardware/browser confirmation remains required.
+
+## 0.1.0b100 — 2026-09-16
+
+- Resolve printer-side spool aliases against the full provider inventory, not
+  only the seven published presets. Ambiguous identities are never guessed.
+- Read printer assignments on reconnect even when a provider-sync prompt exists.
+- Import printer selections without writing stale assignments back during a
+  multi-tool snapshot. Internal spool identifiers remain unchanged.
+- Display material and color swatches rather than internal profile suffixes in
+  RME loaded-filament and spool mapping labels.
+- Automated Python and mapping UI tests cover these changes; live printer and
+  SpoolManager confirmation remains required.
+
 ## 0.1.0b99 — 2026-09-16
 
 - Fix INDX identification for firmware reporting eight physical hotend slots.

@@ -20,6 +20,21 @@
 .rme-object-map .cancelled path:not(.rme-object-hit) { stroke: #888; }
 .rme-object-map text { fill: currentColor; font-size: 10px; pointer-events: none; }
 .rme-object-list { max-height: 45vh; overflow-y: auto; overflow-wrap: anywhere; }
+/* Keep icon + SVG inside each Dashboard grid track, including narrow themes. */
+#tab_plugin_dashboard .rme-dashboard-heaters > .dashboard_threeQuarterGauge {
+    min-width: 0;
+    box-sizing: border-box;
+}
+#tab_plugin_dashboard .rme-dashboard-heaters > .dashboard_threeQuarterGauge > svg {
+    max-width: calc(100% - 55px);
+    box-sizing: border-box;
+    padding-left: 0;
+    padding-right: 0;
+}
+#tab_plugin_dashboard .rme-dashboard-heaters > .dashboard_threeQuarterGauge > .dashboardIcon {
+    max-width: 45px;
+    box-sizing: border-box;
+}
 .rme-tool-routing { table-layout: fixed; width: 100%; }
 .rme-tool-routing td:first-child { width: 25%; }
 .rme-tool-routing select { width: 100%; max-width: 100%; box-sizing: border-box; }
@@ -322,31 +337,38 @@
     white-space: nowrap;
 }
 
-#tab_plugin_dashboard .rme-dashboard-workflow-active > svg .dashboardGauge:not(.rme-dashboard-workflow-gauge) {
-    opacity: 0;
+#rme-dashboard-progress {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    vertical-align: top;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding: 8px;
+    text-align: center;
+}
+#rme-dashboard-progress > svg {
+    width: 140px;
+    max-width: 100%;
+    height: auto;
+}
+#tab_plugin_dashboard .rme-dashboard-fan-neighbor {
+    /* The native last-row centering does not count the adjacent RME gauge. */
+    left: 0;
+}
+#rme-dashboard-progress .rme-dashboard-logo circle {
+    fill: #fff;
+    stroke: none;
 }
 
 #tab_plugin_dashboard .rme-dashboard-workflow-gauge {
-    stroke: #f5a623;
     transition: stroke-dashoffset .25s linear;
 }
 
-#tab_plugin_dashboard .rme-dashboard-workflow-caption {
-    color: #f5a623;
-    font-size: 11px;
-    font-weight: bold;
-    line-height: 14px;
-    margin-top: 2px;
-    overflow-wrap: anywhere;
-}
-
 #tab_plugin_dashboard .rme-dashboard-workflow-indeterminate .rme-dashboard-workflow-gauge {
-    animation: rme-dashboard-dash 1.2s linear infinite;
-    stroke-dasharray: 70 269.292;
-}
-
-@keyframes rme-dashboard-dash {
-    to { stroke-dashoffset: -339.292; }
+    animation: rme-pulse 1.4s ease-in-out infinite;
+    stroke-dashoffset: 0;
 }
 
 @keyframes rme-pulse {

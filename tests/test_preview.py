@@ -6,6 +6,26 @@ from octoprint_rme_compatibility.preview import read_preview
 
 
 class PreviewTests(unittest.TestCase):
+    def preview_text(self, text):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".gcode", delete=False) as f:
+            f.write(text)
+        try:
+            return read_preview(f.name)
+        finally:
+            os.unlink(f.name)
+
+    def test_height_is_slicer_metadata_not_macro_or_thumbnail_numbers(self):
+        result = self.preview_text("; max_z_height: 92.00\n; thumbnail Z975494.63\n"
+                                   "G1 Z975494.63\n;LAYER_CHANGE\n;Z:0.2\n"
+                                   ";LAYER_CHANGE\n;Z:92\nG1 Z270 ; park\n")
+        self.assertEqual(92, result["height"])
+
+    def test_layer_comments_supply_height_without_valid_header(self):
+        for header in ("", "; max_z_height: 975494.63\n", "; max_z_height: nan\n"):
+            result = self.preview_text(header + ";LAYER_CHANGE\n;Z:0.2\n;LAYER_CHANGE\n;Z:92\n")
+            self.assertEqual(92, result["height"])
+        self.assertIsNone(self.preview_text("; thumbnail Z975494.63\nG1 Z270\n")["height"])
+
     def test_first_layer_and_metadata(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".gcode", delete=False) as f:
             f.write("; max_z_height: 48\nG90\nM83\n;LAYER_CHANGE\n@Object boat id:33 copy 0\n"

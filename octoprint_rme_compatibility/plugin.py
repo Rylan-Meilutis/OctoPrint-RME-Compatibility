@@ -185,6 +185,7 @@ class RmeCompatibilityPlugin(
         # event, so retain a synthetic parent from transmission until the
         # command's terminal serial record arrives.
         self._auto_pa_active = False
+        self._auto_pa_batch = True
         self._tune_query_pending = False
         self._tune_last_mutation = 0.0
 
@@ -406,6 +407,7 @@ class RmeCompatibilityPlugin(
     def get_settings_defaults(self):
         return {
             "auto_open_session": True,
+            "dashboard_rme_progress": True,
             "legacy_notifications": False,
             "auto_machine_profile": True,
             "prompt_toolmap_on_print": True,
@@ -1636,7 +1638,9 @@ class RmeCompatibilityPlugin(
             else:
                 self._set_active_tool(logical_tool)
         if supported and re.match(r"^\s*M976(?:\s|$)", str(cmd or ""), re.IGNORECASE):
-            self._start_pressure_advance_workflow()
+            self._start_pressure_advance_workflow(batch=bool(re.search(
+                r"(?:^|\s)[AK](?:\s|\d|$)", str(cmd).split(";", 1)[0], re.IGNORECASE
+            )))
         if supported and (tool_match or park_match):
             # Events can be disabled or the lease absent. Ask for the live
             # selection even when no workflow close event will arrive.
@@ -1836,6 +1840,15 @@ class RmeCompatibilityPlugin(
                     if workflow_is_terminal(record):
                         record["state"] = "active"
                 record["received_at"] = now
+                if (
+                    record.get("workflow") != "pressure_advance"
+                    and record.get("type") in ("notification", "progress")
+                    and not record.get("code")
+                    and event_state in ("printing", "busy", "ready", "unknown")
+                ):
+                    # notify_status uses printer device state, not workflow
+                    # lifecycle, and need not emit a matching close event.
+                    record["legacy_expires_at"] = now + 15
                 if previous_workflow.get("workflow") == record.get("workflow"):
                     record["phase_started_at"] = previous_workflow.get("phase_started_at", now)
                 else:
@@ -1846,7 +1859,23 @@ class RmeCompatibilityPlugin(
                     follow_up.extend(["@RME SESSION QUERY", "@RME DIALOG QUERY"])
                     follow_up.append("refresh_configuration:all")
                 self._state["session"]["last_seq"] = sequence
-                if _retain_extrusion_fault(previous_workflow, record):
+                background_filtration = (
+                    original_workflow == "filtration"
+                    and record.get("type") != "error"
+                    and event_state not in ("waiting", "failed")
+                    and record.get("code") != "post_print"
+                    and "post-print" not in str(record.get("message", "")).lower()
+                )
+                if background_filtration:
+                    # Mid-print filtering is background activity, not a
+                    # blocking workflow. Consume its sequence without hiding
+                    # tool changes/calibration or leaving a permanent banner.
+                    if (previous_workflow.get("workflow") == "filtration"
+                            and (workflow_is_terminal(record)
+                                 or previous_workflow.get("type") != "error"
+                                 and previous_workflow.get("state") != "waiting")):
+                        self._state["workflow"] = None
+                elif _retain_extrusion_fault(previous_workflow, record):
                     retained = dict(previous_workflow)
                     retained["recovery"] = dict(record)
                     retained["updated_at"] = now
@@ -2909,12 +2938,13 @@ class RmeCompatibilityPlugin(
             re.IGNORECASE,
         ))
 
-    def _start_pressure_advance_workflow(self):
+    def _start_pressure_advance_workflow(self, batch=True):
         """Show M976 while firmware performs its nested blocking workflows."""
         now = int(time.time())
         with self._state_lock:
             self._pa_abort_requested = False
             self._auto_pa_active = True
+            self._auto_pa_batch = batch
             self._state["workflow"] = {
                 "record": "event",
                 "type": "progress",
@@ -2940,7 +2970,11 @@ class RmeCompatibilityPlugin(
             line,
             re.IGNORECASE,
         ) or re.match(r"^Error:\s*M976(?:\s|$)", line, re.IGNORECASE)
-        if not accepted and not terminal:
+        single_result = re.match(
+            r"^PA_CALIBRATION\s+(?:cached\s+result=|anchor\s+slot\s+cleared=|tool=\d+\s+slot=\d+\s+(?:result|fallback)=)",
+            line, re.IGNORECASE,
+        )
+        if not accepted and not terminal and not single_result:
             return
         changed = False
         with self._state_lock:
@@ -2950,6 +2984,10 @@ class RmeCompatibilityPlugin(
                 self._pa_abort_requested = False
             if not self._auto_pa_active:
                 return
+            if accepted:
+                self._auto_pa_batch = True
+            if single_result and not self._auto_pa_batch:
+                terminal = True
             workflow = self._state.get("workflow") or {}
             if accepted and workflow.get("workflow") == "pressure_advance":
                 workflow = dict(workflow)
@@ -4362,9 +4400,8 @@ class RmeCompatibilityPlugin(
         """Load aliases first, then import printer assignments on connection."""
         self._sync_spoolmanager(True, False)
         with self._state_lock:
-            pending = self._state["spoolmanager"].get("pending_provider_sync")
             can_send = self._state["connected"] and self._state["supported"]
-        if can_send and not pending:
+        if can_send:
             self._send_command("M865 Q")
 
     def _sync_filaments_to_printer(self):
@@ -4596,6 +4633,25 @@ class RmeCompatibilityPlugin(
             published = copy.deepcopy(self._state["spoolmanager"].get("published", []))
             selected = copy.deepcopy(self._state["spoolmanager"].get("selected", []))
         match = next((item for item in published if item["alias"] == profile), None)
+        # The printer retains aliases even when their spools are no longer in
+        # the seven currently published preset slots. Resolve only an exact,
+        # unambiguous identity from the full provider inventory; never guess
+        # from material/color, which multiple physical spools can share.
+        if match is None and re.fullmatch(r"(?:[A-Z0-9]{1,3}-[0-9A-Z]{3}|S[0-9A-Z]{6})", profile):
+            inventory_method = getattr(provider, "inventory", None)
+            if callable(inventory_method):
+                try:
+                    inventory = inventory_method(include_unavailable=True)
+                except TypeError:
+                    inventory = inventory_method()
+                candidates = []
+                for item in inventory:
+                    alias = spool_alias(item["material"], item["database_id"])
+                    collision_alias = spool_alias(item["material"], item["database_id"], {alias})
+                    if profile in (alias, collision_alias):
+                        candidates.append(item)
+                if len(candidates) == 1:
+                    match = candidates[0]
         current = next((item for item in selected if int(item.get("tool", -1)) == tool), None)
         self._logger.info(
             "Firmware filament report: tool=T%d material=%s profile=%s "
@@ -4614,7 +4670,9 @@ class RmeCompatibilityPlugin(
                 self._mark_expected_provider_event(tool, match["database_id"])
                 provider.select(tool, match["database_id"])
                 self._refresh_provider_clients(provider)
-                self._sync_spoolmanager(True, True)
+                # Import only. Rewriting all printer assignments here races
+                # the remaining records in this same firmware snapshot.
+                self._sync_spoolmanager(True, False)
             else:
                 expected_vendor = self._gcode_text(match.get("vendor"), 23)
                 expected_color_name = self._gcode_text(

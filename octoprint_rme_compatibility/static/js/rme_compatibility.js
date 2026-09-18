@@ -12,6 +12,42 @@ $(function () {
         self.cancelObjects = ko.observableArray([]);
         self.objectPreview = ko.observable({objects: [], bed: []});
         self.previewFile = null;
+        self.installDashboardHeight = function () {
+            var element = document.getElementById("tab_plugin_dashboard");
+            var dashboard = element && ko.dataFor(element);
+            if (!dashboard || !ko.isObservable(dashboard.totalHeight) || dashboard._rmeHeightInstalled) return;
+            dashboard._rmeHeightInstalled = true;
+            var updating = false, previousFile = ko.unwrap(self.printerState.filepath);
+            function update() {
+                if (updating || !self.state().supported) return;
+                updating = true;
+                try {
+                    var file = ko.unwrap(self.printerState.filepath);
+                    if (file !== previousFile) {
+                        previousFile = file;
+                        dashboard.totalHeight("-");
+                    }
+                    var limit = Number((self.state().machine || {}).z_max);
+                    if (!isFinite(limit) || limit <= 0) limit = 10000;
+                    function valid(value) {
+                        return value !== null && value !== undefined && value !== "" &&
+                            isFinite(Number(value)) && Number(value) > 0 && Number(value) <= limit;
+                    }
+                    var preview = self.objectPreview();
+                    var height = file && preview.file === file && valid(preview.height) ?
+                        Number(preview.height) : Number(dashboard.totalHeight());
+                    dashboard.totalHeight(valid(height) ? height.toFixed(2) : "-");
+                    var current = Number(ko.unwrap(dashboard.currentHeight));
+                    var percent = valid(height) && isFinite(current) ? Math.max(0, Math.min(100, current / height * 100)) : 0;
+                    if (ko.isObservable(dashboard.heightProgressString)) dashboard.heightProgressString(percent);
+                    if (ko.isObservable(dashboard.heightProgressBarString)) dashboard.heightProgressBarString(valid(height) ? Math.round(percent) + "%" : "—");
+                } finally { updating = false; }
+            }
+            [dashboard.totalHeight, dashboard.currentHeight, self.objectPreview, self.state, self.printerState.filepath].forEach(function (value) {
+                if (ko.isObservable(value)) value.subscribe(update);
+            });
+            update();
+        };
         function updateSelectedPreview() {
             var path = ko.unwrap(self.printerState.filepath);
             if (path !== self.previewFile) {
@@ -83,9 +119,12 @@ $(function () {
         var temperatureTemplate = $("#temprow-template");
         if (temperatureTemplate.length && parameters[4]) {
             parameters[4].rmeSendTemperature = function (command) { return OctoPrint.printer.commands(command); };
-            temperatureTemplate.html(RmePassiveTools.install(parameters[4], self.state, ko.unwrap,
-                temperatureTemplate.html(), formatTemperature,
-                function () { return OctoPrintClient.createRejectedDeferred(); }));
+            // jQuery.html() parses table-cell fragments and can insert element
+            // children into this script. Knockout reads script.text, which then
+            // contains only whitespace: every heater row becomes empty.
+            temperatureTemplate[0].textContent = RmePassiveTools.install(parameters[4], self.state, ko.unwrap,
+                temperatureTemplate[0].textContent, formatTemperature,
+                function () { return OctoPrintClient.createRejectedDeferred(); });
             RmePassiveTools.installRows(document);
             var profileUpdated = parameters[4]._printerProfileUpdated;
             parameters[4]._printerProfileUpdated = function () {
@@ -95,6 +134,7 @@ $(function () {
             };
             self.state.subscribe(function (state) {
                 if (RmePassiveTools.isIndx(state)) parameters[4].hasChamber(true);
+                parameters[4].updatePlot();
             });
         }
         self.transportRecoveryRequired = ko.pureComputed(function () {
@@ -833,26 +873,18 @@ $(function () {
             if (spool.is_active === false) availability.push("inactive");
             if (remaining !== null && remaining !== undefined && Number(remaining) <= 0) availability.push("empty");
             if (spool.is_template === true) availability.push("template profile");
-            return (spool.alias ? spool.alias + " — " : "") + spool.display_name +
-                (spool.vendor ? " · " + spool.vendor : "") + " · " + spool.material +
+            return (spool.material || "Unassigned") +
                 (remaining === null || remaining === undefined ? "" : " · " + Number(remaining).toFixed(0) + " g left") +
                 (availability.length ? " · " + availability.join(", ") : "");
         };
         self.loadedFilamentLabel = function (filament) {
             if (!filament) return "Nothing reported";
-            var profile = filament.firmware_profile || filament.profile || filament.firmware_alias || "";
-            var material = filament.material || filament.firmware_material || "Unassigned";
-            var details = [];
-            // A resolved RME alias is transport metadata, not the spool name
-            // or material. Prefer the inventory provider's native name and
-            // retain the short profile only as a fallback for unknown records.
-            if (filament.display_name) details.push(filament.display_name);
-            else if (profile && profile !== material) details.push(profile);
-            details.push(material);
-            var manufacturer = filament.manufacturer || filament.vendor;
-            if (manufacturer) details.push("Manufacturer: " + manufacturer);
-            if (filament.color_name && filament.color_name !== "None") details.push(filament.color_name);
-            return details.join(" · ");
+            // Profile/alias is an internal spool identity. Never fall back to
+            // it for a visible material label, including unresolved records.
+            var material = filament.material || filament.firmware_material || "";
+            var profile = filament.firmware_profile || filament.profile || filament.firmware_alias;
+            var internalAlias = material === profile && /^(?:[A-Z]{1,3}-[0-9A-Z]{3}|S[0-9A-Z]{6})$/.test(material);
+            return material && !internalAlias ? material : "Unassigned";
         };
         self.openNativeSpoolSelector = function (row) {
             var provider = String(self.spoolmanager().provider || "").toLowerCase();
@@ -1679,18 +1711,29 @@ $(function () {
                 self.tick(Date.now());
                 updateCorePrintClock();
                 updateSelectedPreview();
-                if (self.workflowVisible() || $("#rme-workflow-overlay, .rme-dashboard-workflow-active").length) {
-                    scheduleCoreWorkflowRender();
-                }
+                scheduleCoreWorkflowRender();
             }, 1000);
         };
+        self.integrateCancelObjectPreview = function () {
+            var list = $("#tab_plugin_cancelobject #cancel-table");
+            var preview = $("#rme-object-overview");
+            if (!list.length || !preview.length) return;
+            // Both plugins have bound their own roots already. Moving the node
+            // retains RME's context without rebinding Cancel Object's controls.
+            preview.detach().insertBefore(list);
+            preview.find(".rme-object-list").hide();
+            $("a[href='#tab_plugin_rme_compatibility_objects']").closest("li").hide();
+        };
         self.onAllBound = function () {
+            self.installDashboardHeight();
+            self.integrateCancelObjectPreview();
             // Move the already-bound controls once, preserving their KO context.
             if ($("#control").length) $("#rme-print-controls").detach().appendTo("#control");
             self.allViewModelsBound = true;
             installSpoolManagerPanel();
             installSpoolManagerSidebar();
             updateCorePrintClock();
+            scheduleCoreWorkflowRender();
         };
         self.onSettingsShown = function () {
             if (self.state().supported) {
@@ -1981,10 +2024,12 @@ $(function () {
             var originalEnableSelectAndPrint = self.files.enableSelectAndPrint;
             var originalEnableSlicing = self.files.enableSlicing;
             self.files.enableSelect = function (entry) {
+                if (!entry) return false;
                 return entry && entry.rme && entry.type !== "machinecode" ? false :
                     originalEnableSelect.apply(self.files, arguments);
             };
             self.files.enableSelectAndPrint = function (entry) {
+                if (!entry) return false;
                 return entry && entry.rme && entry.type !== "machinecode" ? false :
                     originalEnableSelectAndPrint.apply(self.files, arguments);
             };
@@ -2111,43 +2156,63 @@ $(function () {
         function renderDashboardWorkflow(active, workflow) {
             var root = $("#tab_plugin_dashboard");
             if (!root.length) return;
-            var bar = root.find(".dashboardProgressBar").filter(function () {
-                return $(this).find("[title='GCode Progress']").length > 0;
+            var settings = (((self.settings || {}).settings || {}).plugins || {}).rme_compatibility || {};
+            var circle = root.find("#rme-dashboard-progress");
+            var fan = root.find(".dashboard_threeQuarterGauge").filter(function () {
+                return String($(this).attr("data-bind") || "").indexOf("'fan'") >= 0;
             }).first();
-            var circle = root.find(".dashboardProgressContainer").filter(function () {
-                return $(this).find("circle[data-bind*='printerStateModel.progressString']").length > 0;
-            }).first();
-            var targets = bar.add(circle);
-            if (!active) {
-                targets.removeClass("rme-dashboard-workflow-active rme-dashboard-workflow-indeterminate");
-                targets.find(".rme-dashboard-workflow-gauge, .rme-dashboard-workflow-caption").remove();
+            if (ko.unwrap(settings.dashboard_rme_progress) === false) {
+                circle.remove();
+                fan.removeClass("rme-dashboard-fan-neighbor");
                 return;
             }
-            var progress = Number(self.workflowProgress());
-            var determinate = isFinite(progress);
-            var bounded = determinate ? Math.max(0, Math.min(100, progress)) : 50;
-            var offset = 339.292 * (1 - bounded / 100);
-            var label = self.workflowTitle() + " — " + (workflow.message || self.workflowState());
-            if (determinate) label += " · " + Math.round(bounded) + "%";
-            targets.each(function () {
-                var target = $(this);
-                target.addClass("rme-dashboard-workflow-active")
-                    .toggleClass("rme-dashboard-workflow-indeterminate", !determinate);
-                var gauge = target.find(".rme-dashboard-workflow-gauge");
-                if (!gauge.length) {
-                    var source = target.find("path.dashboardGauge, circle.dashboardGauge").first();
-                    if (source.length) {
-                        gauge = source.clone(false)
-                            .removeAttr("data-bind")
-                            .addClass("rme-dashboard-workflow-gauge")
-                            .appendTo(source.parent());
-                    }
+            if (!circle.length) {
+                circle = $('<div id="rme-dashboard-progress" class="dashboardGridItem dashboard_threeQuarterGauge" role="group" aria-label="RME workflow progress">' +
+                    '<svg viewBox="0 0 140 140" role="img" aria-label="RME">' +
+                    '<path class="bg rme-dashboard-track" stroke="#ccc" fill="none" />' +
+                    '<path class="dashboardGauge rme-dashboard-workflow-gauge" stroke="#09c" fill="none" />' +
+                    // Same vector as firmware src/gui/res/svg/rme_host_16x16.svg.
+                    '<svg class="rme-dashboard-logo" x="36%" y="36%" width="28%" height="28%" viewBox="0 0 16 16">' +
+                    '<circle cx="8" cy="8" r="7" fill="#ffffff" />' +
+                    '<path fill="#4b2e83" d="M4.5 3.5h4.1c2.05 0 3.4 1.18 3.4 3.02 0 1.31-.68 2.28-1.86 2.72l2.18 3.26H9.75L7.9 9.55H6.75v2.95H4.5zm2.25 1.85v2.42h1.6c.88 0 1.4-.44 1.4-1.22 0-.77-.52-1.2-1.4-1.2z" />' +
+                    '</svg>' +
+                    '<text class="dashboardGauge rme-dashboard-percentage" font-size="20" x="50%" y="73%" dominant-baseline="middle" text-anchor="middle" fill="#08c"></text>' +
+                    '<text class="dashboardGauge rme-dashboard-workflow-caption" font-size="20" x="50%" y="90%" dominant-baseline="middle" text-anchor="middle" fill="#08c"></text>' +
+                    '</svg></div>');
+                var progressArea = root.find(".dashboardProgressContainer").first().parent();
+                if (progressArea.length) circle.appendTo(progressArea);
+                else circle.appendTo(root);
+            }
+            var arc = "M31.82 108.18a54 54 0 1 1 76.36 0", arcLength = 254.47;
+            if (fan.length) {
+                fan.addClass("rme-dashboard-fan-neighbor");
+                if (circle.prev()[0] !== fan[0]) circle.insertAfter(fan);
+                // Match the native gauge dimensions, including fullscreen themes.
+                var fanSvg = fan.children("svg").first();
+                var nativeGauge = fanSvg.find("path.dashboardGauge").first();
+                arc = nativeGauge.attr("d") || arc;
+                arcLength = parseFloat(nativeGauge.attr("stroke-dasharray")) || arcLength;
+                circle.children("svg").attr("viewBox", fanSvg.attr("viewBox") || "0 0 140 140");
+                if (fanSvg.width() > 0 && fanSvg.height() > 0) {
+                    circle.children("svg").css({width: fanSvg.width(), height: fanSvg.height()});
                 }
-                gauge.attr("stroke-dashoffset", offset);
-                var caption = target.find(".rme-dashboard-workflow-caption");
-                if (!caption.length) caption = $('<div class="rme-dashboard-workflow-caption"></div>').appendTo(target);
-                caption.text(label).attr("title", label);
+            }
+            var raw = self.workflowProgress();
+            var progress = Number(raw);
+            var determinate = active && raw !== null && raw !== undefined && isFinite(progress);
+            var bounded = determinate ? Math.max(0, Math.min(100, progress)) : 0;
+            var label = active ? self.workflowTitle() + " — " + (workflow.message || self.workflowState()) : "Ready";
+            if (!active && !self.state().connected) label = "Disconnected";
+            if (determinate) label += " · " + Math.round(bounded) + "%";
+            circle.toggleClass("rme-dashboard-workflow-active", active)
+                .toggleClass("rme-dashboard-workflow-indeterminate", active && !determinate);
+            circle.find(".rme-dashboard-track, .rme-dashboard-workflow-gauge").attr("d", arc);
+            circle.find(".rme-dashboard-workflow-gauge").attr({
+                "stroke-dasharray": arcLength, "stroke-dashoffset": arcLength * (1 - bounded / 100)
             });
+            circle.find(".rme-dashboard-percentage").text(determinate ? Math.round(bounded) + "%" : (active ? "…" : ""));
+            circle.find(".rme-dashboard-workflow-caption").text(active ? "RME" : (self.state().connected ? "Ready" : "Offline"));
+            circle.attr("title", label).attr("aria-label", label);
         }
 
         function updateCorePrintClock() {
