@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.0b108 — 2026-09-19
+
+- Send OctoPrint's live completion and remaining-time estimate via the
+  capability-gated RME PROGRESS service during local streamed jobs. Unknown
+  stays unknown, pauses are explicit, and only one update is outstanding.
+  Firmware gives this estimate precedence over M73/M117 without reapplying
+  speed scaling. This synchronizes estimates; it does not make them exact.
+
+- Use binary On/Off during serial or local printing; retain timed On/Locked/Off
+  only while idle. Navbar and Control share immediate pending feedback, roll
+  back on API failure, and reconcile with firmware telemetry (5-second bound).
+- Route lighting and confirmation queries through the reserved RME service
+  path instead of waiting behind printing moves; remove motion-tune throttling
+  for discrete lighting clicks. Transfer/recovery/lock guards remain.
+- Bundle the clearly named RME OctoPod Lighting Bridge with the octolightHA
+  discovery/API contract. It delegates to RME, never GPIO/Home Assistant;
+  it declines loading if the real OctoLight HA package is installed.
+- Requires matching firmware for print overrides independent of idle/door
+  activity. Hardware and iOS integration validation remain pending.
+
 ## 0.1.0b107 — 2026-09-18
 
 - Handle printer-confirmed RME Reprint requests through OctoPrint's normal

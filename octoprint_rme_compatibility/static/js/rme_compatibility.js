@@ -234,7 +234,27 @@ $(function () {
                 !self.transportRecoveryRequired() && !self.navbarTransferActive() &&
                 !(self.state().lock || {}).locked;
         });
-        self.tuneLight = ko.pureComputed(function () { return self.tune().light === undefined ? -1 : Number(self.tune().light); });
+        self.pendingLight = ko.observable(null);
+        self.tuneLight = ko.pureComputed(function () {
+            var pending = self.pendingLight();
+            var value = self.tune().light === undefined ? -1 : Number(self.tune().light);
+            if (pending && self.state().connected && self.tick() < pending.until) value = pending.value;
+            return self.chamberLightPrinterBusy() && value > 0 ? 1 : value;
+        });
+        self.tune.subscribe(function (snapshot) {
+            var pending = self.pendingLight();
+            if (pending && Number(snapshot.light) === pending.value && Number(snapshot.updated) > pending.sent) self.pendingLight(null);
+        });
+        self.requestChamberLight = function (value) {
+            if (!self.tuneLightingEnabled()) return;
+            value = self.chamberLightPrinterBusy() ? (value > 0 ? 1 : 0) : value;
+            var pending = {value: value, sent: Date.now() / 1000, until: Date.now() + 5000};
+            self.pendingLight(pending);
+            var request = self.command("set_print_override", {kind: "light", value: value});
+            if (request && request.fail) request.fail(function () {
+                if (self.pendingLight() === pending) self.pendingLight(null);
+            });
+        };
         self.tuneLightingEnabled = ko.pureComputed(function () {
             // Long print commands can delay snapshots. Lighting remains safe
             // to request without disabling it merely because telemetry is old.
@@ -259,8 +279,7 @@ $(function () {
         self.applyTuneFlow = function (row) { self.command("set_print_override", {kind: "flow", tool: row.tool, value: Number(row.draft())}); };
         self.toggleTuneStealth = function () { self.command("set_print_override", {kind: "stealth", value: Number(self.tune().stealth) ? 0 : 1}); };
         self.changeTuneLight = function (_, event) {
-            self.command("set_print_override", {kind: "light", value: Number(event.target.value)});
-            event.target.value = self.tuneLight();
+            self.requestChamberLight(Number(event.target.value));
         };
         self.liveMapping = ko.pureComputed(function () {
             var map = self.state().toolmap || {}, mapping = map.mapping || {};
@@ -594,7 +613,8 @@ $(function () {
                 var stale = self.tick() - Number(self.tune().updated || 0) * 1000 >= 15000;
                 return "Chamber light: " + (["Off", "On", "Locked"][self.tuneLight()] || "Unknown") +
                     (stale ? " (last reported; awaiting printer update)" : "") +
-                    "; press to toggle, or select Locked in Control";
+                    (self.pendingLight() ? " (syncing)" : "") +
+                    (self.chamberLightPrinterBusy() ? "; press to toggle" : "; press to toggle, or select Locked in Control");
             }
             if (self.chamberLightHeld()) return "Chamber light latched on; press to turn off";
             return self.chamberLightOn() ?
@@ -697,7 +717,10 @@ $(function () {
         self.navbarTransferActive = ko.pureComputed(function () { return !!self.navbarTransfer().active; });
         self.chamberLightPrinterBusy = ko.pureComputed(function () {
             var stateName = String(ko.unwrap(self.printerState.stateString) || "").toLowerCase();
+            var localPrint = self.tune().printing === undefined ?
+                /^(PRINTING|PAUSED|PAUSING|RESUMING)$/.test(String((self.state().session || {}).printer_state || "")) : Number(self.tune().printing) === 1;
             return !!(
+                localPrint ||
                 ko.unwrap(self.printerState.isPrinting) ||
                 ko.unwrap(self.printerState.isPausing) ||
                 ko.unwrap(self.printerState.isResuming) ||
@@ -1402,7 +1425,7 @@ $(function () {
             var now = Date.now();
             if (self.chamberLightDisabled()) return;
             if (self.tuneAvailable()) {
-                self.command("set_print_override", {kind: "light", value: self.tuneLight() > 0 ? 0 : 1});
+                self.requestChamberLight(self.tuneLight() > 0 ? 0 : 1);
                 return;
             }
             if (self.chamberLightHeld()) {

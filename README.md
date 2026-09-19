@@ -359,3 +359,14 @@ provide an independent chamber heater. A target may be unreachable with a cold
 bed or unfavorable ambient conditions. During printing, normal print-fan control
 is preserved. Reconnect after updating and synchronize the printer profile if
 automatic profile synchronization is disabled.
+# OctoPod lighting compatibility
+
+The bundled **RME OctoPod Lighting Bridge** exposes OctoPod's existing
+`octolightHA` discovery and light API using RME chamber-light controls. Restart
+OctoPrint after installing the update and refresh the printer in OctoPod.
+No GPIO or Home Assistant configuration is needed. Do not install the real
+OctoLight HA plugin alongside the bridge: the shared API identifier can only
+have one owner; the bridge declines loading when that package is present.
+Status requires STATUS permission; changes require CONTROL permission and
+retain RME's lock/transfer guards. On/Off during a print is independent of
+idle timers; idle On remains timed. Physical confirmation follows telemetry.

@@ -43,6 +43,7 @@ from .spoolmanager import (
 )
 from .storage import StateStore, TransferManifestStore
 from .preview import read_preview
+from .progress import progress_command
 from .mapping import read_requirements, recommend, validate, compatible
 from .uploader import FirmwareUploader, UploadError, firmware_metadata
 
@@ -188,6 +189,7 @@ class RmeCompatibilityPlugin(
         self._auto_pa_batch = True
         self._tune_query_pending = False
         self._tune_last_mutation = 0.0
+        self._progress_pending_until = 0.0
         self._retry_file = None
         self._retry_job_path = None
         self._retry_ready = False
@@ -2054,10 +2056,12 @@ class RmeCompatibilityPlugin(
             elif kind == "tune":
                 # Replace one bounded snapshot, never append it to event history.
                 capacity = min(8, int(self._state["machine"].get("tool_capacity", 0)))
-                keys = ("speed", "stealth", "light", "lcd", "screen_print", "chamber_print", "status_print") + tuple("F%d" % i for i in range(capacity))
+                keys = ("speed", "stealth", "printing", "light", "lcd", "screen_print", "chamber_print", "status_print") + tuple("F%d" % i for i in range(capacity))
                 self._state["tune"] = {key: record[key] for key in keys if key in record}
                 self._state["tune"]["updated"] = time.time()
                 self._tune_query_pending = False
+            elif kind == "host_progress":
+                self._progress_pending_until = 0.0
             elif kind == "toolmap":
                 self._toolmap_supported = True
                 self._toolmap_probe_sent = False
@@ -3191,6 +3195,7 @@ class RmeCompatibilityPlugin(
             )
             if supported and connected and not transfer_busy and not recovery_required:
                 try:
+                    self._sync_host_progress()
                     self._query_tune()
                     if time.monotonic() < next_keepalive:
                         continue
@@ -3209,6 +3214,27 @@ class RmeCompatibilityPlugin(
             if not transfer_busy and not recovery_required:
                 if self._stats_supported is None:
                     self._defer(self._probe_stats)
+
+    def _sync_host_progress(self):
+        with self._state_lock:
+            if self._state["machine"].get("host_progress") != 1 or not self._state["session"].get("active"):
+                return
+            if time.monotonic() < self._progress_pending_until:
+                return
+        if not (self._printer.is_printing() or self._printer.is_paused()):
+            return
+        command = progress_command(self._printer.get_current_data() or {}, self._printer.is_paused())
+        if command is None:
+            return
+        with self._state_lock:
+            # At most one outstanding frame; recover a lost reply after 10s.
+            self._progress_pending_until = time.monotonic() + 10
+        try:
+            self._send_priority_service(command, "progress")
+        except Exception:
+            with self._state_lock:
+                self._progress_pending_until = 0.0
+            raise
 
     def _query_tune(self):
         with self._state_lock:
@@ -3246,6 +3272,8 @@ class RmeCompatibilityPlugin(
         elif kind == "stealth" and value in (0, 1):
             command = "M9150" if value else "M9140"
         elif kind == "light" and value in (0, 1, 2):
+            if self._print_job_active() or self._state.get("tune", {}).get("printing") == 1:
+                value = int(value > 0)
             command = "@RME LIGHT MODE value=%d" % value
         elif kind == "lcd" and value in (0, 1):
             if self._state.get("tune", {}).get("lcd", -1) < 0:
@@ -3259,7 +3287,13 @@ class RmeCompatibilityPlugin(
             command = "@RME LIGHT TEMP %s=%d" % (kind, value)
         else:
             raise ValueError("Invalid print override")
-        # One deliberate change per second; never enqueue every slider movement.
+        # Discrete lighting clicks must not be rejected by the motion-tune throttle.
+        if kind in ("light", "lcd", "screen", "chamber", "status"):
+            if self._transport_recovery_required() or not self._printer.is_operational():
+                raise RuntimeError("Printer lighting transport is unavailable")
+            self._send_priority_services([command, "@RME TUNE QUERY"], "lighting")
+            return
+        # One deliberate motion tuning change per second.
         with self._state_lock:
             now = time.monotonic()
             if now - self._tune_last_mutation < 1:

@@ -5,8 +5,8 @@
         <div data-bind="visible: tuneLight() >= 0">
             <label for="rme-light-mode">Chamber light: <strong data-bind="text: ['Off', 'On', 'Locked'][tuneLight()]"></strong></label>
             <input id="rme-light-mode" type="range" min="0" max="2" step="1" aria-label="Chamber light: Off, On, Locked"
-                data-bind="rmeLightState: tuneLight, event: {change: changeTuneLight}, enable: tuneLightingEnabled">
-            <div class="rme-light-positions"><span>Off</span><span>On (timed)</span><span>Locked on</span></div>
+                data-bind="attr: {max: chamberLightPrinterBusy() ? 1 : 2, 'aria-label': chamberLightPrinterBusy() ? 'Chamber light: Off, On' : 'Chamber light: Off, On, Locked'}, rmeLightState: tuneLight, event: {change: changeTuneLight}, enable: tuneLightingEnabled">
+            <div class="rme-light-positions"><span>Off</span><span data-bind="text: chamberLightPrinterBusy() ? 'On' : 'On (timed)'"></span><span data-bind="visible: !chamberLightPrinterBusy()">Locked on</span></div>
         </div>
         <div data-bind="visible: tuneLcd() >= 0">
             <label>LCD: <strong data-bind="text: tuneLcd() > 0 ? 'On' : 'Off'"></strong></label>

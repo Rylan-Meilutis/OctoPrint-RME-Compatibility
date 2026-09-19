@@ -10,6 +10,8 @@ class PrintControlsTests(unittest.TestCase):
         plugin = RmeCompatibilityPlugin()
         plugin._state["machine"].update(tune=1, tool_capacity=8)
         plugin._send_command = self.commands.append
+        plugin._send_priority_services = lambda commands, trigger: self.commands.extend(commands)
+        plugin._printer = types.SimpleNamespace(is_operational=lambda: True)
         return plugin
 
     def setUp(self):
@@ -28,7 +30,7 @@ class PrintControlsTests(unittest.TestCase):
             ({"kind": "light", "value": 2}, "@RME LIGHT MODE value=2"),
         ]:
             self.plugin()._set_print_override(data)
-            self.assertEqual(self.commands[-1], expected)
+            self.assertIn(expected, self.commands)
 
     def test_invalid_controls_never_send(self):
         for data in [
@@ -55,7 +57,19 @@ class PrintControlsTests(unittest.TestCase):
             plugin._state["tune"] = dict(lcd=1, screen_print=100, chamber_print=100, status_print=100)
             plugin._print_job_active = lambda: True
             plugin._set_print_override(dict(kind=kind, value=value))
-            self.assertEqual(self.commands[-1], expected)
+            self.assertIn(expected, self.commands)
+
+    def test_print_light_is_binary_and_rapid_clicks_are_not_motion_throttled(self):
+        plugin = self.plugin()
+        plugin._print_job_active = lambda: True
+        for value in (0, 1, 0, 2):
+            plugin._set_print_override(dict(kind="light", value=value))
+        self.assertEqual(self.commands, [
+            "@RME LIGHT MODE value=0", "@RME TUNE QUERY",
+            "@RME LIGHT MODE value=1", "@RME TUNE QUERY",
+            "@RME LIGHT MODE value=0", "@RME TUNE QUERY",
+            "@RME LIGHT MODE value=1", "@RME TUNE QUERY",
+        ])
 
     def test_new_lighting_controls_require_capability_and_print(self):
         plugin = self.plugin()

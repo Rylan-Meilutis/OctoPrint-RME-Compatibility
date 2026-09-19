@@ -7,7 +7,7 @@ plugin_package = "octoprint_rme_compatibility"
 
 setup(
     name="OctoPrint-RMECompatibility",
-    version="0.1.0b107",
+    version="0.1.0b108",
     description="OctoPrint support for Prusa RME firmware",
     author="Rylan Meilutis and RME contributors",
     author_email="rylan.meilutis@gmail.com",
@@ -20,6 +20,7 @@ setup(
     entry_points={
         "octoprint.plugin": [
             "%s = %s" % (plugin_identifier, plugin_package),
+            "octolightHA = octoprint_rme_compatibility.octopod_light",
         ]
     },
 )
