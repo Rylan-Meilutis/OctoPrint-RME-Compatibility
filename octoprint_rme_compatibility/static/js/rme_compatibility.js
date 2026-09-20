@@ -278,6 +278,10 @@ $(function () {
         self.applyTuneSpeed = function () { self.command("set_print_override", {kind: "speed", value: Number(self.tuneSpeed())}); };
         self.applyTuneFlow = function (row) { self.command("set_print_override", {kind: "flow", tool: row.tool, value: Number(row.draft())}); };
         self.toggleTuneStealth = function () { self.command("set_print_override", {kind: "stealth", value: Number(self.tune().stealth) ? 0 : 1}); };
+        self.changeAutoPa = function (_, event) {
+            self.command("set_print_override", {kind: "auto_pa", value: Number(event.target.value)});
+            event.target.value = self.tune().auto_pa;
+        };
         self.changeTuneLight = function (_, event) {
             self.requestChamberLight(Number(event.target.value));
         };

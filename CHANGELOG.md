@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0b109 — 2026-09-20
+
+- Add a firmware-capability-gated Auto PA Off / Auto / On selector in Control.
+  The setting is saved by the printer and synchronized through RME tune state.
+  Off skips automatic commands, Auto uses valid cache entries, and On always
+  calibrates. A change does not interrupt an ongoing calibration.
+
+- Do not open a calibration workflow for mode selection. Close the workflow
+  when firmware skips calibration or reuses an entirely cached batch.
+- Companion firmware: refreshed 6.9.0-RME / 6.10.1-RME. TPU hardware
+  validation remains required; this release does not certify jam-free feeding.
+
 ## 0.1.0b108 — 2026-09-19
 
 - Send OctoPrint's live completion and remaining-time estimate via the

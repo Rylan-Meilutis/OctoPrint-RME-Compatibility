@@ -1720,7 +1720,8 @@ class RmeCompatibilityPlugin(
                 self._schedule_publish()
             else:
                 self._set_active_tool(logical_tool)
-        if supported and re.match(r"^\s*M976(?:\s|$)", str(cmd or ""), re.IGNORECASE):
+        if (supported and re.match(r"^\s*M976(?:\s|$)", str(cmd or ""), re.IGNORECASE)
+                and not re.search(r"(?:^|\s)W(?:\d|\s|$)", str(cmd or ""), re.IGNORECASE)):
             self._start_pressure_advance_workflow(batch=bool(re.search(
                 r"(?:^|\s)[AK](?:\s|\d|$)", str(cmd).split(";", 1)[0], re.IGNORECASE
             )))
@@ -2056,7 +2057,7 @@ class RmeCompatibilityPlugin(
             elif kind == "tune":
                 # Replace one bounded snapshot, never append it to event history.
                 capacity = min(8, int(self._state["machine"].get("tool_capacity", 0)))
-                keys = ("speed", "stealth", "printing", "light", "lcd", "screen_print", "chamber_print", "status_print") + tuple("F%d" % i for i in range(capacity))
+                keys = ("speed", "stealth", "auto_pa", "printing", "light", "lcd", "screen_print", "chamber_print", "status_print") + tuple("F%d" % i for i in range(capacity))
                 self._state["tune"] = {key: record[key] for key in keys if key in record}
                 self._state["tune"]["updated"] = time.time()
                 self._tune_query_pending = False
@@ -3051,7 +3052,7 @@ class RmeCompatibilityPlugin(
             r"^PA_CALIBRATION\s+batch\s+accepted(?:\s|$)", line, re.IGNORECASE
         )
         terminal = re.match(
-            r"^PA_CALIBRATION\s+(?:batch\s+complete|aborted)(?:\s|$)",
+            r"^PA_CALIBRATION\s+(?:batch\s+(?:complete|cached)|skipped|aborted)(?:\s|[;]|$)",
             line,
             re.IGNORECASE,
         ) or re.match(r"^Error:\s*M976(?:\s|$)", line, re.IGNORECASE)
@@ -3271,6 +3272,10 @@ class RmeCompatibilityPlugin(
             command = "M221 T%d P1 S%d" % (int(tool), value)
         elif kind == "stealth" and value in (0, 1):
             command = "M9150" if value else "M9140"
+        elif kind == "auto_pa" and value in (0, 1, 2):
+            if self._state.get("tune", {}).get("auto_pa") not in (0, 1, 2):
+                raise ValueError("Firmware does not support Auto PA mode")
+            command = "M976 W%d" % value
         elif kind == "light" and value in (0, 1, 2):
             if self._print_job_active() or self._state.get("tune", {}).get("printing") == 1:
                 value = int(value > 0)

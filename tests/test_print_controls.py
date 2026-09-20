@@ -45,6 +45,37 @@ class PrintControlsTests(unittest.TestCase):
                 self.plugin()._set_print_override(data)
         self.assertEqual(self.commands, [])
 
+    def test_auto_pa_modes_require_firmware_support(self):
+        for mode in (0, 1, 2):
+            plugin = self.plugin()
+            plugin._state["tune"]["auto_pa"] = 1
+            plugin._set_print_override(dict(kind="auto_pa", value=mode))
+            self.assertIn("M976 W%d" % mode, self.commands)
+        self.commands.clear()
+        with self.assertRaises(ValueError):
+            self.plugin()._set_print_override(dict(kind="auto_pa", value=1))
+        plugin = self.plugin()
+        plugin._state["tune"]["auto_pa"] = 1
+        with self.assertRaises(ValueError):
+            plugin._set_print_override(dict(kind="auto_pa", value=3))
+        self.assertEqual(self.commands, [])
+
+    def test_auto_pa_snapshot_is_preserved(self):
+        plugin = self.plugin()
+        plugin._schedule_publish = lambda: None
+        plugin._handle_record(parse_line("RME_TUNE speed=100 auto_pa=2"))
+        self.assertEqual(plugin._state["tune"]["auto_pa"], 2)
+
+    def test_skipped_and_cached_batches_close_auto_pa_workflow(self):
+        for line in ("PA_CALIBRATION skipped mode=off",
+                     "PA_CALIBRATION batch cached; no calibration moves"):
+            plugin = self.plugin()
+            plugin._schedule_publish = lambda: None
+            plugin._start_pressure_advance_workflow()
+            plugin._observe_pressure_advance_output(line)
+            self.assertFalse(plugin._auto_pa_active)
+            self.assertIsNone(plugin._state["workflow"])
+
     def test_independent_lcd_and_single_channel_print_brightness(self):
         for kind, value, expected in [
             ("lcd", 0, "@RME LIGHT LCD value=0"),

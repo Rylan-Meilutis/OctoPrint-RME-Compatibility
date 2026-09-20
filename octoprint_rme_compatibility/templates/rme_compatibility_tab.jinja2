@@ -28,6 +28,14 @@
         <input type="number" min="10" max="300" class="input-small" data-bind="value: tuneSpeed, enable: tuneEnabled">
         <button class="btn" data-bind="click: applyTuneSpeed, enable: tuneEnabled">Apply speed</button>
         <button class="btn" data-bind="click: toggleTuneStealth, enable: tuneEnabled, text: Number(tune().stealth) ? 'Stealth: On' : 'Stealth: Off', attr: {'aria-pressed': !!Number(tune().stealth)}"></button>
+        <label data-bind="visible: tune().auto_pa !== undefined">Auto PA
+          <select data-bind="enable: tuneEnabled, value: tune().auto_pa, event: {change: changeAutoPa}">
+            <option value="0">Off — skip calibration</option>
+            <option value="1">Auto — use valid cache</option>
+            <option value="2">On — always calibrate</option>
+          </select>
+        </label>
+        <small data-bind="visible: tune().auto_pa !== undefined">Saved on the printer. Applies to the next calibration command; does not interrupt a calibration already running.</small>
         <div data-bind="foreach: tuneFlows">
             <label><span data-bind="text: label"></span> flow — printer: <span data-bind="text: actual"></span>%</label>
             <input type="number" min="50" max="150" class="input-small" data-bind="value: draft, enable: $root.tuneEnabled">
