@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b111 — 2026-09-20
 
 - Keep pre-print tool remapping separate in a centered, scrollable modal. No
   automatic opening when saved defaults are configured instead of a prompt.
