@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b110 — 2026-09-20
 
 - Remove the Dashboard RME gauge when disconnected or when the connected printer
   is not RME-compatible; restore native fan placement when the gauge is removed.
