@@ -2193,7 +2193,8 @@ $(function () {
             var fan = root.find(".dashboard_threeQuarterGauge").filter(function () {
                 return String($(this).attr("data-bind") || "").indexOf("'fan'") >= 0;
             }).first();
-            if (ko.unwrap(settings.dashboard_rme_progress) === false) {
+            if (!self.state().connected || !self.state().supported ||
+                ko.unwrap(settings.dashboard_rme_progress) === false) {
                 circle.remove();
                 fan.removeClass("rme-dashboard-fan-neighbor");
                 return;
@@ -2234,7 +2235,6 @@ $(function () {
             var determinate = active && raw !== null && raw !== undefined && isFinite(progress);
             var bounded = determinate ? Math.max(0, Math.min(100, progress)) : 0;
             var label = active ? self.workflowTitle() + " — " + (workflow.message || self.workflowState()) : "Ready";
-            if (!active && !self.state().connected) label = "Disconnected";
             if (determinate) label += " · " + Math.round(bounded) + "%";
             circle.toggleClass("rme-dashboard-workflow-active", active)
                 .toggleClass("rme-dashboard-workflow-indeterminate", active && !determinate);
@@ -2243,7 +2243,7 @@ $(function () {
                 "stroke-dasharray": arcLength, "stroke-dashoffset": arcLength * (1 - bounded / 100)
             });
             circle.find(".rme-dashboard-percentage").text(determinate ? Math.round(bounded) + "%" : (active ? "…" : ""));
-            circle.find(".rme-dashboard-workflow-caption").text(active ? "RME" : (self.state().connected ? "Ready" : "Offline"));
+            circle.find(".rme-dashboard-workflow-caption").text(active ? "RME" : "Ready");
             circle.attr("title", label).attr("aria-label", label);
         }
 

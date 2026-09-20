@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Remove the Dashboard RME gauge when disconnected or when the connected printer
+  is not RME-compatible; restore native fan placement when the gauge is removed.
+- Use native Dashboard gauge spacing instead of extra flex layout/padding so
+  the RME gauge follows the same vertical grid alignment as neighboring gauges.
+- Add connection, reconnect, printer-switch and grid-placement UI regressions.
+
 ## 0.1.0b109 — 2026-09-20
 
 - Add a firmware-capability-gated Auto PA Off / Auto / On selector in Control.

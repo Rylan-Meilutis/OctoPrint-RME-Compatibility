@@ -338,15 +338,9 @@
 }
 
 #rme-dashboard-progress {
-    display: inline-flex;
-    flex-direction: column;
-    align-items: center;
-    vertical-align: top;
-    width: 100%;
-    max-width: 100%;
-    box-sizing: border-box;
-    padding: 8px;
-    text-align: center;
+    /* Use the native grid item's block layout and SVG padding so both axes
+       align with the neighboring gauges, including fullscreen layouts. */
+    display: block;
 }
 #rme-dashboard-progress > svg {
     width: 140px;
