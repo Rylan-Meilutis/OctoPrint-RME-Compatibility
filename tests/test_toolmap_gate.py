@@ -1735,7 +1735,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertNotIn("if (filament.display_name) details.push(filament.display_name)", javascript)
         self.assertIn("installSpoolManagerPanel", javascript)
         self.assertIn("ensureRmeSpoolMappingPanel", javascript)
-        self.assertIn("rme-spool-mapping-dialog", javascript)
+        self.assertIn("rme-spool-mapping-panel", javascript)
         self.assertIn("Loaded on printer", javascript)
         self.assertIn("text: mappingProviderName", javascript)
         self.assertIn("Printer loadout mapping", javascript)
@@ -1749,7 +1749,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn('self.command("apply_spool_selections"', javascript)
         spoolmanager_panel = javascript[
             javascript.index("function installSpoolManagerPanel()"):
-            javascript.index("function ensureRmeSpoolMappingDialog()")
+            javascript.index("function ensureRmeSpoolMappingPanel()")
         ]
         self.assertNotIn("<select", spoolmanager_panel)
         self.assertIn("Select spool…", spoolmanager_panel)

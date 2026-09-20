@@ -917,15 +917,6 @@ $(function () {
             var provider = String(self.spoolmanager().provider || "").toLowerCase();
             var tool = Number(row && row.tool);
             if (!isFinite(tool) || tool < 0 || Math.floor(tool) !== tool) return;
-            // Bootstrap 2 cannot safely stack these modal dialogs. Finish
-            // hiding our mapping dialog before the provider takes focus.
-            var mappingDialog = $("#rme-spool-mapping-dialog");
-            if (mappingDialog.hasClass("in")) {
-                mappingDialog.one("hidden", function () {
-                    self.openNativeSpoolSelector(row);
-                }).modal("hide");
-                return;
-            }
             if (provider === "spoolmanager") {
                 var spoolManagerElement = document.getElementById("sidebar_spool_select");
                 var spoolManager = spoolManagerElement && ko.dataFor(spoolManagerElement);
