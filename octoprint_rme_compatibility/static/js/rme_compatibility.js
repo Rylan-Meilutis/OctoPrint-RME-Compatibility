@@ -1064,8 +1064,11 @@ $(function () {
             }
             self.toolmapNotice = null;
             self.toolmapNoticeKey = key;
-            if (key) {
+            var settings = (((self.settings || {}).settings || {}).plugins || {}).rme_compatibility || {};
+            if (key && ko.unwrap(settings.prompt_toolmap_on_print) !== false) {
                 self.showToolMapping();
+            } else {
+                $("#rme-tool-mapping").modal("hide");
             }
         };
         self.updateFirmwareRecoveryNotice = function (workflow, prompt) {
@@ -1280,12 +1283,8 @@ $(function () {
         self.selectIndxSlot = function (entry) { self.command("select_indx_slot", {slot: entry.slot}); };
         self.resetToolmap = function () { self.command("reset_toolmap"); };
         self.showToolMapping = function () {
-            self.showRmeTab();
-            var panel = document.getElementById("rme-tool-mapping");
-            if (panel) {
-                panel.focus();
-                if (panel.scrollIntoView) panel.scrollIntoView({block: "nearest"});
-            }
+            if (!self.hasToolmapPrompt()) return;
+            $("#rme-tool-mapping").modal("show");
         };
         self.applyToolmap = function () {
             if (!self.materialMappingValid()) return;
@@ -1528,6 +1527,7 @@ $(function () {
             installSpoolManagerPanel();
         };
         self.showFilamentMapping = function () {
+            $("#rme-tool-mapping").modal("hide");
             // SpoolManager can be edited without passing through this plugin,
             // so each mapping session must start with a fresh full inventory.
             self.command("refresh_spool_inventory").always(function () {
@@ -1751,6 +1751,8 @@ $(function () {
             $("a[href='#tab_plugin_rme_compatibility_objects']").closest("li").hide();
         };
         self.onAllBound = function () {
+            // Keep the bound editor outside tab overflow/transform containers.
+            $("#rme-tool-mapping").detach().appendTo(document.body);
             self.installDashboardHeight();
             self.integrateCancelObjectPreview();
             // Move the already-bound controls once, preserving their KO context.
@@ -1880,7 +1882,11 @@ $(function () {
                 '<td class="rme-native-provider-selection" data-bind="text: $parent.mappingSelectionLabel($data)"></td>' +
                 '<td class="rme-spool-mapping-actions"><button class="btn btn-mini" data-bind="click: $parent.openNativeSpoolSelector"><i class="fa fa-ellipsis-h"></i> Select spool…</button> ' +
                 '<button class="btn btn-mini" data-bind="click: $parent.createSpoolInSpoolManager"><i class="fa fa-plus"></i> Create new…</button></td>' +
-                '</tr></tbody></table><p class="help-block">Create new opens SpoolManager’s native spool editor with the printer’s known material, vendor, color, and temperatures prefilled.</p></div>'
+                '</tr></tbody></table><p class="help-block">Create new opens SpoolManager’s native spool editor with the printer’s known material, vendor, color, and temperatures prefilled.</p>' +
+                '<div class="alert alert-warning" data-bind="visible: pendingProviderSync, text: pendingProviderSync() && pendingProviderSync().message"></div>' +
+                '<div class="rme-mapping-actions"><button type="button" class="btn btn-primary" data-bind="click: syncFilamentsToPrinter, enable: canSyncFilaments">Apply filament mapping to printer</button>' +
+                '<button type="button" class="btn" data-bind="click: syncFilamentsFromPrinter, enable: canSyncFilaments">Use printer filament mapping</button></div>' +
+                '<p class="help-block">SpoolManager saves spool selections. Apply sends those selections to the printer; Use printer reads the printer’s selections back into the provider. This does not change slicer tool remapping or start a print.</p></div>'
             );
             tab.prepend(panel);
             ko.applyBindings(self, panel[0]);

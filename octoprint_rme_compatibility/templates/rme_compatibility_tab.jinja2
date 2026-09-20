@@ -102,7 +102,7 @@
     <div class="rme-card rme-prompt" data-bind="visible: pendingProviderSync">
         <h4>Filament provider changed</h4>
         <p data-bind="text: pendingProviderSync() && pendingProviderSync().message"></p>
-        <button class="btn btn-primary" data-bind="click: showFilamentMapping">Review all tool mappings</button>
+        <button class="btn btn-primary" data-bind="click: showFilamentMapping">Review filament / spool sync</button>
         <button class="btn" data-bind="click: cancelProviderSync">Keep printer selections</button>
         <p class="help-block">This prompt persists across refreshes. Keeping the printer selections reads them back into the active provider.</p>
     </div>
@@ -129,8 +129,10 @@
     </div>
 
     <div id="rme-spool-mapping-host"></div>
-    <div id="rme-tool-mapping" class="rme-card rme-prompt" tabindex="-1" data-bind="visible: hasToolmapPrompt, event: {focusin: touchToolmap, mousedown: touchToolmap, keydown: touchToolmap}">
-        <h4>Tool mapping before print</h4>
+    <p data-bind="visible: hasToolmapPrompt"><button class="btn btn-primary" data-bind="click: showToolMapping">Review print tool mapping…</button></p>
+    <div id="rme-tool-mapping" class="modal hide fade" tabindex="-1" role="dialog" aria-labelledby="rme-tool-mapping-title" data-bind="event: {mousedown: touchToolmap, keydown: touchToolmap}">
+        <div class="modal-header"><button type="button" class="close" data-dismiss="modal" aria-label="Close">&times;</button><h3 id="rme-tool-mapping-title">Tool mapping before print</h3></div>
+        <div class="modal-body">
         <p data-bind="text: promptMessage"></p>
         <p><small data-bind="text: toolmapTimeoutText"></small></p>
         <button class="btn" data-bind="click: useRecommendedMapping, enable: prompt().recommendation">Use suggested mapping</button>
@@ -151,10 +153,12 @@
             </section>
         </div>
         <label class="checkbox"><input type="checkbox" data-bind="checked: mappingEnabled"> Enable remapping</label>
+        <p class="help-block">No print-file G-code is sent until this mapping is confirmed or the untouched timer expires. Validation runs afterward against the remapped physical tools.</p>
+        </div><div class="modal-footer">
         <button class="btn btn-primary" data-bind="click: applyToolmap, enable: materialMappingValid">Save and apply tool mapping — continue print</button>
         <button class="btn" data-bind="click: showFilamentMapping">Review spool mapping</button>
         <button class="btn" data-bind="click: resetToolmap">Use default mapping and continue</button>
-        <p class="help-block">No print-file G-code is sent until this mapping is confirmed. Validation runs afterward against the remapped physical tools.</p>
+        </div>
     </div>
 
     <div id="rme-tab-firmware" class="rme-card form-horizontal">

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Keep pre-print tool remapping separate in a centered, scrollable modal. No
+  automatic opening when saved defaults are configured instead of a prompt.
+
+- Add Apply filament mapping to printer and Use printer filament mapping directly
+  to the RME integration panel on SpoolManager's page. Show pending sync there;
+  completing filament sync no longer requires the navbar. This is separate from
+  slicer tool remapping and does not start a print.
+
 ## 0.1.0b110 — 2026-09-20
 
 - Review print tool mapping inline in the RME tab instead of a persistent
