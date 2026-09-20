@@ -1643,6 +1643,12 @@ class RmeCompatibilityPlugin(
         if not supported:
             return None
         if "rme:priority_control" in tags:
+            # Recheck at the queue boundary: startup may have begun since the
+            # periodic worker sampled state. Never precede OctoPrint's M110.
+            if "trigger:rme.progress" in tags and not self._host_progress_ready():
+                with self._state_lock:
+                    self._progress_pending_until = 0.0
+                return (None,)
             return self._force_send_rme_control(comm_instance, cmd, gcode)
 
         # Some progress/display plugins mirror this Marlin status onto the
@@ -3216,13 +3222,21 @@ class RmeCompatibilityPlugin(
                 if self._stats_supported is None:
                     self._defer(self._probe_stats)
 
+    def _host_progress_ready(self):
+        # is_printing() includes Starting on some OctoPrint paths. Require the
+        # stable state so a forced progress frame cannot steal reset line N0.
+        try:
+            return str(self._printer.get_state_id() or "").upper() in {"PRINTING", "PAUSED"}
+        except Exception:
+            return False
+
     def _sync_host_progress(self):
         with self._state_lock:
             if self._state["machine"].get("host_progress") != 1 or not self._state["session"].get("active"):
                 return
             if time.monotonic() < self._progress_pending_until:
                 return
-        if not (self._printer.is_printing() or self._printer.is_paused()):
+        if not self._host_progress_ready():
             return
         command = progress_command(self._printer.get_current_data() or {}, self._printer.is_paused())
         if command is None:

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0b112 — 2026-09-20
+
+- Prevent priority progress frames during OctoPrint Starting and other transitional
+  states, with a second check at the queue boundary. This protects M110 N0 from
+  being displaced and avoids the repeated Resend: 1 startup failure.
+- Includes b111 filament sync controls and the centered optional tool-map dialog.
+
 ## 0.1.0b111 — 2026-09-20
 
 - Keep pre-print tool remapping separate in a centered, scrollable modal. No

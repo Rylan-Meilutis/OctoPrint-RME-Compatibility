@@ -25,7 +25,7 @@ class HostProgressTests(unittest.TestCase):
 
     def test_capability_and_outstanding_frame_bound(self):
         plugin = RmeCompatibilityPlugin()
-        plugin._printer = types.SimpleNamespace(is_printing=lambda: True, is_paused=lambda: False, get_current_data=self.data)
+        plugin._printer = types.SimpleNamespace(is_printing=lambda: True, is_paused=lambda: False, get_current_data=self.data, get_state_id=lambda: "PRINTING")
         sent = []
         plugin._send_priority_service = lambda command, trigger: sent.append(command)
         plugin._sync_host_progress()
@@ -35,3 +35,29 @@ class HostProgressTests(unittest.TestCase):
         for _ in range(1000):
             plugin._sync_host_progress()
         self.assertEqual(len(sent), 1)
+
+    def test_starting_does_not_steal_m110_reset_line(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._state["machine"]["host_progress"] = 1
+        plugin._state["session"]["active"] = True
+        plugin._state["supported"] = True
+        sent = []
+        plugin._send_priority_service = lambda command, trigger: sent.append(command)
+        plugin._printer = types.SimpleNamespace(
+            is_printing=lambda: True, is_paused=lambda: False,
+            get_current_data=self.data, get_state_id=lambda: "STARTING")
+        for state in ("STARTING", "OPERATIONAL", "RESUMING", "CANCELLING", "ERROR"):
+            plugin._printer.get_state_id = lambda: state
+            plugin._sync_host_progress()
+        self.assertEqual(sent, [])
+        plugin._printer.get_state_id = lambda: "STARTING"
+        plugin._progress_pending_until = 999999999
+        self.assertEqual(plugin.gcode_queuing_hook(
+            None, "queuing", "@RME PROGRESS SET percent=0 remaining=unknown paused=0",
+            None, None, tags={"rme:priority_control", "trigger:rme.progress"}), (None,))
+        self.assertEqual(plugin._progress_pending_until, 0)
+        for state in ("PRINTING", "PAUSED"):
+            plugin._printer.get_state_id = lambda: state
+            plugin._progress_pending_until = 0
+            plugin._sync_host_progress()
+        self.assertEqual(len(sent), 2)
