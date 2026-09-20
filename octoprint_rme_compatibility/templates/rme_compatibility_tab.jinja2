@@ -128,11 +128,8 @@
         <p><small>All tools can be staged together; graphical mapping offers same-material spools only.</small></p>
     </div>
 
-    <div id="rme-tab-firmware" class="rme-card form-horizontal">
-        {% include "rme_compatibility_firmware_controls.jinja2" %}
-    </div>
-
-    <div class="rme-card rme-prompt" data-bind="visible: hasToolmapPrompt, event: {focusin: touchToolmap, mousedown: touchToolmap, keydown: touchToolmap}">
+    <div id="rme-spool-mapping-host"></div>
+    <div id="rme-tool-mapping" class="rme-card rme-prompt" tabindex="-1" data-bind="visible: hasToolmapPrompt, event: {focusin: touchToolmap, mousedown: touchToolmap, keydown: touchToolmap}">
         <h4>Tool mapping before print</h4>
         <p data-bind="text: promptMessage"></p>
         <p><small data-bind="text: toolmapTimeoutText"></small></p>
@@ -154,9 +151,14 @@
             </section>
         </div>
         <label class="checkbox"><input type="checkbox" data-bind="checked: mappingEnabled"> Enable remapping</label>
-        <button class="btn btn-primary" data-bind="click: applyToolmap, enable: materialMappingValid">Apply mapping and continue print</button>
+        <button class="btn btn-primary" data-bind="click: applyToolmap, enable: materialMappingValid">Save and apply tool mapping — continue print</button>
+        <button class="btn" data-bind="click: showFilamentMapping">Review spool mapping</button>
         <button class="btn" data-bind="click: resetToolmap">Use default mapping and continue</button>
         <p class="help-block">No print-file G-code is sent until this mapping is confirmed. Validation runs afterward against the remapped physical tools.</p>
+    </div>
+
+    <div id="rme-tab-firmware" class="rme-card form-horizontal">
+        {% include "rme_compatibility_firmware_controls.jinja2" %}
     </div>
 
     <div class="rme-card" data-bind="visible: hasMachine() && spooljoin().supported !== false">

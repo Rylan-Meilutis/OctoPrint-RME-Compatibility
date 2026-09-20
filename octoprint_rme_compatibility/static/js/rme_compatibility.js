@@ -966,9 +966,9 @@ $(function () {
             return spool ? self.spoolLabel(spool) : "Selected spool " + selectedId;
         };
         self.hasDirtySpoolSelections = ko.pureComputed(function () {
-            return !!self.pendingProviderSync() || ko.utils.arrayFirst(self.spoolSelectionRows(), function (row) {
+            return !!self.pendingProviderSync() || !!ko.utils.arrayFirst(self.spoolSelectionRows(), function (row) {
                 return row.dirty();
-            }) !== null;
+            });
         });
 
         self.firmwareFiles = ko.pureComputed(function () { return self.state().firmware_files || []; });
@@ -1074,12 +1074,7 @@ $(function () {
             self.toolmapNotice = null;
             self.toolmapNoticeKey = key;
             if (key) {
-                self.toolmapNotice = new PNotify({
-                    title: "Tool mapping required",
-                    text: "The print is waiting. Use the RME top-bar menu to continue with the current mapping or open the RME tab to review it.",
-                    type: "notice",
-                    hide: false
-                });
+                self.showToolMapping();
             }
         };
         self.updateFirmwareRecoveryNotice = function (workflow, prompt) {
@@ -1293,6 +1288,14 @@ $(function () {
         self.respond = function (action) { self.command("respond", {action: action}); };
         self.selectIndxSlot = function (entry) { self.command("select_indx_slot", {slot: entry.slot}); };
         self.resetToolmap = function () { self.command("reset_toolmap"); };
+        self.showToolMapping = function () {
+            self.showRmeTab();
+            var panel = document.getElementById("rme-tool-mapping");
+            if (panel) {
+                panel.focus();
+                if (panel.scrollIntoView) panel.scrollIntoView({block: "nearest"});
+            }
+        };
         self.applyToolmap = function () {
             if (!self.materialMappingValid()) return;
             var mapping = {};
@@ -1538,7 +1541,13 @@ $(function () {
             // so each mapping session must start with a fresh full inventory.
             self.command("refresh_spool_inventory").always(function () {
                 $("#settings_dialog").modal("hide");
-                ensureRmeSpoolMappingDialog().modal("show");
+                self.showRmeTab();
+                var panel = ensureRmeSpoolMappingPanel();
+                panel.show();
+                if (panel.length) {
+                    panel[0].focus();
+                    if (panel[0].scrollIntoView) panel[0].scrollIntoView({block: "nearest"});
+                }
             });
         };
         self.createSpoolInSpoolManager = function (row) {
@@ -1585,7 +1594,6 @@ $(function () {
                 self.newSpoolWeight(values.weight);
                 self.newSpoolNozzle(values.nozzle);
                 self.newSpoolBed(values.bed);
-                $("#rme-spool-mapping-dialog").modal("hide");
                 self.showRmeTab();
             });
         };
@@ -1918,15 +1926,16 @@ $(function () {
             refreshSidebar();
         }
 
-        function ensureRmeSpoolMappingDialog() {
-            var dialog = $("#rme-spool-mapping-dialog");
+        function ensureRmeSpoolMappingPanel() {
+            var dialog = $("#rme-spool-mapping-panel");
             if (dialog.length) return dialog;
+            var host = $("#rme-spool-mapping-host");
+            if (!host.length) return dialog;
             dialog = $(
-                '<div id="rme-spool-mapping-dialog" class="modal hide fade rme-spool-mapping-dialog" tabindex="-1">' +
-                '<div class="modal-header"><button type="button" class="close" data-dismiss="modal">&times;</button>' +
-                '<h3>Printer loadout mapping</h3><p data-bind="text: spoolOwnershipText"></p></div>' +
-                '<div class="modal-body"><div class="rme-mapping-toolbar">' +
-                '<p>Choose a same-material spool from <strong data-bind="text: mappingProviderName"></strong>. Changes are staged until Apply mappings.</p></div>' +
+                '<section id="rme-spool-mapping-panel" class="rme-card" tabindex="-1" aria-label="Spool mapping">' +
+                '<h4>Spool mapping</h4><p data-bind="text: spoolOwnershipText"></p>' +
+                '<div><div class="rme-mapping-toolbar">' +
+                '<p>Choose a same-material spool from <strong data-bind="text: mappingProviderName"></strong>. Changes are staged until Save and apply.</p></div>' +
                 '<div class="rme-routing-cards" data-bind="foreach: spoolSelectionRows"><section class="rme-route-card" data-bind="css: {\'rme-spool-mapping-dirty\': dirty}">' +
                 '<div class="rme-route-source"><span class="rme-spool-swatch" data-bind="style: {backgroundColor: $root.mappingColor(loaded && loaded.color)}"></span><strong data-bind="text: \'T\' + tool"></strong> ' +
                 '<span data-bind="text: $root.loadedFilamentLabel(loaded)"></span><span class="rme-route-arrow">→</span><span data-bind="text: $root.mappingSelectionLabel($data)"></span></div>' +
@@ -1936,9 +1945,10 @@ $(function () {
                 '<button class="btn btn-mini" data-bind="click: function() {selected(null); $root.changeSpoolSelection($data);}">Unassign</button> ' +
                 '<button class="btn btn-mini" data-bind="click: $root.createSpoolForMappingRow">Create new…</button></section></div>' +
                 '<p class="help-block">Only matching known materials may be assigned. Brand and color are shown for review; specialty material names remain distinct.</p></div>' +
-                '<div class="modal-footer"><button class="btn" data-dismiss="modal">Close</button>' +
-                '<button class="btn btn-primary" data-bind="click: applySpoolSelections, enable: hasDirtySpoolSelections">Apply mappings</button></div></div>'
-            ).appendTo(document.body);
+                '<div class="rme-mapping-actions">' +
+                '<button class="btn btn-primary" data-bind="click: applySpoolSelections, enable: hasDirtySpoolSelections">Save and apply spool mapping</button>' +
+                '<button class="btn" data-bind="visible: hasToolmapPrompt, click: showToolMapping">Review print tool mapping</button></div></section>'
+            ).appendTo(host);
             ko.applyBindings(self, dialog[0]);
             return dialog;
         }

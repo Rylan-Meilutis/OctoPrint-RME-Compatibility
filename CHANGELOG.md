@@ -2,6 +2,11 @@
 
 ## 0.1.0b110 — 2026-09-20
 
+- Review print tool mapping inline in the RME tab instead of a persistent
+  top-of-screen popup. The navbar links to the editor instead of applying defaults.
+- Move graphical spool mapping into the same page, with Save and apply actions
+  for spool assignments and print tool mapping. Print continuation stays explicit.
+
 - Remove the Dashboard RME gauge when disconnected or when the connected printer
   is not RME-compatible; restore native fan placement when the gauge is removed.
 - Use native Dashboard gauge spacing instead of extra flex layout/padding so

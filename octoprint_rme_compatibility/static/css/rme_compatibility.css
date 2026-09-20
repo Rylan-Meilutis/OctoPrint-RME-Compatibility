@@ -84,24 +84,7 @@
 .rme-spoolmanager-mapping select { box-sizing: border-box; margin-bottom: 0; max-width: 100%; width: 100%; }
 .rme-spoolmanager-mapping .rme-spool-mapping-actions { white-space: nowrap; }
 .rme-spoolmanager-mapping tr.rme-spool-mapping-dirty td { background: rgba(248, 148, 6, .12); }
-.modal.rme-spool-mapping-dialog,
-.modal.rme-spool-mapping-dialog.fade.in {
-    position: fixed;
-    top: 3vh;
-    right: auto;
-    bottom: auto;
-    left: 3%;
-    box-sizing: border-box;
-    margin: 0;
-    width: 94%;
-    max-height: 94vh;
-    overflow-y: auto;
-}
-.rme-spool-mapping-dialog .modal-body {
-    max-height: 55vh;
-    overflow: auto;
-    -webkit-overflow-scrolling: touch;
-}
+.rme-mapping-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .rme-spool-mapping-table { max-width: 100%; overflow: auto; }
 .rme-spoolmanager-mapping table,
 .rme-spool-mapping-table table { width: 100%; min-width: 0; table-layout: fixed; }

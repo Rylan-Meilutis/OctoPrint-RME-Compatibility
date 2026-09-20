@@ -507,10 +507,11 @@ class ToolmapGateTests(unittest.TestCase):
             navbar = template_file.read()
 
         self.assertIn("self.hasToolmapPrompt() ||", javascript)
-        self.assertIn('title: "Tool mapping required"', javascript)
+        self.assertNotIn('title: "Tool mapping required"', javascript)
+        self.assertIn("self.showToolMapping();", javascript)
         self.assertIn("self.updateToolmapNotice(prompt)", javascript)
-        self.assertIn("Use current mapping", navbar)
-        self.assertIn("click: showRmeTab", navbar)
+        self.assertNotIn("Use current mapping", navbar)
+        self.assertIn("click: showToolMapping", navbar)
 
     def test_pausing_state_defers_provider_writes_until_job_is_idle(self):
         plugin = RmeCompatibilityPlugin()
@@ -1733,7 +1734,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("var internalAlias", javascript)
         self.assertNotIn("if (filament.display_name) details.push(filament.display_name)", javascript)
         self.assertIn("installSpoolManagerPanel", javascript)
-        self.assertIn("ensureRmeSpoolMappingDialog", javascript)
+        self.assertIn("ensureRmeSpoolMappingPanel", javascript)
         self.assertIn("rme-spool-mapping-dialog", javascript)
         self.assertIn("Loaded on printer", javascript)
         self.assertIn("text: mappingProviderName", javascript)

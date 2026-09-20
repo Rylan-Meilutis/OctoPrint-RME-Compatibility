@@ -28,8 +28,7 @@
     <li class="rme-navbar-actions" data-bind="visible: navbarMmuActionable">
         <strong data-bind="text: promptMessage"></strong>
         <div data-bind="visible: hasToolmapPrompt">
-            <button class="btn btn-mini btn-primary" data-bind="click: showRmeTab">Review mapping</button>
-            <button class="btn btn-mini" data-bind="click: resetToolmap">Use current mapping</button>
+            <button class="btn btn-mini btn-primary" data-bind="click: showToolMapping">Review mapping in RME</button>
         </div>
         <div data-bind="foreach: indxSlots">
           <button class="btn" data-bind="text: label, click: $root.selectIndxSlot"></button>
