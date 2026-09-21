@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Expose current-print LCD, chamber and status brightness directly in Control
+  instead of a collapsed section. Keep lighting controls usable when a long
+  command delays telemetry; transfer and printer-lock protections remain.
+
 ## 0.1.0b113 — 2026-09-20
 
 - Fix the tool-mapping dialog being clipped above the viewport by preventing
