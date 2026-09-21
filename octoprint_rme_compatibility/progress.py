@@ -10,7 +10,7 @@ def progress_command(data, paused=False):
     if isinstance(percent, bool) or not isinstance(percent, (int, float)) or not math.isfinite(percent) or not 0 <= percent <= 100:
         return None
     remaining = progress.get("printTimeLeft")
-    if isinstance(remaining, bool) or not isinstance(remaining, (int, float)) or not math.isfinite(remaining) or not 0 <= remaining <= 31536000:
+    if isinstance(remaining, bool) or not isinstance(remaining, (int, float)) or not math.isfinite(remaining) or not 0 <= remaining <= 31536000 or (remaining == 0 and percent < 100):
         remaining = "unknown"
     else:
         remaining = str(int(round(remaining)))

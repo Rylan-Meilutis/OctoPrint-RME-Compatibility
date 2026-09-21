@@ -51,7 +51,7 @@ const {jQueryFactory} = require('jquery/factory');
     assert.equal(sent[0].data.kind, 'lcd');
     assert.equal(sent[0].data.value, 0);
     assert.equal(vm.tuneLight(), 1); // LCD never changes the chamber selector.
-    assert.equal(lcd.value, '1'); // Wait for firmware acknowledgement.
+    assert.equal(lcd.value, '0'); // Immediate feedback while acknowledgement is pending.
     state.tune.lcd = 0;
     vm.state.valueHasMutated();
     assert.equal(lcd.value, '0');

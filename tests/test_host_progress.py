@@ -13,6 +13,7 @@ class HostProgressTests(unittest.TestCase):
         self.assertEqual(progress_command(self.data(), True), "@RME PROGRESS SET percent=23 remaining=134 paused=1")
         self.assertIn("remaining=unknown", progress_command(self.data(0, None)))
         self.assertIn("remaining=0", progress_command(self.data(100, 0)))
+        self.assertIn("remaining=unknown", progress_command(self.data(23, 0)))
 
     def test_bad_estimates_and_media_are_not_fabricated(self):
         for percent in (-1, 101, None, float("nan"), float("inf"), True):

@@ -24,6 +24,19 @@ const {jQueryFactory} = require('jquery/factory');
     const commands = [];
     vm.command = (name, data) => commands.push([name, data]);
     assert.equal(vm.tuneEnabled(), false); // Old telemetry still blocks motion tuning.
+    vm.command = () => ({});
+    vm.changeTuneLcd(null, {target: {value: '0'}});
+    assert.equal(vm.tuneLcd(), 0);
+    vm.state({...state});
+    assert.equal(vm.tuneLcd(), 0); // Old snapshots cannot undo a pending click.
+    vm.tick(Date.now() + 6000);
+    assert.equal(vm.tuneLcd(), 1); // Unconfirmed requests revert to telemetry.
+    vm.tick(Date.now());
+    vm.pendingLcd(null);
+    vm.command = () => ({fail: callback => callback()});
+    vm.changeTuneLcd(null, {target: {value: '0'}});
+    assert.equal(vm.tuneLcd(), 1);
+    vm.command = (name, data) => commands.push([name, data]);
     assert.equal(vm.chamberLightDisabled(), false);
     assert.equal(vm.chamberLightOn(), true);
     assert(vm.chamberLightTitle().includes('last reported'));

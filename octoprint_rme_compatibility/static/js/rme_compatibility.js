@@ -262,9 +262,24 @@ $(function () {
                 !self.transportRecoveryRequired() && !self.navbarTransferActive() &&
                 !(self.state().lock || {}).locked;
         });
-        self.tuneLcd = ko.pureComputed(function () { return self.tune().lcd === undefined ? -1 : Number(self.tune().lcd); });
+        self.pendingLcd = ko.observable(null);
+        self.tuneLcd = ko.pureComputed(function () {
+            var pending = self.pendingLcd();
+            if (pending && self.state().connected && self.tick() < pending.until) return pending.value;
+            return self.tune().lcd === undefined ? -1 : Number(self.tune().lcd);
+        });
+        self.tune.subscribe(function (snapshot) {
+            var pending = self.pendingLcd();
+            if (pending && Number(snapshot.lcd) === pending.value && Number(snapshot.updated) > pending.sent) self.pendingLcd(null);
+        });
         self.changeTuneLcd = function (_, event) {
-            self.command("set_print_override", {kind: "lcd", value: Number(event.target.value)});
+            if (!self.tuneLightingEnabled()) return;
+            var pending = {value: Number(event.target.value), sent: Date.now() / 1000, until: Date.now() + 5000};
+            self.pendingLcd(pending);
+            var request = self.command("set_print_override", {kind: "lcd", value: pending.value});
+            if (request && request.fail) request.fail(function () {
+                if (self.pendingLcd() === pending) self.pendingLcd(null);
+            });
             event.target.value = self.tuneLcd();
         };
         self.printBrightnessRows = [

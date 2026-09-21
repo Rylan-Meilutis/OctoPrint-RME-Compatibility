@@ -10,6 +10,7 @@
         </div>
         <div data-bind="visible: tuneLcd() >= 0">
             <label>LCD: <strong data-bind="text: tuneLcd() > 0 ? 'On' : 'Off'"></strong></label>
+            <small data-bind="visible: pendingLcd() && tick() < pendingLcd().until">Sending — waiting for printer confirmation.</small>
             <input type="range" min="0" max="1" step="1" aria-label="LCD Off or On"
                 data-bind="rmeLightState: tuneLcd, event: {change: changeTuneLcd}, enable: tuneLightingEnabled">
             <small>Independent of chamber lights. Local activity or opening the door wakes the LCD.</small>
