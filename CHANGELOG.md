@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Fix the tool-mapping dialog being clipped above the viewport by preventing
+  OctoPrint's modal manager from adding a second centering offset. Keep the
+  dialog viewport-bounded and scrollable.
+
 ## 0.1.0b112 — 2026-09-20
 
 - Prevent priority progress frames during OctoPrint Starting and other transitional

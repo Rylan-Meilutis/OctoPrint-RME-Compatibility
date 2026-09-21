@@ -77,6 +77,22 @@ const {jQueryFactory} = require('jquery/factory');
     toolPanel.id = 'rme-tool-mapping';
     toolPanel.tabIndex = -1;
     w.document.body.append(toolPanel);
+    // OctoPrint bootstrap-modal's layout() injects margin-top: -height / 2.
+    // Our transform already centers the dialog, so the stylesheet must win
+    // over that normal inline declaration (including after manager resize).
+    const modalStyle = w.document.createElement('style');
+    modalStyle.textContent = fs.readFileSync('octoprint_rme_compatibility/static/css/rme_compatibility.css', 'utf8');
+    w.document.head.append(modalStyle);
+    const centering = Array.from(modalStyle.sheet.cssRules).find(rule =>
+        rule.selectorText && rule.selectorText.includes('#rme-tool-mapping.modal.fade.in')).style;
+    assert.equal(parseFloat(centering.getPropertyValue('margin')), 0);
+    assert.equal(centering.getPropertyPriority('margin'), 'important');
+    assert.equal(centering.getPropertyValue('top'), '50%');
+    assert.equal(centering.getPropertyValue('transform'), 'translate(-50%, -50%)');
+    assert.equal(centering.getPropertyValue('max-height'), '90vh');
+    assert.equal(centering.getPropertyValue('overflow-y'), 'auto');
+    assert.equal(centering.getPropertyValue('box-sizing'), 'border-box');
+    assert.equal(centering.getPropertyValue('transition'), 'opacity .3s linear');
     vm.updateToolmapNotice({kind: 'toolmap', updated: 1, filename: 'test.gcode', count: 1});
     assert.equal(notices.length, 0);
     assert.deepEqual(modalCalls.at(-1), ['rme-tool-mapping', 'show']);
