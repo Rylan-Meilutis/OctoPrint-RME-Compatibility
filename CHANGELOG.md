@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b113 — 2026-09-20
 
 - Fix the tool-mapping dialog being clipped above the viewport by preventing
   OctoPrint's modal manager from adding a second centering offset. Keep the
