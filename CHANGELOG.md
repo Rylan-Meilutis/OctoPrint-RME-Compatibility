@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b114 — 2026-09-21
 
 - Give LCD switching immediate pending feedback with failure/timeout rollback.
 - Treat zero host remaining time before 100% completion as unknown, rather than
