@@ -1755,6 +1755,12 @@ $(function () {
                 scheduleCoreWorkflowRender();
             }, 1000);
         };
+        self.onServerReconnect = function () {
+            // A pending prompt may be unchanged while this browser was away.
+            // Fetch the authoritative state and allow it to open again once.
+            self.toolmapNoticeKey = "";
+            OctoPrint.simpleApiGet("rme_compatibility").done(self.acceptState);
+        };
         self.integrateCancelObjectPreview = function () {
             var list = $("#tab_plugin_cancelobject #cancel-table");
             var preview = $("#rme-object-overview");
@@ -1773,6 +1779,9 @@ $(function () {
             // Move the already-bound controls once, preserving their KO context.
             if ($("#control").length) $("#rme-print-controls").detach().appendTo("#control");
             self.allViewModelsBound = true;
+            // The initial API reply can arrive before the modal is bound/moved.
+            self.toolmapNoticeKey = "";
+            self.updateToolmapNotice(self.prompt());
             installSpoolManagerPanel();
             installSpoolManagerSidebar();
             updateCorePrintClock();

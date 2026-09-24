@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Restore pending tool-mapping review after browser reconnect and after initial
+  UI binding. Keep a dedicated review button in the RME dropdown.
+
 ## 0.1.0b116 — 2026-09-23
 
 - Complete printer-to-SpoolManager selection reads even when every slot already

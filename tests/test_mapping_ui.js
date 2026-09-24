@@ -105,6 +105,21 @@ const {jQueryFactory} = require('jquery/factory');
     assert.equal(modalCalls.filter(call => call[1] === 'show').length, 1);
     vm.showToolMapping(); // Explicit review is still available.
     assert.deepEqual(modalCalls.at(-1), ['rme-tool-mapping', 'show']);
+    vm.settings.settings.plugins.rme_compatibility.prompt_toolmap_on_print(true);
+    const reconnectPrompt = {kind: 'toolmap', updated: 3, filename: 'test.gcode', count: 1};
+    vm.updateToolmapNotice(reconnectPrompt);
+    const showsBeforeReconnect = modalCalls.filter(call => call[1] === 'show').length;
+    const acceptState = vm.acceptState;
+    vm.acceptState = data => vm.updateToolmapNotice(data.prompt);
+    w.OctoPrint = {simpleApiGet: name => {
+        assert.equal(name, 'rme_compatibility');
+        return $.Deferred().resolve({prompt: reconnectPrompt}).promise();
+    }};
+    vm.onServerReconnect();
+    assert.equal(modalCalls.filter(call => call[1] === 'show').length, showsBeforeReconnect + 1);
+    vm.updateToolmapNotice(reconnectPrompt);
+    assert.equal(modalCalls.filter(call => call[1] === 'show').length, showsBeforeReconnect + 1);
+    vm.acceptState = acceptState;
     vm.spoolSelectionRows([{tool: 0, loaded: {material: 'PLA', color: '#ffffff'},
         selected: ko.observable(null), dirty: ko.observable(false),
         availableSpools: ko.observableArray([{database_id: 1, material: 'PLA', display_name: 'White PLA'}])}]);
