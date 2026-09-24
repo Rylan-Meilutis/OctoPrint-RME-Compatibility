@@ -129,6 +129,7 @@ class RmeCompatibilityPlugin(
         self._spoolmanager = None
         self._spool_sync_lock = threading.Lock()
         self._spool_sync_pending = None
+        self._printer_selection_read = None
         self._expected_provider_events = {}
         self._expected_spoolman_event_until = 0
         self._toolmap_hold_active = False
@@ -4519,11 +4520,14 @@ class RmeCompatibilityPlugin(
     def _sync_filaments_from_printer(self):
         """Make firmware M865 assignments authoritative for one reconciliation."""
         with self._state_lock:
-            self._state["spoolmanager"]["pending_provider_sync"] = None
             can_send = self._state["connected"] and self._state["supported"]
+            if not can_send:
+                raise RuntimeError("RME printer is not connected")
+            self._state["spoolmanager"]["pending_provider_sync"] = None
+            machine = self._state.get("machine", {})
+            count = int(machine.get("logical_tools") or machine.get("hotends") or 1)
+            self._printer_selection_read = set(range(count))
             self._state["spoolmanager"]["status"] = "reading selections from printer"
-        if not can_send:
-            raise RuntimeError("RME printer is not connected")
         self._logger.info(
             "Machine-to-provider filament synchronization requested; querying M865 loadout"
         )
@@ -4753,6 +4757,33 @@ class RmeCompatibilityPlugin(
         self._persist_and_publish()
 
     def _accept_firmware_spool(self, record):
+        with self._state_lock:
+            pending = self._printer_selection_read
+        try:
+            self._apply_firmware_spool(record)
+        except Exception:
+            with self._state_lock:
+                if pending is not None and self._printer_selection_read is pending:
+                    self._printer_selection_read = None
+                    self._state["spoolmanager"]["status"] = "printer selection sync failed"
+            self._persist_and_publish()
+            raise
+        with self._state_lock:
+            if pending is None or self._printer_selection_read is not pending:
+                return
+            pending.discard(int(record["tool"]))
+            if pending:
+                return
+            self._printer_selection_read = None
+            spool_state = self._state["spoolmanager"]
+            if spool_state.get("status") in ("reading selections from printer", "synchronizing"):
+                spool_state["status"] = (
+                    "spool details required" if spool_state.get("pending_new")
+                    else "synchronized"
+                )
+        self._persist_and_publish()
+
+    def _apply_firmware_spool(self, record):
         """Apply an LCD-side material choice to the active provider.
 
         A known short alias selects an existing spool. ``NEW`` or a normal

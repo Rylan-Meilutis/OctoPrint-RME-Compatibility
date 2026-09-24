@@ -2741,6 +2741,39 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual([(True, False)], syncs)
         self.assertIsNone(plugin._state["spoolmanager"]["pending_new"])
 
+    def test_printer_selection_read_completes_for_unchanged_and_empty_slots(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-selection-read-test")
+        plugin._active_spool_provider = lambda: (object(), "spoolmanager")
+        plugin._persist_and_publish = lambda: None
+        commands = []
+        plugin._send_command = commands.append
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["machine"] = {"logical_tools": 8, "hotends": 8}
+        spool = dict(alias="TPU-00L", database_id=21, tool=4,
+                     color="#000000", vendor="SUNLU")
+        plugin._state["spoolmanager"].update(published=[spool], selected=[spool])
+        plugin._sync_filaments_from_printer()
+        for tool in (4, 0, 1, 2, 3, 5, 6, 6):
+            plugin._accept_firmware_spool(dict(
+                tool=tool, material="FLEX" if tool == 4 else "---",
+                profile="TPU-00L" if tool == 4 else "---",
+                color="#000000", vendor="SUNLU"))
+            self.assertEqual("reading selections from printer",
+                             plugin._state["spoolmanager"]["status"])
+        plugin._accept_firmware_spool(dict(tool=7, material="---"))
+        self.assertEqual("synchronized", plugin._state["spoolmanager"]["status"])
+        self.assertIsNone(plugin._printer_selection_read)
+        self.assertEqual(["M865 Q"], commands)
+
+    def test_disconnected_selection_read_does_not_leave_busy_status(self):
+        plugin = RmeCompatibilityPlugin()
+        before = plugin._state["spoolmanager"]["status"]
+        with self.assertRaises(RuntimeError):
+            plugin._sync_filaments_from_printer()
+        self.assertEqual(before, plugin._state["spoolmanager"]["status"])
+        self.assertIsNone(plugin._printer_selection_read)
+
     def test_matching_rgb_with_palette_label_does_not_resync(self):
         plugin = RmeCompatibilityPlugin()
         plugin._logger = logging.getLogger("rme-color-echo-test")

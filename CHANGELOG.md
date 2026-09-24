@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Complete printer-to-SpoolManager selection reads even when every slot already
+  matches, including empty slots. Disconnected requests no longer leave a busy
+  status behind; provider failures end the read with a failure status.
+
 ## 0.1.0b115 — 2026-09-23
 
 - Stop repeated filament-sync writes when the printer's shared RGB palette
