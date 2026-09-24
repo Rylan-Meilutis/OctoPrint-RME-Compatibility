@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Stop repeated filament-sync writes when the printer's shared RGB palette
+  label differs from a spool's color/display name. RGB and manufacturer
+  differences still trigger correction; provider color labels are preserved.
+
 ## 0.1.0b114 — 2026-09-21
 
 - Give LCD switching immediate pending feedback with failure/timeout rollback.

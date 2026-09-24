@@ -4809,9 +4809,10 @@ class RmeCompatibilityPlugin(
                 self._sync_spoolmanager(True, False)
             else:
                 expected_vendor = self._gcode_text(match.get("vendor"), 23)
-                expected_color_name = self._gcode_text(
-                    match.get("color_name") or match.get("display_name"), 15
-                )
+                # Loaded colors are RGB only. Firmware derives their labels
+                # from a shared palette (built-ins win over custom names).
+                # A per-spool label/display name cannot round-trip here, and
+                # treating it as identity causes M865 Q -> full sync loops.
                 mismatch = (
                     str(record.get("color", "")).lower()
                     != str(match.get("color", "")).lower()
@@ -4819,11 +4820,6 @@ class RmeCompatibilityPlugin(
                         record.get("vendor") not in (None, "", "None")
                         and str(record.get("vendor", "")).casefold()
                         != expected_vendor.casefold()
-                    )
-                    or (
-                        record.get("color_name") not in (None, "", "None", "Custom")
-                        and str(record.get("color_name", "")).casefold()
-                        != expected_color_name.casefold()
                     )
                 )
                 if mismatch:

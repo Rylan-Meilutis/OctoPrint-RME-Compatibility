@@ -2741,6 +2741,38 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual([(True, False)], syncs)
         self.assertIsNone(plugin._state["spoolmanager"]["pending_new"])
 
+    def test_matching_rgb_with_palette_label_does_not_resync(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-color-echo-test")
+        plugin._active_spool_provider = lambda: (object(), "spoolmanager")
+        syncs = []
+        plugin._sync_spoolmanager = lambda *args: syncs.append(args)
+        for name in ("Jet Black", "", "Other spool black"):
+            spool = dict(alias="TPU-00L", database_id=21, tool=4,
+                         color="#000000", color_name=name,
+                         display_name="SUNLU TPU", vendor="SUNLU")
+            plugin._state["spoolmanager"].update(published=[spool], selected=[spool])
+            for _ in range(20):
+                plugin._accept_firmware_spool(dict(
+                    tool=4, material="FLEX", profile="TPU-00L",
+                    color="#000000", color_name="Black", vendor="Sunlu"))
+        self.assertEqual([], syncs)
+
+    def test_real_rgb_or_vendor_mismatch_still_corrects_printer(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-real-metadata-test")
+        plugin._active_spool_provider = lambda: (object(), "spoolmanager")
+        syncs = []
+        plugin._sync_spoolmanager = lambda *args: syncs.append(args)
+        spool = dict(alias="PLA-005", database_id=5, tool=6,
+                     color="#ffffff", color_name="White", vendor="Hatchbox")
+        plugin._state["spoolmanager"].update(published=[spool], selected=[spool])
+        for color, vendor in (("#000000", "Hatchbox"), ("#ffffff", "SUNLU")):
+            plugin._accept_firmware_spool(dict(
+                tool=6, material="PLA", profile="PLA-005",
+                color=color, color_name="White", vendor=vendor))
+        self.assertEqual([(True, True), (True, True)], syncs)
+
     def test_machine_import_resolves_alias_outside_published_slots(self):
         class Provider(object):
             def inventory(self, include_unavailable=False):
