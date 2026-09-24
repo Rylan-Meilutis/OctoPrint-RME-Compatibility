@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b116 — 2026-09-23
 
 - Complete printer-to-SpoolManager selection reads even when every slot already
   matches, including empty slots. Disconnected requests no longer leave a busy
