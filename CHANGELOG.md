@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b115 — 2026-09-23
 
 - Stop repeated filament-sync writes when the printer's shared RGB palette
   label differs from a spool's color/display name. RGB and manufacturer
