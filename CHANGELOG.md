@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b117 — 2026-09-24
 
 - Restore pending tool-mapping review after browser reconnect and after initial
   UI binding. Keep a dedicated review button in the RME dropdown.
