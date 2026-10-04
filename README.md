@@ -1,5 +1,15 @@
 # OctoPrint RME Compatibility
 
+### File-derived adaptive meshing (b118)
+
+With the October 4 firmware releases (6.9.0-RME or 6.10.1-RME), local text
+jobs are analyzed before streaming. RME sends their extrusion XY bounds before
+ordinary G29 P1 probing, retaining the native probe grid and safety margins.
+No slicer edit is needed when that probe command is already present. Older
+firmware, MINI, unsupported geometry and explicitly sized probes keep their
+existing behavior. See [adaptive meshing](docs/adaptive-meshing.md) for the
+command, limits and validation requirements.
+
 ### Independent lighting controls (b98)
 
 With matching firmware, Control/RME provides a separate LCD Off/On slider and

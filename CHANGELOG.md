@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.0b118 — 2026-10-04
+
+- Analyze local text print files at preflight and supply their extrusion XY
+  bounds through the new firmware `@RME MESH SET` interface before G29 P1.
+- Include every tool, skirt/brim, wipe tower and conservative I/J arc bounds;
+  exclude travel and stationary purge. Retain the native mesh safety margin.
+- Capability-gate the feature and preserve slicer behavior for explicitly sized
+  probes, unsupported geometry, remote/binary files and bounded-analysis failures.
+- Companion firmware fixes the INDX no-tool homing crash, retains valid Auto PA
+  flash records during unsuccessful forced retries, and scales multi-tool dock
+  cooling by calibration temperature while preserving single-tool fan state.
+- Automated tests are not physical printer validation.
+
 ## 0.1.0b117 — 2026-09-24
 
 - Restore pending tool-mapping review after browser reconnect and after initial

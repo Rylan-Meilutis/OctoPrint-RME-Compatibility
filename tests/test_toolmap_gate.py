@@ -169,6 +169,39 @@ class _Comm(object):
 
 
 class ToolmapGateTests(unittest.TestCase):
+    def test_mesh_preflight_analyzes_selected_local_file(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("mesh-test")
+        plugin._state.update(supported=True)
+        plugin._state["machine"].update(mesh_area=1, x_max=250, y_max=205.5)
+        plugin._printer = types.SimpleNamespace(get_current_data=lambda: {
+            "job": {"file": {"origin": "local", "path": "part.gcode"}}})
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".gcode") as f:
+            f.write("G90\nM83\nG0 X10 Y20\nG1 X30 Y40 E1\n")
+            f.flush()
+            plugin._file_manager = types.SimpleNamespace(path_on_disk=lambda origin, path: f.name)
+            plugin._prepare_mesh_area()
+        self.assertEqual(plugin._mesh_area_command,
+                         "@RME MESH SET x=9.00 y=19.00 width=22.00 height=22.00")
+
+    def test_mesh_bounds_inserted_before_file_probe_only(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._state.update(supported=True)
+        plugin._state["machine"]["mesh_area"] = 1
+        plugin._mesh_area_command = "@RME MESH SET x=10 y=20 width=30 height=40"
+        result = plugin.gcode_queuing_hook(None, "queuing", "G29 P1", None, "G29", tags={"source:file"})
+        self.assertEqual(result[0][0], plugin._mesh_area_command)
+        self.assertEqual(result[1], ("G29 P1", None))
+        self.assertIsNone(plugin.gcode_queuing_hook(None, "queuing", "G29 P1", None, "G29", tags={"source:terminal"}))
+        plugin._state["machine"]["mesh_area"] = 0
+        self.assertIsNone(plugin.gcode_queuing_hook(None, "queuing", "G29 P1", None, "G29", tags={"source:file"}))
+
+    def test_mesh_preflight_clears_previous_job_on_unsupported_firmware(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._mesh_area_command = "old bounds"
+        plugin._prepare_mesh_area()
+        self.assertIsNone(plugin._mesh_area_command)
+
     def test_park_without_workflow_events_requests_live_tool_state(self):
         plugin = RmeCompatibilityPlugin()
         plugin._schedule_publish = lambda: None

@@ -44,6 +44,7 @@ from .spoolmanager import (
 from .storage import StateStore, TransferManifestStore
 from .preview import read_preview
 from .progress import progress_command
+from .mesh_area import analyze as analyze_mesh_area, is_adaptive_probe
 from .mapping import read_requirements, recommend, validate, compatible
 from .uploader import FirmwareUploader, UploadError, firmware_metadata
 
@@ -138,6 +139,7 @@ class RmeCompatibilityPlugin(
         self._validator_mapping_implementation = None
         self._validator_mapping_signature = None
         self._preflight_gate_started = False
+        self._mesh_area_command = None
         self._toolmap_preflight_decision = None
         self._print_job_gcode_sent = False
         self._skip_cancel_script = False
@@ -1620,6 +1622,7 @@ class RmeCompatibilityPlugin(
                 self._print_job_gcode_sent = False
                 self._skip_cancel_script = False
             self._prepare_toolmap_prompt(record_preflight=True)
+            self._prepare_mesh_area()
         elif script_type == "gcode" and script_name == "afterPrintCancelled":
             with self._state_lock:
                 if self._preflight_gate_started and not self._print_job_gcode_sent:
@@ -1643,6 +1646,13 @@ class RmeCompatibilityPlugin(
             return (None,)
         if not supported:
             return None
+        if (phase == "queuing" and {"source:job", "source:file"}.intersection(tags)
+                and is_adaptive_probe(cmd)):
+            with self._state_lock:
+                area_command = self._mesh_area_command
+                mesh_supported = self._state.get("machine", {}).get("mesh_area") == 1
+            if area_command and mesh_supported:
+                return [(area_command, None, {"plugin:rme_compatibility"}), (cmd, cmd_type)]
         if "rme:priority_control" in tags:
             # Recheck at the queue boundary: startup may have begun since the
             # periodic worker sampled state. Never precede OctoPrint's M110.
@@ -3453,6 +3463,28 @@ class RmeCompatibilityPlugin(
     def _handle_print_started(self, payload):
         """Backstop older connectors and enrich the pre-start prompt payload."""
         self._prepare_toolmap_prompt(payload, reuse_preflight=True)
+
+    def _prepare_mesh_area(self):
+        # Analyze once at preflight, not in the serial send/receive hooks.
+        with self._state_lock:
+            self._mesh_area_command = None
+            machine = dict(self._state.get("machine", {}))
+            supported = self._state.get("supported", False)
+        if not supported or machine.get("mesh_area") != 1:
+            return
+        try:
+            file_info = ((self._printer.get_current_data() or {}).get("job") or {}).get("file") or {}
+            path = file_info.get("path") or file_info.get("name")
+            if file_info.get("origin") != "local" or not str(path).lower().endswith((".gcode", ".gco")):
+                return
+            command = analyze_mesh_area(
+                self._file_manager.path_on_disk("local", path),
+                float(machine["x_max"]), float(machine["y_max"]))
+            with self._state_lock:
+                self._mesh_area_command = command
+            self._logger.info("RME adaptive mesh: %s", command or "using slicer bounds (geometry not safely analyzable)")
+        except (OSError, UnicodeError, KeyError, TypeError, ValueError, AttributeError):
+            self._logger.debug("RME mesh analysis unavailable; keeping slicer bounds", exc_info=True)
 
     def _selected_job_has_executable_gcode(self):
         """Return false only when the selected text job is provably inert.
