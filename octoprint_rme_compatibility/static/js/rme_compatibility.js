@@ -1012,11 +1012,13 @@ $(function () {
         self.releaseLabel = function (a) {
             return a.version + " — " + a.variant + " — " + ({current: "Installed checksum matches", different: "Different from installed firmware", unknown: "Installed checksum unknown"}[a.comparison]);
         };
-        self.checkFirmwareReleases = function () { self.command("check_firmware_releases"); };
+        self.checkFirmwareReleases = function () {
+            self.command("check_firmware_releases", {variant: ko.unwrap(self.settings.settings.plugins.rme_compatibility.firmware_variant) || ""});
+        };
         self.downloadFirmwareRelease = function () {
             var asset = ko.utils.arrayFirst(self.releaseAssets(), function (a) { return a.id === self.selectedRelease(); });
             if (!asset || !window.confirm("Download " + asset.name + " to this Pi? It will NOT flash automatically. Use the existing Upload and flash controls after the download completes.")) return;
-            self.command("download_firmware_release", {id: asset.id});
+            self.command("download_firmware_release", {id: asset.id, variant: asset.variant});
         };
         self.useDownloadedFirmware = function () { self.selectedFirmware(self.releaseInfo().filename); };
         self.firmwareLabel = function (file) { return file.name + " (" + formatBytes(file.size) + ")"; };

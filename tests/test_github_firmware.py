@@ -4,7 +4,7 @@ import os
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from test_toolmap_gate import RmeCompatibilityPlugin
 from octoprint_rme_compatibility import github_firmware as fw
@@ -12,6 +12,32 @@ from octoprint_rme_compatibility.protocol import parse_line
 
 
 class FirmwareReleaseTests(unittest.TestCase):
+    def test_token_only_sent_to_api_not_redirect_cdn(self):
+        redirect = Mock(status_code=302, headers={"Location": "https://release-assets.githubusercontent.com/example"})
+        success = Mock(status_code=200)
+        with patch("requests.get", side_effect=[redirect, success]) as get:
+            fw._response(fw.API + "/releases", token="test-secret")
+        self.assertEqual(get.call_args_list[0].kwargs["headers"]["Authorization"], "Bearer test-secret")
+        self.assertNotIn("Authorization", get.call_args_list[1].kwargs["headers"])
+
+    def test_manual_variant_uses_current_selection_and_saved_credential(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._state.update(connected=True, supported=True)
+        plugin._settings = Mock()
+        plugin._settings.get.return_value = ""
+        plugin._settings.global_get.return_value = "test-secret"
+        plugin._print_job_active = lambda: False
+        plugin._publish = lambda: None
+        plugin._logger = logging.getLogger("release-test")
+        plugin._release_check_after = float("inf")
+        with patch("octoprint_rme_compatibility.plugin.threading.Thread") as thread, patch.object(fw, "catalog", return_value=[]) as catalog:
+            thread.side_effect = lambda **kw: types.SimpleNamespace(start=kw["target"])
+            plugin._start_release_task(variant_override="coreone_indx")
+            catalog.assert_called_once_with("coreone_indx", {}, token="test-secret")
+        plugin._settings.global_get.assert_called_once_with(["plugins", "softwareupdate", "credentials", "github"])
+        self.assertEqual(plugin._state["firmware_releases"]["status"], "ready")
+        self.assertNotIn("test-secret", str(plugin._state))
+
     def fixture(self, manifest=True):
         asset = dict(id=123, name="coreone_indx_6.10.1-RME.bbf", size=1024,
                      digest="sha256:" + "a" * 64, browser_download_url=fw.DOWNLOAD + "v6.10.1-RME/coreone_indx_6.10.1-RME.bbf")

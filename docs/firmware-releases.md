@@ -43,3 +43,14 @@ Hardware checks remain required: running identity after success/rejection of
 a flash, reconnect to a different printer, and end-to-end UI download/stage/
 flash with the installed OctoPrint version. Network failures and missing
 metadata are recoverable UI errors, not reasons to interrupt a print.
+# Manual sync and GitHub credentials
+
+In Settings → RME Compatibility → Firmware discovery, choose your exact machine
+variant and click **Sync now**. This uses the current selection without needing
+to save Settings first and does not wait for the six-hour automatic check.
+Save Settings if you want the variant retained for future automatic checks.
+The printer must be connected and idle. Results and errors appear beside the
+button; use the firmware update panel to select and download a release.
+
+RME uses the GitHub token already saved in OctoPrint Software Update, if present.
+It stays server-side and is sent only to GitHub's API, never asset CDN redirects.

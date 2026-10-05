@@ -775,11 +775,11 @@ class RmeCompatibilityPlugin(
             ))
         elif command == "check_firmware_releases":
             self._release_check_after = 0
-            self._start_release_task()
+            self._start_release_task(variant_override=data.get("variant"))
         elif command == "download_firmware_release":
             if not Permissions.ADMIN.can():
                 flask.abort(403)
-            self._start_release_task(str(data["id"]))
+            self._start_release_task(str(data["id"]), variant_override=data.get("variant"))
         elif command == "stage_firmware":
             self._start_firmware_upload(data["filename"])
         elif command == "stage_and_flash_firmware":
@@ -5790,7 +5790,7 @@ class RmeCompatibilityPlugin(
 
     # -- Firmware files stored on the Pi ----------------------------------
 
-    def _start_release_task(self, asset_id=None):
+    def _start_release_task(self, asset_id=None, variant_override=None):
         """One bounded GitHub worker, never network I/O on the serial thread."""
         with self._state_lock:
             if not self._state["connected"] or not self._state["supported"]:
@@ -5803,7 +5803,9 @@ class RmeCompatibilityPlugin(
             if self._print_job_active():
                 raise ValueError("Firmware downloads/checks are deferred until the printer is idle")
             running = dict(self._state["running_firmware"])
-            configured = self._settings.get(["firmware_variant"]) or ""
+            configured = (self._settings.get(["firmware_variant"]) or "") if variant_override is None else variant_override
+            if not isinstance(configured, str) or (configured and configured not in set(github_firmware.MODELS.values()) | {"mini-en-" + x for x in ("cs", "de", "es", "fr", "it", "ja", "pl", "uk")}):
+                raise ValueError("Choose a supported exact printer variant")
             detected = github_firmware.variant_for(running.get("model"))
             variant = configured or detected
             if detected and configured and configured != detected and not (detected == "mini" and configured.startswith("mini-en-")):
@@ -5839,7 +5841,8 @@ class RmeCompatibilityPlugin(
                     filename = github_firmware.download(asset, self._firmware_directory, progress)
                     changes = dict(status="downloaded", filename=filename, progress=100)
                 else:
-                    assets = github_firmware.catalog(variant, running)
+                    token = self._settings.global_get(["plugins", "softwareupdate", "credentials", "github"])
+                    assets = github_firmware.catalog(variant, running, token=token)
                     changes = dict(status="ready", assets=assets, checked=int(time.time()), variant=variant)
                 with self._state_lock:
                     if generation == self._connection_generation:

@@ -24,7 +24,7 @@ def variant_for(model):
     return MODELS.get(re.sub(r"^PRUSA-", "", str(model).upper()))
 
 
-def _response(url):
+def _response(url, token=None):
     import requests
     # Only repository-owned endpoints are accepted initially. GitHub redirects
     # release assets to its HTTPS CDN; reject arbitrary hosts at every hop.
@@ -36,9 +36,13 @@ def _response(url):
         parsed = urlparse(url)
         if parsed.scheme != "https" or parsed.hostname not in allowed or parsed.username or parsed.port not in (None, 443):
             raise ValueError("Unsafe firmware download redirect")
+        headers = {"User-Agent": "OctoPrint-RMECompatibility",
+                   "Accept": "application/vnd.github+json"}
+        # Never forward the saved credential to release pages or CDN redirects.
+        if token and parsed.hostname == "api.github.com":
+            headers["Authorization"] = "Bearer " + token
         response = requests.get(url, stream=True, timeout=(5, 15), allow_redirects=False,
-                                headers={"User-Agent": "OctoPrint-RMECompatibility",
-                                         "Accept": "application/vnd.github+json"})
+                                headers=headers)
         if response.status_code in (301, 302, 303, 307, 308):
             url = urljoin(url, response.headers.get("Location", ""))
             response.close()
@@ -52,9 +56,9 @@ def _response(url):
     raise ValueError("Too many firmware download redirects")
 
 
-def chunks(url, limit, seconds=120):
+def chunks(url, limit, seconds=120, token=None):
     start, size = time.monotonic(), 0
-    with _response(url) as response:
+    with _response(url, token=token) as response:
         for block in response.iter_content(65536):
             size += len(block)
             if size > limit or time.monotonic() - start > seconds:
@@ -62,14 +66,14 @@ def chunks(url, limit, seconds=120):
             yield block
 
 
-def get_json(url):
-    return json.loads(b"".join(chunks(url, 2 * 1024 * 1024, 30)))
+def get_json(url, token=None):
+    return json.loads(b"".join(chunks(url, 2 * 1024 * 1024, 30, token=token)))
 
 
-def catalog(variant, running=None):
+def catalog(variant, running=None, token=None):
     if variant not in set(MODELS.values()) | {"mini-en-" + x for x in ("cs", "de", "es", "fr", "it", "ja", "pl", "uk")}:
         raise ValueError("Choose a supported exact printer variant")
-    releases = get_json(API + "/releases?per_page=30")
+    releases = get_json(API + "/releases?per_page=30", token=token)
     if not isinstance(releases, list):
         raise ValueError("Invalid GitHub release response")
     result = []

@@ -22,7 +22,10 @@
                 <option value="mini">MINI default</option>
                 <option value="mini-en-cs">MINI EN/CS</option><option value="mini-en-de">MINI EN/DE</option><option value="mini-en-es">MINI EN/ES</option><option value="mini-en-fr">MINI EN/FR</option><option value="mini-en-it">MINI EN/IT</option><option value="mini-en-ja">MINI EN/JA</option><option value="mini-en-pl">MINI EN/PL</option><option value="mini-en-uk">MINI EN/UK</option>
             </select>
-            <p class="help-block">Automatic checks fetch release metadata only. An administrator must select a BBF to download. Older firmware needs an explicit variant and cannot confirm the installed checksum.</p>
+            <button type="button" class="btn" data-bind="click: checkFirmwareReleases, enable: state().supported && !releaseBusy()">Sync now</button>
+            <span data-bind="text: releaseInfo().status"></span>
+            <p class="text-error" data-bind="text: releaseInfo().error"></p>
+            <p class="help-block">Sync now uses the selected variant immediately, without saving Settings or waiting six hours. Uses the GitHub token saved in Software Update. Automatic checks fetch metadata only; downloading and flashing still require confirmation. Older firmware cannot confirm the installed checksum.</p>
         </div>
     </div>
     <div class="control-group">

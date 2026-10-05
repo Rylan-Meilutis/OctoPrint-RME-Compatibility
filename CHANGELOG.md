@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add Settings “Sync now” using the current machine variant immediately, even
+  before Settings is saved; manual checks bypass the six-hour automatic interval.
+- Reuse Software Update's saved GitHub token server-side for release API calls;
+  never send it to download CDN redirects or expose it to the browser.
+
 ## 0.1.0b120 — 2026-10-04
 
 - Add the printer-backed Off/Auto/On Auto PA selector to OctoPrint Settings.
