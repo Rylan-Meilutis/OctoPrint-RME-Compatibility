@@ -2,6 +2,19 @@
 
 ## 0.1.0b120 — 2026-10-04
 
+- Add the printer-backed Off/Auto/On Auto PA selector to OctoPrint Settings.
+- Stop full configuration refreshes and USB scans merely from opening Settings;
+  retain live tune polling and explicit refresh controls.
+- Integrate per-print, ordered SpoolJoin fallback selection into tool review.
+  Rank compatible loaded spools by RGB color distance; reject duplicate/shared
+  destinations and reset chains on every confirmation, including no fallbacks.
+- Jobs uploaded less than 24 hours ago with valid selected material/color
+  matches open directly at fallback review. Primary tools remain editable.
+  Fallback review always requires confirmation on supported printers and
+  never expires into an automatic print start.
+- Validation: 275 Python tests (four skipped), eight UI suites. Physical
+  takeover and browser latency still require testing on the target setup.
+
 - Add automatic idle-time GitHub firmware release discovery and exact printer
   variant selection, with both maintained firmware lines available in the UI.
 - Compare release application hashes with freshly reported running-firmware

@@ -48,7 +48,7 @@ from .progress import progress_command
 from .mesh_area import analyze as analyze_mesh_area, is_adaptive_probe
 from .completion_snapshot import CompletionSnapshot
 from .end_move import analyze as analyze_end_move, normalized as normalize_end_move
-from .mapping import read_requirements, recommend, validate, compatible
+from .mapping import read_requirements, recommend, validate, compatible, fallback_commands, recent_mapping_valid
 from .uploader import FirmwareUploader, UploadError, firmware_metadata
 
 
@@ -629,8 +629,10 @@ class RmeCompatibilityPlugin(
                 "@RME STUCK %s" % action, "stuck_response"
             )
         elif command == "apply_toolmap":
-            self._apply_toolmap(data["mapping"], bool(data["enabled"]), release_hold=True)
+            self._apply_toolmap(data["mapping"], bool(data["enabled"]), release_hold=True, fallbacks=data.get("fallbacks"))
         elif command == "reset_toolmap":
+            if (self._state.get("prompt") or {}).get("spooljoin_review"):
+                raise ValueError("Confirm the per-print fallback review before continuing")
             self._validate_material_mapping({}, False)
             self._send_commands(["@RME TOOLMAP RESET", "@RME TOOLMAP QUERY"])
             self._configure_validator_mapping({})
@@ -3506,7 +3508,7 @@ class RmeCompatibilityPlugin(
             raise ValueError("Slicer material metadata is unavailable; cannot verify a new mapping")
         validate(requirements, loaded, mapping, enabled)
 
-    def _apply_toolmap(self, mapping, enabled, release_hold=False):
+    def _apply_toolmap(self, mapping, enabled, release_hold=False, fallbacks=None):
         machine = self._state.get("machine", {})
         count = int(machine.get("logical_tools", 0))
         normalized = {int(key): int(value) for key, value in mapping.items()}
@@ -3517,6 +3519,14 @@ class RmeCompatibilityPlugin(
             raise ValueError("A mapping for every discovered logical tool is required")
         commands = toolmap_commands(normalized, enabled)
         self._validate_material_mapping(normalized, enabled)
+        with self._state_lock:
+            prompt = copy.deepcopy(self._state.get("prompt") or {})
+            loaded = copy.deepcopy(self._state.get("loaded_filaments") or [])
+        if release_hold and prompt.get("spooljoin_review"):
+            if fallbacks is None:
+                raise ValueError("Confirm per-print fallback selections, even when none are needed")
+            commands += fallback_commands(prompt.get("requirements") or [], loaded,
+                                          normalized, enabled, fallbacks, count)
         # NFV's logical slicer slots must be checked against the selected
         # physical tool before its first-command validation gate is released.
         self._configure_validator_mapping(normalized if enabled else {})
@@ -3667,7 +3677,8 @@ class RmeCompatibilityPlugin(
         mapping = {int(key): int(value) for key, value in configured.items()}
         if set(mapping.keys()) != set(range(count)):
             mapping = {index: index for index in range(count)}
-        if self._settings.get_boolean(["prompt_toolmap_on_print"]):
+        spooljoin_review = self._state.get("spooljoin", {}).get("supported") is True
+        if self._settings.get_boolean(["prompt_toolmap_on_print"]) or spooljoin_review:
             with self._state_lock:
                 existing = self._state.get("prompt") or {}
                 already_held = self._toolmap_hold_active and existing.get("kind") == "toolmap"
@@ -3686,6 +3697,7 @@ class RmeCompatibilityPlugin(
             )))
             now = int(time.time())
             requirements = []
+            file_info = {}
             try:
                 file_info = (self._printer.get_current_data().get("job") or {}).get("file") or {}
                 path = file_info.get("path") or file_info.get("name")
@@ -3695,9 +3707,13 @@ class RmeCompatibilityPlugin(
             except (OSError, AttributeError, TypeError, ValueError):
                 self._logger.info("Slicer material/color metadata unavailable for mapping")
             with self._state_lock:
+                skip_mapping = recent_mapping_valid(file_info, now, requirements,
+                    self._state.get("loaded_filaments") or [], mapping, bool(current_toolmap.get("enabled")))
                 self._toolmap_hold_active = True
                 self._state["prompt"] = {
                     "kind": "toolmap",
+                    "spooljoin_review": spooljoin_review,
+                    "skip_mapping": skip_mapping and spooljoin_review,
                     "requirements": requirements,
                     "recommendation": recommend(requirements, self._state.get("loaded_filaments") or [], count),
                     "message": "Choose the physical tool for each logical tool before printing",
@@ -3707,8 +3723,8 @@ class RmeCompatibilityPlugin(
                     "filename": (payload or {}).get("name"),
                     "updated": now,
                     "timeout_seconds": timeout,
-                    "deadline": now + timeout if timeout else None,
-                    "timer_paused": False,
+                    "deadline": now + timeout if timeout and not spooljoin_review else None,
+                    "timer_paused": spooljoin_review,
                     "remaining_seconds": timeout if timeout else None,
                 }
             self._start_toolmap_timeout()
@@ -3776,7 +3792,7 @@ class RmeCompatibilityPlugin(
         """Permanently pause this prompt's expiry after the first interaction."""
         with self._state_lock:
             prompt = self._state.get("prompt") or {}
-            if prompt.get("kind") != "toolmap" or prompt.get("timer_paused"):
+            if prompt.get("kind") != "toolmap" or prompt.get("timer_paused") or prompt.get("spooljoin_review"):
                 return
             deadline = prompt.get("deadline")
             if deadline is not None:
@@ -3822,7 +3838,7 @@ class RmeCompatibilityPlugin(
         """Keep the firmware's current mapping and continue an untouched job."""
         with self._state_lock:
             prompt = self._state.get("prompt") or {}
-            if prompt.get("kind") != "toolmap" or prompt.get("timer_paused"):
+            if prompt.get("kind") != "toolmap" or prompt.get("timer_paused") or prompt.get("spooljoin_review"):
                 return
             current = copy.deepcopy(self._state.get("toolmap") or {})
         mapping = current.get("mapping") if current.get("enabled") else {}

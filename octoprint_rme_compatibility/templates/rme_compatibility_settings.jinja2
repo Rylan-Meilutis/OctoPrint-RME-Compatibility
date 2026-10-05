@@ -1,5 +1,17 @@
 <form class="form-horizontal">
     <div class="control-group">
+        <label class="control-label">Auto PA mode</label>
+        <div class="controls">
+            <select data-bind="enable: tuneEnabled() && tune().auto_pa !== undefined, value: tune().auto_pa, event: {change: changeAutoPa}">
+                <option value="0">Off — skip calibration</option>
+                <option value="1">Auto — use valid cache</option>
+                <option value="2">On — always calibrate</option>
+            </select>
+            <p class="help-block">Saved immediately on the connected printer. Applies to the next calibration command.</p>
+            <p data-bind="visible: tune().auto_pa === undefined">Connect a compatible RME printer to read its Auto PA mode.</p>
+        </div>
+    </div>
+    <div class="control-group">
         <label class="control-label">Firmware discovery</label>
         <div class="controls">
             <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.firmware_auto_check"> Check GitHub automatically while idle (every six hours)</label>

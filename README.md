@@ -1,6 +1,8 @@
 # OctoPrint RME Compatibility
 
 Firmware discovery: [GitHub releases and verified Pi downloads](docs/firmware-releases.md).
+
+Print setup: [per-print tool mapping, fallback spools and Auto PA](docs/print-preparation.md).
 The installed-firmware checksum comparison requires the companion firmware
 identity update and a release manifest; older builds display unknown.
 

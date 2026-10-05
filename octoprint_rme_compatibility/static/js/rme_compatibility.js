@@ -159,6 +159,31 @@ $(function () {
         self.selectedFirmware = ko.observable();
         self.partialCleanupPath = ko.observable("");
         self.mappingRows = ko.observableArray([]);
+        self.mappingExpanded = ko.observable(true);
+        self.fallbackSelections = ko.observable({});
+        self.fallbacksFor = function (row) { return self.fallbackSelections()[row.logical] || []; };
+        self.fallbackChoices = function (row) {
+            var occupied = self.graphicalMappingRows().map(function (r) { return self.mappingEnabled() ? Number(r.physical()) : r.logical; });
+            Object.keys(self.fallbackSelections()).forEach(function (key) { occupied = occupied.concat(self.fallbackSelections()[key]); });
+            var color = self.mappingRequirement(row).color;
+            function distance(other) {
+                if (!/^#[0-9a-f]{6}$/i.test(color || "") || !/^#[0-9a-f]{6}$/i.test(other || "")) return 200000;
+                return [1, 3, 5].reduce(function (sum, i) { return sum + Math.pow(parseInt(color.substr(i, 2), 16) - parseInt(other.substr(i, 2), 16), 2); }, 0);
+            }
+            return self.mappingChoices(row).filter(function (c) { return c.compatible && occupied.indexOf(c.tool) < 0; })
+                .sort(function (a, b) { return distance(a.color) - distance(b.color) || a.tool - b.tool; });
+        };
+        self.appendFallback = function (row, tool) {
+            var next = Object.assign({}, self.fallbackSelections());
+            next[row.logical] = self.fallbacksFor(row).concat([Number(tool)]);
+            self.fallbackSelections(next);
+            self.touchToolmap();
+        };
+        self.removeFallback = function (row, tool) {
+            var next = Object.assign({}, self.fallbackSelections());
+            next[row.logical] = self.fallbacksFor(row).filter(function (value) { return value !== tool; });
+            self.fallbackSelections(next);
+        };
         self.mappingRequirement = function (row) {
             return ((self.prompt().requirements || []).filter(function (item) {
                 return Number(item.logical) === row.logical;
@@ -185,6 +210,7 @@ $(function () {
                 if (other !== row && Number(other.physical()) === choice.tool) other.physical(previous);
             });
             row.physical(choice.tool);
+            self.fallbackSelections({});
             self.mappingEnabled(true);
         };
         self.useRecommendedMapping = function () {
@@ -192,6 +218,7 @@ $(function () {
             if (!recommendation) return;
             self.touchToolmap();
             self.mappingRows().forEach(function (row) { row.physical(Number(recommendation[row.logical])); });
+            self.fallbackSelections({});
             self.mappingEnabled(true);
         };
         self.materialMappingValid = ko.pureComputed(function () {
@@ -1094,7 +1121,7 @@ $(function () {
             self.toolmapNotice = null;
             self.toolmapNoticeKey = key;
             var settings = (((self.settings || {}).settings || {}).plugins || {}).rme_compatibility || {};
-            if (key && ko.unwrap(settings.prompt_toolmap_on_print) !== false) {
+            if (key && (prompt.spooljoin_review || ko.unwrap(settings.prompt_toolmap_on_print) !== false)) {
                 self.showToolMapping();
             } else {
                 $("#rme-tool-mapping").modal("hide");
@@ -1216,6 +1243,8 @@ $(function () {
                 self.physicalTools(options);
                 self.mappingRows(rows);
                 self.mappingEnabled(prompt.enabled !== false);
+                self.mappingExpanded(!prompt.skip_mapping);
+                self.fallbackSelections({});
             }
             if (value.theme) {
                 ko.utils.arrayForEach(self.themeKeys, function (entry) {
@@ -1330,7 +1359,7 @@ $(function () {
                 new PNotify({title: "Invalid tool mapping", text: "Each physical tool can only be selected once.", type: "error"});
                 return;
             }
-            self.command("apply_toolmap", {mapping: mapping, enabled: self.mappingEnabled()});
+            self.command("apply_toolmap", {mapping: mapping, enabled: self.mappingEnabled(), fallbacks: self.fallbackSelections()});
         };
         self.touchToolmap = function () {
             if (self.hasToolmapPrompt() && !self.prompt().timer_paused) self.command("touch_toolmap");
@@ -1802,11 +1831,9 @@ $(function () {
             scheduleCoreWorkflowRender();
         };
         self.onSettingsShown = function () {
-            if (self.state().supported) {
-                self.queryControls();
-                if (self.storage().supported) self.refreshStorage();
-                else self.command("storage_caps");
-            }
+            // Use the live cached state. Opening OctoPrint Settings must not
+            // trigger a full configuration refresh or recursive USB scan.
+            // Explicit refresh buttons and the regular tune poll remain active.
         };
         self.onDataUpdaterPluginMessage = function (plugin, data) {
             if (plugin === "rme_compatibility" && data.retry_notice) {
