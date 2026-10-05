@@ -1,8 +1,21 @@
 # OctoPod completion snapshot before lowering the bed
 
-RME's host-only `@RME SNAPSHOT` marker captures the finished part before the
-large accessibility Z move. Add it to slicer end G-code after the parking moves
-and their `M400`, but before the final Z move and before turning lights off:
+RME automatically inserts a capture barrier for recognizable end-of-print bed
+lowering in local text jobs. No slicer change or re-slicing is needed for the
+standard sequence below. At preflight it finds a final absolute Z-only move
+of at least 10 mm after extrusion, nozzle/bed heater-off commands and P0 tool
+parking, with only ordinary shutdown/status commands afterward. At that exact
+file byte position it queues M400, the host-only `@RME SNAPSHOT` marker, then
+the original move. It also checks that the streamed command still matches.
+
+Travel hops, relative Z, later extrusion/motion, unknown macros/transforms,
+missing parking/shutdown, analysis over 5 seconds/100 MiB, and remote/binary
+jobs are not guessed. Missing file-position tags or commands rewritten by
+other plugins also skip automatic capture. Analysis runs only with OctoPod
+enabled and an RME-compatible printer. Original file contents are unchanged.
+
+For an ambiguous/custom sequence, the explicit marker remains available.
+Add it after parking and M400, before the final Z move and lights-off:
 
 ```gcode
 P0 S1
@@ -15,10 +28,9 @@ M400
 ; remaining heater/motor/light/timer cleanup
 ```
 
-Only the snapshot marker is new; keep your machine's validated parking route
-and Z limits. Re-slice existing jobs to include it. Do not place the marker in
-OctoPrint's after-print script: by then the bed has already moved. This feature
-does not infer capture points from arbitrary Z moves or alter the print file.
+Keep your machine's validated parking route and Z limits. Explicit-marker jobs
+disable automatic insertion to avoid duplicate capture. Do not place the
+marker in OctoPrint's after-print script: by then the bed has already moved.
 
 The marker is handled in OctoPrint's serialized send path. An acknowledged
 M400 must precede it. A camera worker uses OctoPod's configured snapshot URL,
@@ -43,6 +55,7 @@ No OctoPod source files are edited. Verified against the upstream interface:
 Other OctoPod image consumers are unchanged. USB/local-printer jobs do not
 stream this host marker through OctoPrint and are not supported by this path.
 
-Host tests cover reuse, ordering, timeout, cancellation, expiry and fallback.
+Host tests cover end-sequence detection, byte offsets, exact-position dispatch,
+reuse, ordering, timeout, cancellation, expiry and fallback.
 A supervised camera/bed-move test on the installed OctoPrint/OctoPod versions
 is still required. The completion-snapshot feature was not present in b118.

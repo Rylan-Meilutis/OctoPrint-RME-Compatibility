@@ -46,6 +46,7 @@ from .preview import read_preview
 from .progress import progress_command
 from .mesh_area import analyze as analyze_mesh_area, is_adaptive_probe
 from .completion_snapshot import CompletionSnapshot
+from .end_move import analyze as analyze_end_move, normalized as normalize_end_move
 from .mapping import read_requirements, recommend, validate, compatible
 from .uploader import FirmwareUploader, UploadError, firmware_metadata
 
@@ -142,6 +143,7 @@ class RmeCompatibilityPlugin(
         self._preflight_gate_started = False
         self._mesh_area_command = None
         self._completion_snapshot = CompletionSnapshot()
+        self._completion_move = None
         self._toolmap_preflight_decision = None
         self._print_job_gcode_sent = False
         self._skip_cancel_script = False
@@ -1128,6 +1130,7 @@ class RmeCompatibilityPlugin(
             self._defer(self._sync_spoolmanager, True)
         elif event in (Events.DISCONNECTING, Events.DISCONNECTED):
             self._completion_snapshot.reset()
+            self._completion_move = None
             self._retry_file = None
             self._retry_job_path = None
             self._retry_ready = False
@@ -1177,6 +1180,7 @@ class RmeCompatibilityPlugin(
             self._handle_print_started(payload)
         elif event == Events.PRINT_CANCELLING:
             self._completion_snapshot.reset()
+            self._completion_move = None
             # Cancellation preparation is queued as part of the job, so the
             # mapping hold must be released before OctoPrint can process it.
             with self._state_lock:
@@ -1641,6 +1645,7 @@ class RmeCompatibilityPlugin(
                 self._skip_cancel_script = False
             self._prepare_toolmap_prompt(record_preflight=True)
             self._prepare_mesh_area()
+            self._prepare_completion_move()
         elif script_type == "gcode" and script_name == "afterPrintCancelled":
             with self._state_lock:
                 if self._preflight_gate_started and not self._print_job_gcode_sent:
@@ -1664,6 +1669,13 @@ class RmeCompatibilityPlugin(
             return (None,)
         if not supported:
             return None
+        if phase == "queuing" and "source:file" in tags:
+            with self._state_lock:
+                target = self._completion_move
+                if (target and "filepos:%d" % target[0] in tags
+                        and normalize_end_move(cmd) == target[1]):
+                    self._completion_move = None
+                    return [("M400", None), ("@RME SNAPSHOT", None), (cmd, cmd_type)]
         if (phase == "queuing" and {"source:job", "source:file"}.intersection(tags)
                 and is_adaptive_probe(cmd)):
             with self._state_lock:
@@ -3481,6 +3493,27 @@ class RmeCompatibilityPlugin(
     def _handle_print_started(self, payload):
         """Backstop older connectors and enrich the pre-start prompt payload."""
         self._prepare_toolmap_prompt(payload, reuse_preflight=True)
+
+    def _prepare_completion_move(self):
+        with self._state_lock:
+            self._completion_move = None
+            supported = self._state.get("supported", False)
+        if not supported:
+            return
+        try:
+            info = self._plugin_manager.plugins.get("octopod")
+            if not info or not info.enabled:
+                return
+            file_info = ((self._printer.get_current_data() or {}).get("job") or {}).get("file") or {}
+            path = file_info.get("path") or file_info.get("name")
+            if file_info.get("origin") != "local" or not str(path).lower().endswith((".gcode", ".gco")):
+                return
+            target = analyze_end_move(self._file_manager.path_on_disk("local", path))
+            with self._state_lock:
+                self._completion_move = target
+            self._logger.info("RME automatic completion snapshot: %s", target or "no unambiguous final bed move")
+        except (OSError, UnicodeError, KeyError, TypeError, ValueError, AttributeError):
+            self._logger.debug("RME automatic completion snapshot analysis unavailable", exc_info=True)
 
     def _prepare_mesh_area(self):
         # Analyze once at preflight, not in the serial send/receive hooks.
