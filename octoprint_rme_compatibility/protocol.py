@@ -208,6 +208,11 @@ def parse_line(raw_line):
             result = parse_fields(line[len(prefix) :])
             result["record"] = record
             return result
+    if line.startswith("RME_FIRMWARE_RUNNING "):
+        result = dict(parse_fields(line[len("RME_FIRMWARE_RUNNING "):]), record="firmware_running")
+        match = re.search(r"(?:^|\s)sha256=([0-9a-f]{64})(?:\s|$)", line)
+        result["sha256"] = match.group(1) if match else None
+        return result
     if line.startswith("RME_FIRMWARE_UNSTAGED "):
         result = parse_fields(line[len("RME_FIRMWARE_UNSTAGED ") :])
         result["record"] = "firmware_unstaged"

@@ -1,5 +1,9 @@
 # OctoPrint RME Compatibility
 
+Firmware discovery: [GitHub releases and verified Pi downloads](docs/firmware-releases.md).
+The installed-firmware checksum comparison requires the companion firmware
+identity update and a release manifest; older builds display unknown.
+
 For an OctoPod completion image taken before the final accessibility bed move,
 see [pre-lowering snapshots](docs/completion-snapshot.md). Recognizable end
 sequences are detected automatically; `@RME SNAPSHOT` remains an explicit

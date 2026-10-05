@@ -1,5 +1,19 @@
 <form class="form-horizontal">
     <div class="control-group">
+        <label class="control-label">Firmware discovery</label>
+        <div class="controls">
+            <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.firmware_auto_check"> Check GitHub automatically while idle (every six hours)</label>
+            <select data-bind="value: settings.settings.plugins.rme_compatibility.firmware_variant">
+                <option value="">Detect from running firmware</option>
+                <option value="coreone">CORE One</option><option value="coreone_indx">CORE One INDX</option><option value="coreonel">CORE One L</option>
+                <option value="mk4">MK4</option><option value="mk3.5">MK3.5</option><option value="xl">XL</option>
+                <option value="mini">MINI default</option>
+                <option value="mini-en-cs">MINI EN/CS</option><option value="mini-en-de">MINI EN/DE</option><option value="mini-en-es">MINI EN/ES</option><option value="mini-en-fr">MINI EN/FR</option><option value="mini-en-it">MINI EN/IT</option><option value="mini-en-ja">MINI EN/JA</option><option value="mini-en-pl">MINI EN/PL</option><option value="mini-en-uk">MINI EN/UK</option>
+            </select>
+            <p class="help-block">Automatic checks fetch release metadata only. An administrator must select a BBF to download. Older firmware needs an explicit variant and cannot confirm the installed checksum.</p>
+        </div>
+    </div>
+    <div class="control-group">
         <label class="control-label">Dashboard</label>
         <div class="controls">
             <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.dashboard_rme_progress"> Show the persistent RME progress circle</label>

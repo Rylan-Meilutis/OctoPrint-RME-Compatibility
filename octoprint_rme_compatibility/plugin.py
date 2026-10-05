@@ -26,6 +26,7 @@ from octoprint.events import Events
 from werkzeug.utils import secure_filename
 
 from .file_service import FileServiceError, RmeFileService
+from . import github_firmware
 from .protocol import (
     MAX_FIRMWARE_SIZE,
     classify_workflow,
@@ -128,6 +129,9 @@ class RmeCompatibilityPlugin(
         self._stop = threading.Event()
         self._keepalive_thread = None
         self._firmware_directory = None
+        self._release_lock = threading.Lock()
+        self._release_check_after = 0
+        self._running_query_sent = False
         self._last_fw_publish = 0
         self._spoolmanager = None
         self._spool_sync_lock = threading.Lock()
@@ -213,6 +217,8 @@ class RmeCompatibilityPlugin(
                 "configuration_revision": 0,
             },
             "machine": {},
+            "running_firmware": {},
+            "firmware_releases": {"status": "idle", "assets": [], "error": None, "filename": None},
             "toolmap": {"enabled": False, "mapping": {}},
             "lock": {},
             "theme": {},
@@ -421,6 +427,8 @@ class RmeCompatibilityPlugin(
     def get_settings_defaults(self):
         return {
             "auto_open_session": True,
+            "firmware_auto_check": True,
+            "firmware_variant": "",
             "dashboard_rme_progress": True,
             "legacy_notifications": False,
             "auto_machine_profile": True,
@@ -540,6 +548,8 @@ class RmeCompatibilityPlugin(
             "set_print_override": ["kind", "value"],
             "set_filament": ["slot", "name", "nozzle", "preheat", "bed", "visible"],
             "stage_firmware": ["filename"],
+            "check_firmware_releases": [],
+            "download_firmware_release": ["id"],
             "stage_and_flash_firmware": ["filename"],
             "stage_octoprint_firmware": ["path"],
             "stage_and_flash_octoprint_firmware": ["path"],
@@ -761,6 +771,13 @@ class RmeCompatibilityPlugin(
                     temperatures[2], visible,
                 )
             ))
+        elif command == "check_firmware_releases":
+            self._release_check_after = 0
+            self._start_release_task()
+        elif command == "download_firmware_release":
+            if not Permissions.ADMIN.can():
+                flask.abort(403)
+            self._start_release_task(str(data["id"]))
         elif command == "stage_firmware":
             self._start_firmware_upload(data["filename"])
         elif command == "stage_and_flash_firmware":
@@ -1085,6 +1102,10 @@ class RmeCompatibilityPlugin(
                 recovery_required = False
             with self._state_lock:
                 self._state["connected"] = True
+                self._state["running_firmware"] = {}
+                self._state["firmware_releases"] = self._empty_state()["firmware_releases"]
+                self._running_query_sent = False
+                self._release_check_after = 0
                 self._state["supported"] = False
                 self._state["session"] = {
                     "active": False, "legacy": True, "last_seq": 0,
@@ -1149,6 +1170,8 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 self._connection_generation += 1
                 self._state["connected"] = False
+                self._state["running_firmware"] = {}
+                self._state["firmware_releases"] = self._empty_state()["firmware_releases"]
                 self._state["supported"] = False
                 self._state["session"]["active"] = False
                 self._state["storage"].update(
@@ -1780,6 +1803,13 @@ class RmeCompatibilityPlugin(
     def _handle_record(self, record):
         """Fold one parsed firmware record into the authoritative UI state."""
         kind = record["record"]
+        if kind == "firmware_running":
+            with self._state_lock:
+                if self._state.get("connected") and self._state.get("supported"):
+                    self._state["running_firmware"] = dict(record)
+                    self._release_check_after = 0
+            self._schedule_publish()
+            return
         if kind.startswith("upload_") or kind.startswith("file_"):
             return
         if kind == "machine":
@@ -3243,6 +3273,13 @@ class RmeCompatibilityPlugin(
             )
             if supported and connected and not transfer_busy and not recovery_required:
                 try:
+                    if not self._print_job_active() and self._state["storage"].get("supported"):
+                        if self._state["storage"].get("caps", {}).get("firmware_running") == 1 and not self._state["running_firmware"] and time.monotonic() > self._running_query_sent + 30:
+                            self._running_query_sent = time.monotonic()
+                            self._send_command("@RME FIRMWARE RUNNING")
+                        identity_ready = self._state["storage"].get("caps", {}).get("firmware_running") != 1 or bool(self._state["running_firmware"])
+                        if identity_ready and self._settings.get_boolean(["firmware_auto_check"]) and time.monotonic() >= self._release_check_after:
+                            self._start_release_task()
                     self._sync_host_progress()
                     self._query_tune()
                     if time.monotonic() < next_keepalive:
@@ -5736,6 +5773,70 @@ class RmeCompatibilityPlugin(
         return remote_name
 
     # -- Firmware files stored on the Pi ----------------------------------
+
+    def _start_release_task(self, asset_id=None):
+        """One bounded GitHub worker, never network I/O on the serial thread."""
+        with self._state_lock:
+            if not self._state["connected"] or not self._state["supported"]:
+                raise ValueError("Connect an RME printer first")
+            if self._release_lock.locked():
+                if asset_id is None:
+                    return
+                raise ValueError("A GitHub firmware operation is already running")
+            self._release_check_after = time.monotonic() + 6 * 3600
+            if self._print_job_active():
+                raise ValueError("Firmware downloads/checks are deferred until the printer is idle")
+            running = dict(self._state["running_firmware"])
+            configured = self._settings.get(["firmware_variant"]) or ""
+            detected = github_firmware.variant_for(running.get("model"))
+            variant = configured or detected
+            if detected and configured and configured != detected and not (detected == "mini" and configured.startswith("mini-en-")):
+                raise ValueError("Selected firmware variant does not match the connected printer")
+            if not variant:
+                self._state["firmware_releases"].update(status="unknown", error="Choose an exact firmware variant in settings; this firmware cannot identify itself yet.")
+                self._publish()
+                return
+            generation = self._connection_generation
+            asset = None
+            if asset_id is not None:
+                asset = next((dict(a) for a in self._state["firmware_releases"]["assets"] if a["id"] == asset_id and a["variant"] == variant), None)
+                if not asset:
+                    raise ValueError("Refresh the release list before downloading")
+            if not self._release_lock.acquire(False):
+                raise ValueError("A GitHub firmware operation is already running")
+            self._state["firmware_releases"].update(status="downloading" if asset else "checking", error=None, progress=0, filename=None)
+        self._publish()
+
+        def work():
+            try:
+                if asset:
+                    last = [0.0]
+                    def progress(offset, size):
+                        if self._stop.is_set():
+                            raise ValueError("Plugin shutting down")
+                        if time.monotonic() - last[0] >= 0.5:
+                            last[0] = time.monotonic()
+                            with self._state_lock:
+                                if generation == self._connection_generation:
+                                    self._state["firmware_releases"]["progress"] = int(offset * 100 / size)
+                            self._publish()
+                    filename = github_firmware.download(asset, self._firmware_directory, progress)
+                    changes = dict(status="downloaded", filename=filename, progress=100)
+                else:
+                    assets = github_firmware.catalog(variant, running)
+                    changes = dict(status="ready", assets=assets, checked=int(time.time()), variant=variant)
+                with self._state_lock:
+                    if generation == self._connection_generation:
+                        self._state["firmware_releases"].update(changes)
+            except Exception as exc:
+                self._logger.warning("RME GitHub firmware operation failed: %s", exc)
+                with self._state_lock:
+                    if generation == self._connection_generation:
+                        self._state["firmware_releases"].update(status="error", error=str(exc))
+            finally:
+                self._release_lock.release()
+                self._publish()
+        threading.Thread(target=work, name="rme-github-firmware", daemon=True).start()
 
     def _firmware_path(self, filename):
         safe = secure_filename(str(filename))

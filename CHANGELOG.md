@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.0b120 — 2026-10-04
+
+- Add automatic idle-time GitHub firmware release discovery and exact printer
+  variant selection, with both maintained firmware lines available in the UI.
+- Compare release application hashes with freshly reported running-firmware
+  identity; never substitute a staged candidate or a version string.
+- Add administrator-confirmed, bounded BBF downloads with SHA-256 verification
+  and atomic Pi storage, followed by the existing explicit flash workflow.
+- Older firmware/releases without identity metadata remain visibly unknown.
+- Companion 6.9.0/6.10.1 firmware prepares SpoolJoin backups for offset and
+  Auto PA calibration, reusing valid PA caches in Auto mode. Configure chains
+  before sending the job's calibration commands; no plugin rewrite is needed.
+
+
 ## 0.1.0b119 — 2026-10-04
 
 - Automatically detect a final absolute Z-only bed drop of at least 10 mm

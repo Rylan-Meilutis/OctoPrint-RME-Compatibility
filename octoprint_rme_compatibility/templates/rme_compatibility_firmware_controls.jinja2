@@ -1,4 +1,18 @@
     <h4>Firmware update</h4>
+    <div class="control-group">
+        <label class="control-label">GitHub releases</label>
+        <div class="controls">
+            <p>Check official RME releases, verify their checksum, and download to this Pi. Flashing always requires a separate confirmation.</p>
+            <select data-bind="options: releaseAssets, optionsText: releaseLabel, optionsValue: 'id', value: selectedRelease, optionsCaption: 'Available firmware versions'"></select>
+            <button type="button" class="btn" data-bind="click: checkFirmwareReleases, enable: state().supported && !releaseBusy()">Check for updates</button>
+            <button type="button" class="btn" data-bind="click: downloadFirmwareRelease, enable: selectedRelease() && !releaseBusy()">Download selected BBF…</button>
+            <p data-bind="text: releaseInfo().status"></p>
+            <div class="progress" data-bind="visible: releaseInfo().status === 'downloading'"><div class="bar" data-bind="style: {width: (releaseInfo().progress || 0) + '%'}"></div></div>
+            <p class="text-error" data-bind="text: releaseInfo().error"></p>
+            <div class="alert alert-info" data-bind="visible: releaseInfo().status === 'ready' && releaseAssets().length && releaseAssets()[0].comparison === 'different'">A different firmware build is available. Choose a version above to download; review it before flashing.</div>
+            <p data-bind="visible: releaseInfo().filename">Download verified. <button type="button" class="btn" data-bind="click: useDownloadedFirmware">Select downloaded BBF below</button></p>
+        </div>
+    </div>
     <p>Upload a signed BBF to this Pi, transfer and verify it through the negotiated RME FILE protocol, then explicitly start the printer bootloader.</p>
     <div class="control-group">
         <label class="control-label">Upload to Pi</label>
