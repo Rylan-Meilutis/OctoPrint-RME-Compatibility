@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b119 — 2026-10-04
 
 - Automatically detect a final absolute Z-only bed drop of at least 10 mm
   after extrusion, heater shutdown and P0 parking in local text jobs. Insert
@@ -12,6 +12,8 @@
   cancellation/disconnect, and expire them after ten minutes. Fall back safely
   if OctoPod or its camera is unavailable. Explicit markers remain an optional
   fallback for custom sequences; b118 did not include this feature.
+- Validation: 262 Python tests ran, four skipped; supervised camera and
+  bed-move validation on the installed OctoPrint/OctoPod versions remains required.
 
 ## 0.1.0b118 — 2026-10-04
 

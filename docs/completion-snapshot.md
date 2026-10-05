@@ -1,6 +1,6 @@
 # OctoPod completion snapshot before lowering the bed
 
-RME automatically inserts a capture barrier for recognizable end-of-print bed
+Starting with b119, RME automatically inserts a capture barrier for recognizable end-of-print bed
 lowering in local text jobs. No slicer change or re-slicing is needed for the
 standard sequence below. At preflight it finds a final absolute Z-only move
 of at least 10 mm after extrusion, nozzle/bed heater-off commands and P0 tool
@@ -58,4 +58,5 @@ stream this host marker through OctoPrint and are not supported by this path.
 Host tests cover end-sequence detection, byte offsets, exact-position dispatch,
 reuse, ordering, timeout, cancellation, expiry and fallback.
 A supervised camera/bed-move test on the installed OctoPrint/OctoPod versions
-is still required. The completion-snapshot feature was not present in b118.
+is still required. No firmware update is required for this feature; it was not
+present in b118.

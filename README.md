@@ -3,7 +3,8 @@
 For an OctoPod completion image taken before the final accessibility bed move,
 see [pre-lowering snapshots](docs/completion-snapshot.md). Recognizable end
 sequences are detected automatically; `@RME SNAPSHOT` remains an explicit
-fallback for custom sequences. This feature is not included in b118.
+fallback for custom sequences. Available starting with b119; no firmware update
+is required for this snapshot feature.
 
 ### File-derived adaptive meshing (b118)
 
