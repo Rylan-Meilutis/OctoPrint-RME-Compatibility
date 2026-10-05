@@ -9,6 +9,9 @@ $(function () {
         self.loginState = parameters[1];
         self.printerState = parameters[2];
         self.files = parameters[3];
+        self.settingsStorageExpanded = ko.observable(false);
+        self.settingsPrinterExpanded = ko.observable(false);
+        self.settingsFirmwareExpanded = ko.observable(false);
         self.cancelObjects = ko.observableArray([]);
         self.objectPreview = ko.observable({objects: [], bed: []});
         self.previewFile = null;
@@ -1157,6 +1160,10 @@ $(function () {
         };
         self.acceptState = function (value) {
             if (!value) return;
+            // JSON snapshots create new objects even for unchanged files/spools.
+            // Preserve their identities so KO does not destroy/rebind whole lists
+            // on every tune/temperature update, including hidden Settings tables.
+            value = reconcileSnapshot(self.state(), value);
             var oldPrompt = self.state().prompt || {};
             self.state(value);
             if (value.tune) {
@@ -2379,6 +2386,19 @@ $(function () {
             });
         }
 
+    }
+
+    function reconcileSnapshot(previous, next) {
+        if (previous === next) return previous;
+        if (!previous || !next || typeof previous !== 'object' || typeof next !== 'object' ||
+                Array.isArray(previous) !== Array.isArray(next)) return next;
+        var keys = Object.keys(next), unchanged = keys.length === Object.keys(previous).length;
+        var result = Array.isArray(next) ? [] : {};
+        keys.forEach(function (key) {
+            result[key] = reconcileSnapshot(previous[key], next[key]);
+            if (!Object.prototype.hasOwnProperty.call(previous, key) || result[key] !== previous[key]) unchanged = false;
+        });
+        return unchanged ? previous : result;
     }
 
     function formatDuration(seconds) {

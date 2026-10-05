@@ -139,7 +139,8 @@
         </div>
     </div>
     <hr>
-    <h4>Printer USB storage</h4>
+    <h4><button type="button" class="btn" data-bind="click: function () { settingsStorageExpanded(!settingsStorageExpanded()); }, attr: {'aria-expanded': settingsStorageExpanded}">Printer USB storage — show/hide</button></h4>
+    <!-- ko if: settingsStorageExpanded -->
     <p>Browse and manage the firmware-exported <code>/usb</code> volume. RME confines every operation to this user-visible storage root.</p>
     <div class="control-group">
         <label class="control-label">Current directory</label>
@@ -218,7 +219,9 @@
     </div>
     <p class="help-block" data-bind="visible: storage().supported && !storageEntries().length">This directory is empty.</p>
     <hr>
-    <h4>Printer settings</h4>
+    <!-- /ko -->
+    <h4><button type="button" class="btn" data-bind="click: function () { settingsPrinterExpanded(!settingsPrinterExpanded()); }, attr: {'aria-expanded': settingsPrinterExpanded}">Printer settings — show/hide</button></h4>
+    <!-- ko if: settingsPrinterExpanded -->
     <p>These controls edit settings exposed by the connected RME firmware. Revision events refresh changed settings after saving or front-panel edits.</p>
     <p>
         <button type="button" class="btn" data-bind="click: queryControls, enable: state().supported">Refresh from printer</button>
@@ -311,5 +314,9 @@
         </div>
     </div>
     <hr>
+    <!-- /ko -->
+    <h4><button type="button" class="btn" data-bind="click: function () { settingsFirmwareExpanded(!settingsFirmwareExpanded()); }, attr: {'aria-expanded': settingsFirmwareExpanded}">Firmware files and flashing — show/hide</button></h4>
+    <!-- ko if: settingsFirmwareExpanded -->
     {% include "rme_compatibility_firmware_controls.jinja2" %}
+    <!-- /ko -->
 </form>

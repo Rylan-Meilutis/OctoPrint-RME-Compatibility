@@ -1,11 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b121 — 2026-10-04
+
+- Preserve unchanged state objects and list rows across live updates, avoiding
+  repeated Knockout rebuilds of USB files and spool inventory inside Settings.
+- Render USB storage, printer settings, and firmware files/flashing controls
+  only when explicitly expanded. Auto PA and manual firmware sync stay visible.
+- Synthetic 300-file DOM regression: five unchanged updates dropped from
+  578 ms to 2–3 ms locally. This is not an end-to-end OctoPrint latency guarantee.
 
 - Add Settings “Sync now” using the current machine variant immediately, even
   before Settings is saved; manual checks bypass the six-hour automatic interval.
 - Reuse Software Update's saved GitHub token server-side for release API calls;
   never send it to download CDN redirects or expose it to the browser.
+- Validation: 277 Python tests (four skipped), nine JavaScript suites passed.
+  Target-browser Settings latency and authenticated live sync still need
+  confirmation on the installed OctoPrint instance.
 
 ## 0.1.0b120 — 2026-10-04
 
