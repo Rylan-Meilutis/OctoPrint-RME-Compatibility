@@ -1,5 +1,9 @@
 # OctoPrint RME Compatibility
 
+For an OctoPod completion image taken before the final accessibility bed move,
+see [pre-lowering snapshots](docs/completion-snapshot.md). This requires the
+explicit `@RME SNAPSHOT` marker in end G-code; it is not included in b118.
+
 ### File-derived adaptive meshing (b118)
 
 With the October 4 firmware releases (6.9.0-RME or 6.10.1-RME), local text

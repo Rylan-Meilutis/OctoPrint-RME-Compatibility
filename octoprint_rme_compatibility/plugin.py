@@ -45,6 +45,7 @@ from .storage import StateStore, TransferManifestStore
 from .preview import read_preview
 from .progress import progress_command
 from .mesh_area import analyze as analyze_mesh_area, is_adaptive_probe
+from .completion_snapshot import CompletionSnapshot
 from .mapping import read_requirements, recommend, validate, compatible
 from .uploader import FirmwareUploader, UploadError, firmware_metadata
 
@@ -140,6 +141,7 @@ class RmeCompatibilityPlugin(
         self._validator_mapping_signature = None
         self._preflight_gate_started = False
         self._mesh_area_command = None
+        self._completion_snapshot = CompletionSnapshot()
         self._toolmap_preflight_decision = None
         self._print_job_gcode_sent = False
         self._skip_cancel_script = False
@@ -380,6 +382,7 @@ class RmeCompatibilityPlugin(
         self._logger.info("RME Compatibility initialized")
 
     def on_shutdown(self):
+        self._completion_snapshot.reset()
         # A disabled/reloaded plugin must never strand OctoPrint's counted job
         # hold. In-flight prints remain under OctoPrint's normal control.
         self._release_toolmap_hold()
@@ -1124,6 +1127,7 @@ class RmeCompatibilityPlugin(
             self._schedule_post_connect_reconciliation(connection_generation, 0)
             self._defer(self._sync_spoolmanager, True)
         elif event in (Events.DISCONNECTING, Events.DISCONNECTED):
+            self._completion_snapshot.reset()
             self._retry_file = None
             self._retry_job_path = None
             self._retry_ready = False
@@ -1172,6 +1176,7 @@ class RmeCompatibilityPlugin(
                 self._firmware_completed_controls.clear()
             self._handle_print_started(payload)
         elif event == Events.PRINT_CANCELLING:
+            self._completion_snapshot.reset()
             # Cancellation preparation is queued as part of the job, so the
             # mapping hold must be released before OctoPrint can process it.
             with self._state_lock:
@@ -1197,6 +1202,8 @@ class RmeCompatibilityPlugin(
             if not self._consume_firmware_completed_control("resume"):
                 self._request_priority_control("resume")
         elif event in (Events.PRINT_DONE, Events.PRINT_FAILED, Events.PRINT_CANCELLED):
+            if event != Events.PRINT_DONE:
+                self._completion_snapshot.reset()
             self._release_toolmap_hold()
             with self._state_lock:
                 selected = self._selected_retry_file()
@@ -1464,6 +1471,16 @@ class RmeCompatibilityPlugin(
             return
         parameters = str(parameters or "").strip()
         tags = set(kwargs.get("tags") or ())
+        if parameters.upper() == "SNAPSHOT":
+            # Host-only barrier, never forward to firmware. Place after M400
+            # and before the final bed-lowering move in sliced end G-code.
+            if (self._state.get("supported") and self._printer.is_printing()
+                    and {"source:file", "source:job"}.intersection(tags)):
+                try:
+                    self._completion_snapshot.capture(self._plugin_manager, self._printer, self._logger)
+                except Exception:
+                    self._logger.warning("RME completion snapshot unavailable; continuing end G-code", exc_info=True)
+            return
         plugin_origin = "plugin:rme_compatibility" in tags
         operator_origin = not plugin_origin and bool(
             {"source:terminal", "source:api"}.intersection(tags)
@@ -1613,6 +1630,7 @@ class RmeCompatibilityPlugin(
         loop starts, including when another plugin calls ``start_print``.
         """
         if script_type == "gcode" and script_name == "beforePrintStarted":
+            self._completion_snapshot.reset()
             if self._printer_transfer_active():
                 self._stop_print_started_during_transfer()
                 return None

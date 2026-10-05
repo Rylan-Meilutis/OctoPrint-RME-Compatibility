@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Add host-only `@RME SNAPSHOT` after end-G-code M400 and before final bed
+  lowering. Keep its image for OctoPod's actual completion notification.
+- Bound the capture barrier to four seconds; clear cached images on new jobs,
+  cancellation/disconnect, and expire them after ten minutes. Fall back safely
+  if OctoPod or its camera is unavailable. Existing files need the marker added
+  and re-slicing; b118 did not include this feature.
+
 ## 0.1.0b118 — 2026-10-04
 
 - Analyze local text print files at preflight and supply their extrusion XY
