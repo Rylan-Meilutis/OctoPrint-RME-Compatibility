@@ -73,6 +73,7 @@ class CompletionSnapshot:
         with self._lock:
             if self._worker is not None and self._worker.is_alive():
                 logger.warning("RME completion snapshot skipped: previous camera request still pending")
+                self.reset()
                 return False
             self.arm(manager, printer, logger)
             original = self._original
