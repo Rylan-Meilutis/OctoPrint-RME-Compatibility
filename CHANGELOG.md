@@ -1,8 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b122 — 2026-10-08
 
-- Validation: 283 Python tests (four skipped) and all nine JavaScript suites
+- Discover numbered firmware rebuilds on the maintained release lines without
+  replacing existing release tags or weakening checksum verification.
+
+- Validation: 284 Python tests (four skipped) and all nine JavaScript suites
   passed. Camera timing and printer recovery still need hardware confirmation.
 
 - Show captured pause reasons above OctoPrint's main progress bar and in the

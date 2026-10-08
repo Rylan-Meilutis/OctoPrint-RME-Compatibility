@@ -80,10 +80,10 @@ def catalog(variant, running=None, token=None):
     # Include future releases as well as both maintained lines, not old branches.
     for release in releases:
         tag = release.get("tag_name", "")
-        match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)-RME", tag)
-        if release.get("draft") or not match or tuple(map(int, match.groups())) < (6, 9, 0):
+        match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)-RME(?:-b([1-9]\d*))?", tag)
+        if release.get("draft") or not match or tuple(map(int, match.groups()[:3])) < (6, 9, 0):
             continue
-        name = variant + "_" + tag[1:] + ".bbf"
+        name = variant + "_" + tag[1:].split("-b", 1)[0] + ".bbf"
         assets = release.get("assets", [])
         asset = next((a for a in assets if a.get("name") == name), None)
         if not asset or not 576 < int(asset.get("size", 0)) <= MAX_SIZE:
@@ -118,7 +118,8 @@ def catalog(variant, running=None, token=None):
                            comparison=status, published=release.get("published_at"),
                            application_sha256=(metadata or {}).get("application_sha256"),
                            application_size=(metadata or {}).get("application_size")))
-    return sorted(result, key=lambda a: tuple(int(x) for x in a["version"].split("-")[0].split(".")), reverse=True)
+    return sorted(result, key=lambda a: tuple(int(x) for x in a["version"].split("-")[0].split(".")) +
+                  (int(a["version"].rsplit("-b", 1)[1]) if "-b" in a["version"] else 1,), reverse=True)
 
 
 def download(asset, directory, progress=lambda *_: None):

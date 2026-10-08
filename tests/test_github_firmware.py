@@ -63,6 +63,15 @@ class FirmwareReleaseTests(unittest.TestCase):
         with patch.object(fw, "get_json", return_value=releases):
             self.assertEqual(fw.catalog("coreone_indx")[0]["comparison"], "unknown")
 
+    def test_numbered_rebuild_uses_base_filename_and_identity(self):
+        releases, metadata = self.fixture()
+        releases[0]["tag_name"] += "-b2"
+        with patch.object(fw, "get_json", side_effect=[releases, metadata]):
+            result = fw.catalog("coreone_indx")
+        self.assertEqual(result[0]["version"], "6.10.1-RME-b2")
+        self.assertEqual(result[0]["name"], "coreone_indx_6.10.1-RME.bbf")
+        self.assertEqual(result[0]["application_sha256"], "b" * 64)
+
     def test_exact_variant_and_manifest_mismatch(self):
         releases, metadata = self.fixture()
         with patch.object(fw, "get_json", return_value=releases):

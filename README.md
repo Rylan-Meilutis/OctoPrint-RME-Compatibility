@@ -3,7 +3,7 @@
 Firmware discovery: [GitHub releases and verified Pi downloads](docs/firmware-releases.md).
 
 Print setup: [per-print tool mapping, fallback spools and Auto PA](docs/print-preparation.md).
-The next update displays reported pause reasons above OctoPrint's main progress
+Version b122 displays reported pause reasons above OctoPrint's main progress
 bar and in the RME tab, retaining the last pause for the current job. When neither
 firmware nor OctoPrint reports a reason, the banner explicitly says it was not
 reported; it does not guess from normal heating or detector-setting messages.
@@ -290,6 +290,10 @@ or does not respond, is probed only once per connection and otherwise sees no
 statistics traffic.
 
 ## Priority print controls
+
+For RME serial printing, configure Pause as `M601` and Resume as `M602` only.
+Do not add `G92 E0`, positioning-mode changes or driver changes to the resume
+script: firmware owns tool pickup, reheating and saved-position restoration.
 
 On an RME printer, any OctoPrint pause, resume, or cancel transition—and any
 explicit `M601`, `M602`, or `M604` submitted by an API client or another
