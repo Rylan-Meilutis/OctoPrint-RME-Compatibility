@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Show captured pause reasons above OctoPrint's main progress bar and in the
+  RME tab. Retain the last pause for this job; distinguish missing reasons
+  from explicit firmware faults without inventing a cause.
+
 - Arm the OctoPod completion-image bridge before end G-code is queued, so an
   early FINISHING notification waits for the pre-bed-lowering capture. Keep
   file tags on the injected barrier and permit capture during FINISHING.

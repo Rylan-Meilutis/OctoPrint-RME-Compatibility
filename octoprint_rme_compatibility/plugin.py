@@ -47,6 +47,7 @@ from .preview import read_preview
 from .progress import progress_command
 from .mesh_area import analyze as analyze_mesh_area, is_adaptive_probe
 from .completion_snapshot import CompletionSnapshot
+from .pause_reason import PauseReason
 from .end_move import analyze as analyze_end_move, normalized as normalize_end_move
 from .mapping import read_requirements, recommend, validate, compatible, fallback_commands, recent_mapping_valid
 from .uploader import FirmwareUploader, UploadError, firmware_metadata
@@ -157,6 +158,7 @@ class RmeCompatibilityPlugin(
         self._toolmap_probe_sent = False
         self._priority_controls_sent = set()
         self._firmware_completed_controls = set()
+        self._pause_reason = PauseReason()
         self._firmware_action_lock = threading.Lock()
         self._last_storage_publish = 0
         self._native_refresh_lock = threading.Lock()
@@ -254,6 +256,7 @@ class RmeCompatibilityPlugin(
                 "error": None,
             },
             "workflow": None,
+            "pause": {"active": False, "reason": "", "source": ""},
             "prompt": None,
             "dialog": None,
             "spooljoin": {"supported": None, "entries": []},
@@ -1192,6 +1195,8 @@ class RmeCompatibilityPlugin(
                 self._begin_firmware_reconnect()
         elif event == Events.PRINT_STARTED:
             with self._state_lock:
+                self._pause_reason.reset()
+                self._state["pause"] = self._pause_reason.snapshot()
                 job = payload or {}
                 self._retry_job_path = (job.get("origin"), job.get("path"))
                 self._retry_file = None
@@ -1223,14 +1228,22 @@ class RmeCompatibilityPlugin(
                 return
             self._request_priority_control("cancel")
         elif event == Events.PRINT_PAUSED:
+            with self._state_lock:
+                self._state["pause"] = self._pause_reason.pause((payload or {}).get("reason"))
+            self._schedule_publish()
             # Fallback for pause configurations that do not enqueue a tagged
             # preparation command before transitioning into PAUSED.
             if not self._consume_firmware_completed_control("pause"):
                 self._request_priority_control("pause")
         elif event == Events.PRINT_RESUMED:
+            with self._state_lock:
+                self._state["pause"] = self._pause_reason.resume()
+            self._schedule_publish()
             if not self._consume_firmware_completed_control("resume"):
                 self._request_priority_control("resume")
         elif event in (Events.PRINT_DONE, Events.PRINT_FAILED, Events.PRINT_CANCELLED):
+            with self._state_lock:
+                self._state["pause"] = self._pause_reason.resume()
             if event != Events.PRINT_DONE:
                 self._completion_snapshot.reset()
             self._release_toolmap_hold()
@@ -1270,6 +1283,9 @@ class RmeCompatibilityPlugin(
         """Observe RME records without blocking or bypassing OctoPrint's queue."""
         normalized_line = str(line or "").strip()
         with self._state_lock:
+            if self._state.get("supported") and self._pause_reason.observe(normalized_line):
+                self._state["pause"] = self._pause_reason.snapshot()
+                self._schedule_publish()
             intentional_pa_abort = bool(
                 self._state.get("supported")
                 and getattr(self, "_pa_abort_requested", False)
@@ -1337,6 +1353,16 @@ class RmeCompatibilityPlugin(
             self._clear_transport_recovery("printer startup banner observed")
             self._defer(self._send_command, "@RME MACHINE QUERY")
         record = parse_line(line)
+        if record and record.get("record") in ("event", "prompt"):
+            with self._state_lock:
+                if self._state.get("supported"):
+                    text = str(record.get("message") or record.get("code") or "")
+                    fault = (record.get("type") == "error" or record.get("state") in ("paused", "failed")
+                             or record.get("state") == "waiting" and record.get("workflow") in
+                             EXTRUSION_FAULT_WORKFLOWS.union(("wastebin", "waste_bin", "mmu")))
+                    if fault and self._pause_reason.evidence(text, "Firmware workflow"):
+                        self._state["pause"] = self._pause_reason.snapshot()
+                        self._schedule_publish()
         if self._uploader:
             self._uploader.handle_response(line, record)
         if self._file_service:

@@ -55,6 +55,7 @@
         </span>
     </div>
 
+    <p class="alert alert-warning" role="status" data-bind="visible: pauseReasonText, text: pauseReasonText"></p>
     <div class="rme-card" data-bind="visible: workflowVisible">
         <h4><span data-bind="text: workflowTitle"></span> <small data-bind="text: workflowState"></small></h4>
         <div class="progress progress-striped" data-bind="css: {active: workflowIndeterminate}">

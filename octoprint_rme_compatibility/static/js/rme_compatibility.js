@@ -447,6 +447,11 @@ $(function () {
             printer: "Printer workflow"
         };
         self.workflow = ko.pureComputed(function () { return self.state().workflow || {}; });
+        self.pauseReasonText = ko.pureComputed(function () {
+            var pause = self.state().pause || {};
+            if (!self.state().connected || !self.state().supported || !pause.reason) return "";
+            return (pause.active ? "Print paused: " : "Last pause: ") + pause.reason;
+        });
         self.workflowVisible = ko.pureComputed(function () {
             self.tick();
             var workflow = self.workflow();
@@ -2231,6 +2236,12 @@ $(function () {
             var toolIndicator = $("#rme-active-tool-indicator");
             renderDashboardWorkflow(active, workflow);
             if (!target.length) return;
+            var pauseNotice = $("#rme-pause-reason");
+            if (!pauseNotice.length) {
+                pauseNotice = $('<div id="rme-pause-reason" class="alert alert-warning" role="status"></div>');
+                target.before(pauseNotice);
+            }
+            pauseNotice.text(self.pauseReasonText()).toggle(!!self.pauseReasonText());
             // Remove the separate workflow bar created by older plugin builds.
             // RME phases now temporarily occupy the normal OctoPrint progress
             // bar so there is only one progress display to follow.

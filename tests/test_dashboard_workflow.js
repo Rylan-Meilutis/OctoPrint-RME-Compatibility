@@ -7,7 +7,7 @@ const {jQueryFactory} = require('jquery/factory');
       <div id="fan" class="dashboardGridItem dashboard_threeQuarterGauge centreInGrid1"
         data-bind="css: gaugesCentreInGrid('fan')"><svg style="width:140px;height:140px" viewBox="0 0 140 140">
         <path class="dashboardGauge" d="native-arc" stroke-dasharray="250" /></svg></div>
-      </div></div>`, {runScripts: 'outside-only'});
+      </div></div><div id="state"><div class="progress"></div></div>`, {runScripts: 'outside-only'});
     const w = dom.window, $ = jQueryFactory(w);
     w.$ = w.jQuery = $;
     w.eval(fs.readFileSync(require.resolve('knockout/build/output/knockout-latest.js'), 'utf8'));
@@ -46,6 +46,18 @@ const {jQueryFactory} = require('jquery/factory');
     const rule = css.match(/#rme-dashboard-progress\s*\{([^}]+)\}/)[1];
     assert(rule.includes('display: block'));
     assert(!/padding\s*:|vertical-align\s*:|flex-direction\s*:/.test(rule));
+    vm.state({connected: true, supported: true, pause: {active: true, reason: 'Loadcell runout <script>bad</script>'}});
+    vm.onAllBound();
+    await new Promise(resolve => w.setTimeout(resolve, 30));
+    assert.equal($('#rme-pause-reason').next().hasClass('progress'), true);
+    assert.equal($('#rme-pause-reason').text(), 'Print paused: Loadcell runout <script>bad</script>');
+    assert.equal($('#rme-pause-reason script').length, 0);
+    vm.state({connected: true, supported: true, pause: {active: false, reason: 'Loadcell runout'}});
+    vm.onAllBound();
+    await new Promise(resolve => w.setTimeout(resolve, 30));
+    assert.equal($('#rme-pause-reason').text(), 'Last pause: Loadcell runout');
+    await render(false, false);
+    assert.equal($('#rme-pause-reason').css('display'), 'none');
     dom.window.close();
     console.log('Dashboard RME connection gating, reconnect, grid placement and native spacing passed');
 })();
