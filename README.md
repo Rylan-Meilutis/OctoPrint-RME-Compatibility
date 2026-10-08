@@ -3,6 +3,10 @@
 Firmware discovery: [GitHub releases and verified Pi downloads](docs/firmware-releases.md).
 
 Print setup: [per-print tool mapping, fallback spools and Auto PA](docs/print-preparation.md).
+The next update displays reported pause reasons above OctoPrint's main progress
+bar and in the RME tab, retaining the last pause for the current job. When neither
+firmware nor OctoPrint reports a reason, the banner explicitly says it was not
+reported; it does not guess from normal heating or detector-setting messages.
 The installed-firmware checksum comparison requires the companion firmware
 identity update and a release manifest; older builds display unknown.
 

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Validation: 283 Python tests (four skipped) and all nine JavaScript suites
+  passed. Camera timing and printer recovery still need hardware confirmation.
+
 - Show captured pause reasons above OctoPrint's main progress bar and in the
   RME tab. Retain the last pause for this job; distinguish missing reasons
   from explicit firmware faults without inventing a cause.

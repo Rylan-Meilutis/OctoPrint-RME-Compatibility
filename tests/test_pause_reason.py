@@ -22,7 +22,8 @@ class PauseReasonTests(unittest.TestCase):
 
     def test_job_reset_and_normal_chatter(self):
         reason = PauseReason()
-        for line in ("echo:busy: processing", "Loading filament", "Waiting for hotend", "Print paused"):
+        for line in ("echo:busy: processing", "Loading filament", "Waiting for hotend", "Print paused",
+                     "Loadcell filament runout detection off", "Loadcell filament runout detection on"):
             self.assertFalse(reason.observe(line))
         reason.pause("Operator requested pause")
         self.assertEqual(reason.reason, "Operator requested pause")
