@@ -53,7 +53,9 @@ class EndMoveTests(unittest.TestCase):
         self.assertIsNone(hook(None, "queuing", MOVE, None, "G1", tags={"source:terminal", "filepos:456"}))
         self.assertIsNone(hook(None, "queuing", "G1 Z240", None, "G1", tags={"source:file", "filepos:456"}))
         self.assertEqual(hook(None, "queuing", MOVE, None, "G1", tags={"source:file", "filepos:456"}),
-                         [("M400", None), ("@RME SNAPSHOT", None), (MOVE, None)])
+                         [("M400", None, {"source:file", "filepos:456"}),
+                          ("@RME SNAPSHOT", None, {"source:file", "filepos:456"}),
+                          (MOVE, None, {"source:file", "filepos:456"})])
         self.assertIsNone(hook(None, "queuing", MOVE, None, "G1", tags={"source:file", "filepos:456"}))
 
     def test_preflight_scans_local_job_and_clears_previous_target(self):

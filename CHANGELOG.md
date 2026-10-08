@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Arm the OctoPod completion-image bridge before end G-code is queued, so an
+  early FINISHING notification waits for the pre-bed-lowering capture. Keep
+  file tags on the injected barrier and permit capture during FINISHING.
+- Camera requests and notification waits are bounded; cancel/disconnect
+  releases waiters and prevents late frames from leaking into another job.
+
 ## 0.1.0b121 — 2026-10-04
 
 - Preserve unchanged state objects and list rows across live updates, avoiding

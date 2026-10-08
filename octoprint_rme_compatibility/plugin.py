@@ -1503,7 +1503,8 @@ class RmeCompatibilityPlugin(
         if parameters.upper() == "SNAPSHOT":
             # Host-only barrier, never forward to firmware. Place after M400
             # and before the final bed-lowering move in sliced end G-code.
-            if (self._state.get("supported") and self._printer.is_printing()
+            finishing = getattr(self._printer, "get_state_id", lambda: None)() == "FINISHING"
+            if (self._state.get("supported") and (self._printer.is_printing() or finishing)
                     and {"source:file", "source:job"}.intersection(tags)):
                 try:
                     self._completion_snapshot.capture(self._plugin_manager, self._printer, self._logger)
@@ -1700,7 +1701,7 @@ class RmeCompatibilityPlugin(
                 if (target and "filepos:%d" % target[0] in tags
                         and normalize_end_move(cmd) == target[1]):
                     self._completion_move = None
-                    return [("M400", None), ("@RME SNAPSHOT", None), (cmd, cmd_type)]
+                    return [("M400", None, set(tags)), ("@RME SNAPSHOT", None, set(tags)), (cmd, cmd_type, set(tags))]
         if (phase == "queuing" and {"source:job", "source:file"}.intersection(tags)
                 and is_adaptive_probe(cmd)):
             with self._state_lock:
@@ -3558,6 +3559,8 @@ class RmeCompatibilityPlugin(
             target = analyze_end_move(self._file_manager.path_on_disk("local", path))
             with self._state_lock:
                 self._completion_move = target
+            if target:
+                self._completion_snapshot.arm(self._plugin_manager, self._printer, self._logger)
             self._logger.info("RME automatic completion snapshot: %s", target or "no unambiguous final bed move")
         except (OSError, UnicodeError, KeyError, TypeError, ValueError, AttributeError):
             self._logger.debug("RME automatic completion snapshot analysis unavailable", exc_info=True)

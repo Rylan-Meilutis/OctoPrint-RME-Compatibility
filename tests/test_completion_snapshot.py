@@ -32,6 +32,29 @@ class CompletionSnapshotTests(unittest.TestCase):
         self.assertEqual(self.owner.image(True, "url", False, False, False), b"earlier frame")
         self.assertEqual(self.image.call_count, 1)
 
+    def test_notification_before_capture_waits_for_pre_lowering_frame(self):
+        self.assertTrue(self.bridge.arm(self.manager, self.printer, self.logger))
+        result = []
+        started = threading.Event()
+        def notify():
+            started.set()
+            result.append(self.owner.image(True, "url", False, False, False))
+        notification = threading.Thread(target=notify)
+        notification.start()
+        self.assertTrue(started.wait(1))
+        self.assertEqual(self.image.call_count, 0)
+        self.assertTrue(self.capture())
+        notification.join(1)
+        self.assertFalse(notification.is_alive())
+        self.assertEqual(result, [b"earlier frame"])
+        self.assertEqual(self.image.call_count, 1)
+
+    def test_cancel_releases_notification_waiter(self):
+        self.bridge.arm(self.manager, self.printer, self.logger)
+        adapter = self.owner.image
+        self.bridge.reset()
+        self.assertEqual(adapter(False, "url", False, False, False), b"earlier frame")
+
     def test_other_print_states_use_live_image_and_reset_restores_owner(self):
         self.capture()
         self.image.return_value = b"live"
@@ -90,6 +113,10 @@ class CompletionSnapshotTests(unittest.TestCase):
         self.assertEqual(calls, ["captured", "next Z move"])
         plugin.atcommand_sending_hook(comm, "sending", "RME", "SNAPSHOT", tags={"source:terminal"})
         self.assertEqual(len(calls), 2)
+        plugin._printer = types.SimpleNamespace(is_printing=lambda: False, get_state_id=lambda: "FINISHING")
+        plugin.atcommand_sending_hook(comm, "sending", "RME", "SNAPSHOT", tags={"source:file"})
+        self.assertEqual(calls[-1], "captured")
+        self.assertEqual(len(calls), 3)
 
 
 if __name__ == "__main__":
