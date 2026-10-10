@@ -3,18 +3,22 @@
 Firmware advertising `RME_MACHINE tune=1` enables an RME panel in OctoPrint's
 Control tab, including during printing and pauses:
 
-- Off / timed On / Locked-on chamber-light slider, following firmware state.
+- Off / On chamber-light slider during printing; timed On / Locked-on are
+  available only when the firmware is idle.
+- Independent LCD and status brightness controls on matching firmware.
 - Speed 10–300%, physical-slot flow 50–150%, and stealth mode.
 - Effective logical-to-physical tool mapping, also displayed in the RME tab
   and printer Tune > Tool Mapping. Mapping is read-only during the job.
 
 Requires the matching firmware implementation; older firmware keeps its
 existing controls. Changes use the existing serial connection. Status is polled
-every two seconds with one outstanding request; snapshots replace bounded
+every ten seconds with one outstanding request; snapshots replace bounded
 state rather than growing event history. Controls disable after 15 seconds
 without a snapshot, during transfer/recovery, or when the printer is locked.
 Mutations are limited to one per second. Queued changes can take time to reach
-the firmware; displayed state is authoritative, not optimistic.
+the firmware. Lighting changes use bounded optimistic feedback, then synchronize
+with authoritative firmware state. Explicit refreshes after controls bypass
+the background polling interval.
 
 Timed On uses the firmware activity timeout. Locked stays on until changed,
 session release, reboot or local brightness override. Persistent light profiles
@@ -23,6 +27,21 @@ are not modified. The navbar button toggles On/Off; use the slider for Locked.
 Validation before deployment: exercise both screens during a serial print,
 verify timeout and tool changes, reconnect, and run a heap/stack soak. Automated
 queue-backpressure tests do not substitute for a physical-printer soak.
+
+## Pause causes and progress telemetry (b123)
+
+The reported pause cause appears above the main progress bar and in RME only
+while paused. Resume hides it; completion clears it. Genuine causes remain in
+job-local diagnostic state until completion and are logged. Routine tool-change,
+heating and probing text is not a cause. If no cause is reported, RME says so.
+
+Changed host progress estimates are sent at most every five seconds; unchanged
+estimates use a twenty-second heartbeat within the firmware's sixty-second
+validity window. Pause-bit changes bypass the rate limit, but still respect the
+one-outstanding-frame guard. Control polling skips startup and recovery states.
+These service queries do not request motion synchronization. Reduced traffic
+has not yet been confirmed to resolve intermittent motion stalls on hardware.
+
 ## INDX temperature controls
 
 INDX discovery can report `hotends=8 tool_capacity=8` (current firmware) or

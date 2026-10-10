@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 2026-10-10
+## 0.1.0b123 — 2026-10-10
 
 - Hide pause banners after resume and clear them at job completion. Reject
   routine tool-change/heating/probing text as pause evidence; preserve real
@@ -9,6 +9,9 @@
   changed estimates every 5 seconds, identical estimates every 20 seconds,
   with pause-state changes exempt from the rate limit. Skip control polling during startup and
   recovery; explicit user-control refreshes remain immediate.
+- Validation: 287 Python tests (four skipped) and all nine UI suites passed.
+  Reduced traffic is not a confirmed fix for intermittent motion stalls;
+  physical serial-print validation remains necessary.
 
 ## 0.1.0b122 — 2026-10-08
 
