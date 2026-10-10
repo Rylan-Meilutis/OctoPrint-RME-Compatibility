@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — 2026-10-10
+
+- Hide pause banners after resume and clear them at job completion. Reject
+  routine tool-change/heating/probing text as pause evidence; preserve real
+  faults and log the reported pause cause.
+- Reduce periodic control polling to 10 seconds and coalesce progress frames:
+  changed estimates every 5 seconds, identical estimates every 20 seconds,
+  with pause-state changes exempt from the rate limit. Skip control polling during startup and
+  recovery; explicit user-control refreshes remain immediate.
+
 ## 0.1.0b122 — 2026-10-08
 
 - Discover numbered firmware rebuilds on the maintained release lines without

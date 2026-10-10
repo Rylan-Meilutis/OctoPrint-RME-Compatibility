@@ -34,3 +34,11 @@ class PauseReasonTests(unittest.TestCase):
         reason = PauseReason()
         reason.pause("a" * 10000)
         self.assertEqual(len(reason.reason), 300)
+
+    def test_normal_tool_change_is_not_a_pause_cause(self):
+        reason = PauseReason()
+        for message in ("Tool change in progress", "Tool change complete", "Waiting", "Homing"):
+            self.assertFalse(reason.evidence(message, "Firmware workflow"))
+        self.assertEqual(reason.pause("Tool change in progress")["source"], "unreported")
+        self.assertTrue(reason.evidence("Tool change failed: lock not engaged", "Firmware workflow"))
+        self.assertIn("lock not engaged", reason.reason)

@@ -449,8 +449,8 @@ $(function () {
         self.workflow = ko.pureComputed(function () { return self.state().workflow || {}; });
         self.pauseReasonText = ko.pureComputed(function () {
             var pause = self.state().pause || {};
-            if (!self.state().connected || !self.state().supported || !pause.reason) return "";
-            return (pause.active ? "Print paused: " : "Last pause: ") + pause.reason;
+            if (!self.state().connected || !self.state().supported || !pause.active || !pause.reason) return "";
+            return "Print paused: " + pause.reason;
         });
         self.workflowVisible = ko.pureComputed(function () {
             self.tick();

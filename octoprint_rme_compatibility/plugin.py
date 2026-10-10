@@ -201,8 +201,11 @@ class RmeCompatibilityPlugin(
         self._auto_pa_active = False
         self._auto_pa_batch = True
         self._tune_query_pending = False
+        self._tune_poll_after = 0.0
         self._tune_last_mutation = 0.0
         self._progress_pending_until = 0.0
+        self._progress_last_command = None
+        self._progress_last_sent = 0.0
         self._retry_file = None
         self._retry_job_path = None
         self._retry_ready = False
@@ -1134,6 +1137,9 @@ class RmeCompatibilityPlugin(
                 self._state["light"] = {}
                 self._state["tune"] = {}
                 self._tune_query_pending = False
+                self._tune_poll_after = 0.0
+                self._progress_last_command = None
+                self._progress_last_sent = 0.0
                 self._active_tool_was_single_tool_default = False
                 self._pending_tool_park = False
                 self._auto_pa_active = False
@@ -1197,6 +1203,8 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 self._pause_reason.reset()
                 self._state["pause"] = self._pause_reason.snapshot()
+                self._progress_last_command = None
+                self._progress_last_sent = 0.0
                 job = payload or {}
                 self._retry_job_path = (job.get("origin"), job.get("path"))
                 self._retry_file = None
@@ -1230,6 +1238,8 @@ class RmeCompatibilityPlugin(
         elif event == Events.PRINT_PAUSED:
             with self._state_lock:
                 self._state["pause"] = self._pause_reason.pause((payload or {}).get("reason"))
+                pause = dict(self._state["pause"])
+            self._logger.info("RME print paused: %s (source: %s)", pause["reason"], pause["source"])
             self._schedule_publish()
             # Fallback for pause configurations that do not enqueue a tagged
             # preparation command before transitioning into PAUSED.
@@ -1243,7 +1253,8 @@ class RmeCompatibilityPlugin(
                 self._request_priority_control("resume")
         elif event in (Events.PRINT_DONE, Events.PRINT_FAILED, Events.PRINT_CANCELLED):
             with self._state_lock:
-                self._state["pause"] = self._pause_reason.resume()
+                self._pause_reason.reset()
+                self._state["pause"] = self._pause_reason.snapshot()
             if event != Events.PRINT_DONE:
                 self._completion_snapshot.reset()
             self._release_toolmap_hold()
@@ -3310,7 +3321,7 @@ class RmeCompatibilityPlugin(
                         if identity_ready and self._settings.get_boolean(["firmware_auto_check"]) and time.monotonic() >= self._release_check_after:
                             self._start_release_task()
                     self._sync_host_progress()
-                    self._query_tune()
+                    self._query_tune(periodic=True)
                     if time.monotonic() < next_keepalive:
                         continue
                     next_keepalive = time.monotonic() + 10
@@ -3349,20 +3360,43 @@ class RmeCompatibilityPlugin(
         if command is None:
             return
         with self._state_lock:
+            now = time.monotonic()
+            previous = self._progress_last_command
+            pause_changed = previous is not None and previous.rsplit("paused=", 1)[-1] != command.rsplit("paused=", 1)[-1]
+            # No need to stream identical estimates every two seconds. Keep
+            # the firmware's 60s lease alive with a 20s heartbeat, and bound
+            # changed estimates to 5s. Pause transitions remain immediate.
+            interval = 20 if command == previous else 5
+            if previous is not None and not pause_changed and now - self._progress_last_sent < interval:
+                return
             # At most one outstanding frame; recover a lost reply after 10s.
-            self._progress_pending_until = time.monotonic() + 10
+            self._progress_pending_until = now + 10
+            self._progress_last_command = command
+            self._progress_last_sent = now
         try:
             self._send_priority_service(command, "progress")
         except Exception:
             with self._state_lock:
                 self._progress_pending_until = 0.0
+                self._progress_last_command = None
             raise
 
-    def _query_tune(self):
+    def _query_tune(self, periodic=False):
         with self._state_lock:
             if self._state["machine"].get("tune") != 1 or self._tune_query_pending:
                 return
+        if periodic:
+            # Do not add configuration polling to startup/reset/recovery.
+            state = str(self._printer.get_state_id() or "").upper()
+            if state not in {"OPERATIONAL", "PRINTING", "PAUSED"}:
+                return
+        with self._state_lock:
+            if periodic and time.monotonic() < self._tune_poll_after:
+                return
+            if self._state["machine"].get("tune") != 1 or self._tune_query_pending:
+                return
             self._tune_query_pending = True
+            self._tune_poll_after = time.monotonic() + 10
         try:
             self._send_command("@RME TUNE QUERY")
         except Exception:

@@ -1,5 +1,6 @@
 import types
 import unittest
+from unittest.mock import patch
 
 from test_toolmap_gate import RmeCompatibilityPlugin
 from octoprint_rme_compatibility.progress import progress_command
@@ -59,6 +60,57 @@ class HostProgressTests(unittest.TestCase):
         self.assertEqual(plugin._progress_pending_until, 0)
         for state in ("PRINTING", "PAUSED"):
             plugin._printer.get_state_id = lambda: state
+            plugin._printer.is_paused = lambda: state == "PAUSED"
             plugin._progress_pending_until = 0
             plugin._sync_host_progress()
         self.assertEqual(len(sent), 2)
+
+    def test_acknowledged_progress_is_coalesced_but_pause_is_immediate(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._state["machine"]["host_progress"] = 1
+        plugin._state["session"]["active"] = True
+        paused = False
+        remaining = 134
+        plugin._printer = types.SimpleNamespace(
+            get_state_id=lambda: "PRINTING", is_paused=lambda: paused,
+            get_current_data=lambda: self.data(23, remaining))
+        sent = []
+        plugin._send_priority_service = lambda command, trigger: sent.append(command)
+        for now, expected in ((100, 1), (102, 1), (119, 1), (120, 2)):
+            plugin._progress_pending_until = 0
+            with patch("octoprint_rme_compatibility.plugin.time.monotonic", return_value=now):
+                plugin._sync_host_progress()
+            self.assertEqual(len(sent), expected)
+        remaining = 130
+        for now, expected in ((122, 2), (125, 3)):
+            plugin._progress_pending_until = 0
+            with patch("octoprint_rme_compatibility.plugin.time.monotonic", return_value=now):
+                plugin._sync_host_progress()
+            self.assertEqual(len(sent), expected)
+        paused = True
+        plugin._progress_pending_until = 0
+        with patch("octoprint_rme_compatibility.plugin.time.monotonic", return_value=126):
+            plugin._sync_host_progress()
+        self.assertEqual(len(sent), 4)
+        self.assertTrue(sent[-1].endswith("paused=1"))
+
+    def test_periodic_tune_skips_startup_and_recovery_and_is_rate_limited(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._state["machine"]["tune"] = 1
+        state = "STARTING"
+        plugin._printer = types.SimpleNamespace(get_state_id=lambda: state)
+        sent = []
+        plugin._send_command = sent.append
+        for state in ("STARTING", "RESUMING", "CANCELLING", "ERROR"):
+            plugin._query_tune(periodic=True)
+        self.assertEqual(sent, [])
+        state = "PRINTING"
+        for now, expected in ((100, 1), (102, 1), (110, 2)):
+            plugin._tune_query_pending = False
+            with patch("octoprint_rme_compatibility.plugin.time.monotonic", return_value=now):
+                plugin._query_tune(periodic=True)
+            self.assertEqual(len(sent), expected)
+        plugin._tune_query_pending = False
+        with patch("octoprint_rme_compatibility.plugin.time.monotonic", return_value=111):
+            plugin._query_tune()
+        self.assertEqual(len(sent), 3)  # User controls retain immediate refresh.

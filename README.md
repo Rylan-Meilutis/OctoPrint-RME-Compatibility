@@ -3,10 +3,16 @@
 Firmware discovery: [GitHub releases and verified Pi downloads](docs/firmware-releases.md).
 
 Print setup: [per-print tool mapping, fallback spools and Auto PA](docs/print-preparation.md).
-Version b122 displays reported pause reasons above OctoPrint's main progress
-bar and in the RME tab, retaining the last pause for the current job. When neither
+Reported pause reasons appear above OctoPrint's main progress bar and in the
+RME tab only while paused; resuming hides the banner and job completion clears
+it. The last genuine reason remains in job-local diagnostic state until completion.
+When neither
 firmware nor OctoPrint reports a reason, the banner explicitly says it was not
 reported; it does not guess from normal heating or detector-setting messages.
+Routine tool-change progress is not a pause cause. Background telemetry is
+rate-limited (controls every 10 seconds; changed progress every 5 seconds,
+unchanged progress heartbeat every 20 seconds). Explicit control refreshes are
+not delayed by this polling limit. These queries do not insert motion barriers.
 The installed-firmware checksum comparison requires the companion firmware
 identity update and a release manifest; older builds display unknown.
 

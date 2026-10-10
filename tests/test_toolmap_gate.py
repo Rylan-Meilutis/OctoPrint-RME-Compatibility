@@ -3907,6 +3907,7 @@ class ToolmapGateTests(unittest.TestCase):
         from octoprint.events import Events
 
         plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("test")
         plugin._printer = _Printer()
         plugin._defer = lambda callback, *args: callback(*args)
         plugin._state.update(connected=True, supported=True)

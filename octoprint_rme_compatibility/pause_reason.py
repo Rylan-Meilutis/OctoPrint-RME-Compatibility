@@ -18,7 +18,11 @@ class PauseReason:
 
     def evidence(self, message, source, now=None):
         message = str(message or "").strip()[:300]
-        if not message or message.lower() in ("firmware_pause", "paused", "print paused", "pause"):
+        if not message or message.lower() in (
+                "firmware_pause", "paused", "print paused", "pause",
+                "tool change in progress", "tool change complete", "waiting",
+                "homing", "loading filament", "unloading filament",
+                "waiting for hotend", "waiting for bed", "probing bed"):
             return False
         self.candidate = (time.monotonic() if now is None else now, message, source)
         if self.active:
