@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b124 — 2026-10-17
 
 - Recognize Orca @Object/@Objectstop bookkeeping while detecting the final
   bed move. Delayed OctoPod completion notifications reuse the captured frame
@@ -17,6 +17,10 @@
 - Hide unknown/unreported pause-reason banners without discarding diagnostics.
 - Operator/API chamber targets use the non-motion RME service when firmware
   advertises live_chamber=1. Sliced M141 commands retain their normal order.
+
+- Validation: 299 Python tests and all nine UI suites passed. The snapshot
+  adapter also passed an integration check against current upstream OctoPod
+  notification code. Physical camera/control timing still requires testing.
 
 ## 0.1.0b123 — 2026-10-10
 
