@@ -52,6 +52,11 @@ const {jQueryFactory} = require('jquery/factory');
     assert.equal($('#rme-pause-reason').next().hasClass('progress'), true);
     assert.equal($('#rme-pause-reason').text(), 'Print paused: Loadcell runout <script>bad</script>');
     assert.equal($('#rme-pause-reason script').length, 0);
+    vm.state({connected: true, supported: true, pause: {active: true, reason: 'Reason not reported by printer or OctoPrint', source: 'unreported'}});
+    vm.onAllBound();
+    await new Promise(resolve => w.setTimeout(resolve, 30));
+    assert.equal($('#rme-pause-reason').css('display'), 'none');
+    assert.equal(vm.state().pause.active, true); // Diagnostic state is retained.
     vm.state({connected: true, supported: true, pause: {active: false, reason: 'Loadcell runout'}});
     vm.onAllBound();
     await new Promise(resolve => w.setTimeout(resolve, 30));

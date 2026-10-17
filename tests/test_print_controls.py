@@ -6,6 +6,21 @@ from octoprint_rme_compatibility.protocol import parse_line
 
 
 class PrintControlsTests(unittest.TestCase):
+    def test_operator_chamber_target_is_live_only_with_capability(self):
+        plugin = self.plugin()
+        plugin._state.update(supported=True)
+        plugin._state["machine"]["live_chamber"] = 1
+        result = plugin.gcode_queuing_hook(None, "queuing", "M141 S35", None, "M141", tags={"source:api"})
+        self.assertEqual(result, (None,))
+        self.assertEqual(self.commands, ["@RME TEMPERATURE SET chamber=35"])
+
+    def test_file_chamber_command_keeps_fifo_and_old_firmware_falls_back(self):
+        plugin = self.plugin()
+        plugin._state.update(supported=True)
+        for tags in ({"source:file"}, {"source:api"}):
+            self.assertIsNone(plugin.gcode_queuing_hook(None, "queuing", "M141 S35", None, "M141", tags=tags))
+        self.assertEqual(self.commands, [])
+
     def plugin(self):
         plugin = RmeCompatibilityPlugin()
         plugin._state["machine"].update(tune=1, tool_capacity=8)

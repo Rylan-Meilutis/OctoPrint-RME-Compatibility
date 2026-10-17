@@ -6,6 +6,7 @@ import re
 import tempfile
 import time
 from urllib.parse import urlparse, urljoin
+from .firmware_support import SUPPORTED
 
 REPOSITORY = "Rylan-Meilutis/Prusa-Firmware-Buddy"
 API = "https://api.github.com/repos/" + REPOSITORY
@@ -77,11 +78,13 @@ def catalog(variant, running=None, token=None):
     if not isinstance(releases, list):
         raise ValueError("Invalid GitHub release response")
     result = []
-    # Include future releases as well as both maintained lines, not old branches.
+    # Filenames alone do not prove upstream machine support.
     for release in releases:
         tag = release.get("tag_name", "")
         match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)-RME(?:-b([1-9]\d*))?", tag)
-        if release.get("draft") or not match or tuple(map(int, match.groups()[:3])) < (6, 9, 0):
+        if release.get("draft") or not match:
+            continue
+        if variant not in SUPPORTED.get(".".join(match.groups()[:3]), set()):
             continue
         name = variant + "_" + tag[1:].split("-b", 1)[0] + ".bbf"
         assets = release.get("assets", [])
@@ -124,6 +127,9 @@ def catalog(variant, running=None, token=None):
 
 def download(asset, directory, progress=lambda *_: None):
     name = asset["name"]
+    identity = re.fullmatch(r"(.+)_(\d+\.\d+\.\d+)-RME\.bbf", name)
+    if not identity or identity[1] not in SUPPORTED.get(identity[2], set()):
+        raise ValueError("Firmware version does not support this printer variant")
     if not re.fullmatch(r"[a-z0-9.-]+(?:_[a-z0-9.-]+)*\.bbf", name, re.I) or not digest(asset["sha256"]):
         raise ValueError("Invalid firmware asset")
     if not 576 < int(asset["size"]) <= MAX_SIZE:

@@ -1,5 +1,13 @@
 # Live print controls
 
+Firmware with live_chamber=1 accepts operator/API chamber changes through
+@RME TEMPERATURE SET chamber=N while a heater wait is active. Zero switches
+chamber control off. Targets remain clamped by firmware capabilities. File
+M141 commands keep FIFO order, and older firmware retains the queued path.
+Lighting uses the existing out-of-band service; firmware continues polling
+its bounded serial recovery reserve even when the normal G-code FIFO is full.
+Unknown pause causes do not occupy the pause banner; diagnostic state remains.
+
 Firmware advertising `RME_MACHINE tune=1` enables an RME panel in OctoPrint's
 Control tab, including during printing and pauses:
 

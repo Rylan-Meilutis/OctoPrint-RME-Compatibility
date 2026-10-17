@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Filter firmware updates and downloads by verified upstream machine/version
+  support, not filenames: 6.9.2 is INDX-only and 6.10.3 is XL-only. Older
+  supported release lines remain eligible; unknown combinations are hidden.
+- Hide unknown/unreported pause-reason banners without discarding diagnostics.
+- Operator/API chamber targets use the non-motion RME service when firmware
+  advertises live_chamber=1. Sliced M141 commands retain their normal order.
+
 ## 0.1.0b123 — 2026-10-10
 
 - Hide pause banners after resume and clear them at job completion. Reject

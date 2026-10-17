@@ -4,9 +4,16 @@ RME checks the official `Rylan-Meilutis/Prusa-Firmware-Buddy` GitHub releases
 while an RME printer is connected and idle, at most once every six hours.
 Settings can disable automatic checks or choose an exact firmware variant
 (including MINI language packs). The firmware update panel also offers a
-manual check and lists compatible assets from the maintained 6.9.0-RME and
-6.10.1-RME releases and future RME version tags (6.9.0 onward, among the latest
-30 GitHub releases). This is an HTTPS metadata check, not a background flash.
+manual check and lists compatible assets among the latest 30 GitHub releases.
+Machine support must match verified upstream Prusa release assets, even if an
+older RME release contains a cross-built filename for another machine:
+6.9.2 is INDX-only; 6.10.3 is XL-only; 6.8.1 supports CORE One and CORE One L.
+6.5.3/6.5.7 support CORE One, CORE One L, MK4-family and MK3.5-family.
+Unknown machine/version combinations are hidden and cannot be downloaded.
+MINI requires its own supported release line; another machine's build is never
+offered as a substitute. See the
+[upstream releases](https://github.com/prusa3d/Prusa-Firmware-Buddy/releases).
+This is an HTTPS metadata check, not a background flash.
 
 New firmware advertises `firmware_running=1`; the plugin asks for
 `@RME FIRMWARE RUNNING`. That returns an `app-sha256-v1` checksum calculated

@@ -450,6 +450,8 @@ $(function () {
         self.pauseReasonText = ko.pureComputed(function () {
             var pause = self.state().pause || {};
             if (!self.state().connected || !self.state().supported || !pause.active || !pause.reason) return "";
+            if (["unreported", "unknown"].indexOf(String(pause.source || "").toLowerCase()) >= 0
+                    || /^(unknown|reason unknown|reason not reported by printer or octoprint)[.!]?$/i.test(String(pause.reason).trim())) return "";
             return "Print paused: " + pause.reason;
         });
         self.workflowVisible = ko.pureComputed(function () {

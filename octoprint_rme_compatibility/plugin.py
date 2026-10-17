@@ -1732,6 +1732,18 @@ class RmeCompatibilityPlugin(
             return (None,)
         if not supported:
             return None
+        # Only explicit operator/API chamber changes bypass a heater wait.
+        # File G-code stays FIFO; older firmware keeps the normal M141 path.
+        if (phase == "queuing" and {"source:api", "source:terminal"}.intersection(tags)
+                and not {"source:file", "source:job"}.intersection(tags)
+                and self._state.get("machine", {}).get("live_chamber") == 1):
+            chamber_target = re.fullmatch(r"\s*M141\s+S(\d{1,3})(?:\.0+)?\s*(?:;[^\r\n]*)?", str(cmd or ""), re.I)
+            if chamber_target and int(chamber_target.group(1)) <= 255:
+                self._send_priority_services(
+                    ["@RME TEMPERATURE SET chamber=%d" % int(chamber_target.group(1))],
+                    "temperature",
+                )
+                return (None,)
         if phase == "queuing" and "source:file" in tags:
             with self._state_lock:
                 target = self._completion_move

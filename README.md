@@ -6,9 +6,9 @@ Print setup: [per-print tool mapping, fallback spools and Auto PA](docs/print-pr
 Reported pause reasons appear above OctoPrint's main progress bar and in the
 RME tab only while paused; resuming hides the banner and job completion clears
 it. The last genuine reason remains in job-local diagnostic state until completion.
-When neither
-firmware nor OctoPrint reports a reason, the banner explicitly says it was not
-reported; it does not guess from normal heating or detector-setting messages.
+When neither firmware nor OctoPrint reports a reason, the banner stays hidden.
+Unreported pauses remain in diagnostic state; RME does not guess from normal
+heating or detector-setting messages.
 Routine tool-change progress is not a pause cause. Background telemetry is
 rate-limited (controls every 10 seconds; changed progress every 5 seconds,
 unchanged progress heartbeat every 20 seconds). Explicit control refreshes are
