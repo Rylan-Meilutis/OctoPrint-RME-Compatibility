@@ -1,5 +1,14 @@
 # GitHub firmware discovery
 
+Browser uploads and staging from the OctoPrint Files list also validate the
+BBF's embedded version and machine fields against the support matrix, and check
+its embedded application checksum. Filename and manifest names cannot override
+these fields. Flash checks again against the connected printer and exact staged
+file SHA-256. A recovered candidate without a matching local source must be
+restaged. Matching new firmware additionally rejects incompatible selected-file
+M997 handoffs before arming reboot. These checks supplement, not replace, the
+bootloader's signature and hardware validation.
+
 RME checks the official `Rylan-Meilutis/Prusa-Firmware-Buddy` GitHub releases
 while an RME printer is connected and idle, at most once every six hours.
 Settings can disable automatic checks or choose an exact firmware variant

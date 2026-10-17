@@ -9,6 +9,19 @@ from octoprint_rme_compatibility.completion_snapshot import CompletionSnapshot
 
 
 class CompletionSnapshotTests(unittest.TestCase):
+    def test_delayed_completion_uses_capture_even_when_live_state_is_printing(self):
+        def notify(*args):
+            return self.owner.image(False, "url", False, False, False)
+        name = "_JobNotifications__send_print_complete_or_silent_notification"
+        setattr(self.owner, name, notify)
+        self.assertTrue(self.capture())
+        self.image.return_value = b"bed lowered"
+        self.printer.get_state_id = lambda: "PRINTING"
+        args = ("camera", 100, {}, "Finishing", "FINISHING", self.settings, False, [], "url", True)
+        self.assertEqual(getattr(self.owner, name)(*args), b"earlier frame")
+        self.bridge.reset()
+        self.assertIs(getattr(self.owner, name), notify)
+
     def setUp(self):
         self.bridge = CompletionSnapshot()
         self.image = Mock(return_value=b"earlier frame")

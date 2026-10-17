@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Recognize Orca @Object/@Objectstop bookkeeping while detecting the final
+  bed move. Delayed OctoPod completion notifications reuse the captured frame
+  independently of the latest printer state, respecting configured delay.
+- Route operator bed/nozzle targets, print fan, speed and flow overrides through
+  the live control service on matching firmware. Never reorder file commands.
+- Validate embedded BBF version, machine identity and application checksum at
+  browser upload, printer staging and flash. Renaming a cross-built image does
+  not bypass the upstream support matrix; unknown candidates require restaging.
+
 - Filter firmware updates and downloads by verified upstream machine/version
   support, not filenames: 6.9.2 is INDX-only and 6.10.3 is XL-only. Older
   supported release lines remain eligible; unknown combinations are hidden.

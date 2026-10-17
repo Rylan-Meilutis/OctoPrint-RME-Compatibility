@@ -21,6 +21,16 @@ class PrintControlsTests(unittest.TestCase):
             self.assertIsNone(plugin.gcode_queuing_hook(None, "queuing", "M141 S35", None, "M141", tags=tags))
         self.assertEqual(self.commands, [])
 
+    def test_live_heaters_only_bypass_for_operator_commands(self):
+        plugin = self.plugin()
+        plugin._state.update(supported=True)
+        plugin._state["machine"]["live_controls"] = 1
+        self.assertIsNone(plugin.gcode_queuing_hook(None, "queuing", "M140 S55", None, "M140", tags={"source:file"}))
+        self.assertEqual(self.commands, [])
+        self.assertEqual(plugin.gcode_queuing_hook(None, "queuing", "M140 S55", None, "M140", tags={"source:api"}), (None,))
+        self.assertEqual(self.commands, ["@RME CONTROL SET bed=55"])
+
+
     def plugin(self):
         plugin = RmeCompatibilityPlugin()
         plugin._state["machine"].update(tune=1, tool_capacity=8)

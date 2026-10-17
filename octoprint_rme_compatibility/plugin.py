@@ -51,6 +51,8 @@ from .pause_reason import PauseReason
 from .end_move import analyze as analyze_end_move, normalized as normalize_end_move
 from .mapping import read_requirements, recommend, validate, compatible, fallback_commands, recent_mapping_valid
 from .uploader import FirmwareUploader, UploadError, firmware_metadata
+from .live_controls import command as live_control_command
+from .firmware_image import validate as validate_firmware_image
 
 
 EXTRUSION_FAULT_WORKFLOWS = frozenset((
@@ -149,6 +151,7 @@ class RmeCompatibilityPlugin(
         self._mesh_area_command = None
         self._completion_snapshot = CompletionSnapshot()
         self._completion_move = None
+        self._firmware_verified_source = None
         self._toolmap_preflight_decision = None
         self._print_job_gcode_sent = False
         self._skip_cancel_script = False
@@ -1061,6 +1064,10 @@ class RmeCompatibilityPlugin(
                 return flask.jsonify(
                     {"error": "Firmware must be between 1 byte and 32 MiB"}
                 ), 413
+            try:
+                self._validate_firmware_path(temporary)
+            except UploadError as exc:
+                return flask.jsonify({"error": str(exc)}), 400
             os.replace(temporary, destination)
         finally:
             if os.path.exists(temporary):
@@ -1732,6 +1739,13 @@ class RmeCompatibilityPlugin(
             return (None,)
         if not supported:
             return None
+        if (phase == "queuing" and {"source:api", "source:terminal"}.intersection(tags)
+                and not {"source:file", "source:job", "rme:priority_control"}.intersection(tags)):
+            with self._state_lock:
+                live = live_control_command(cmd, self._state)
+            if live:
+                self._send_priority_services([live], "control")
+                return (None,)
         # Only explicit operator/API chamber changes bypass a heater wait.
         # File G-code stays FIFO; older firmware keeps the normal M141 path.
         if (phase == "queuing" and {"source:api", "source:terminal"}.intersection(tags)
@@ -3471,7 +3485,12 @@ class RmeCompatibilityPlugin(
             if now - self._tune_last_mutation < 1:
                 raise ValueError("Wait a moment before changing another override")
             self._tune_last_mutation = now
-        self._send_command(command)
+        with self._state_lock:
+            live = live_control_command(command, self._state)
+        if live:
+            self._send_priority_services([live, "@RME TUNE QUERY"], "control")
+        else:
+            self._send_command(command)
 
     def _print_job_active(self):
         """Return whether OctoPrint's job state owns the serial queue."""
@@ -5991,7 +6010,9 @@ class RmeCompatibilityPlugin(
             raise UploadError("The connected printer did not complete the RME handshake")
         if not str(path).lower().endswith(".bbf") or not os.path.isfile(path):
             raise UploadError("Firmware file was not found on the Pi")
+        self._validate_firmware_path(path)
         metadata = firmware_metadata(path)
+        self._firmware_verified_source = (path, metadata["sha256"])
         with self._firmware_action_lock:
             if self._manifest_store and self._manifest_store.get():
                 raise UploadError(
@@ -6048,6 +6069,16 @@ class RmeCompatibilityPlugin(
                 daemon=True,
             )
             self._firmware_file_thread.start()
+
+    def _validate_firmware_path(self, path):
+        with self._state_lock:
+            running = self._state.get("running_firmware") or {}
+            detected = github_firmware.variant_for(running.get("model"))
+            configured = self._settings.get(["firmware_variant"]) or ""
+        if detected and configured and configured != detected and not (
+                detected == "mini" and configured.startswith("mini-en-")):
+            raise UploadError("Configured firmware variant does not match the connected printer")
+        return validate_firmware_image(path, detected or configured)
 
     def _run_file_firmware_upload(self, path, metadata):
         """Stage and verify ``FWUPD.BBF`` through the current FILE service."""
@@ -6274,7 +6305,10 @@ class RmeCompatibilityPlugin(
             staged = self._state["firmware"].get("status") == "ready"
             self._state["firmware"]["flash_after_stage"] = False
         if requested and staged:
-            self._flash_firmware()
+            try:
+                self._flash_firmware()
+            except UploadError as exc:
+                self._firmware_state_changed(status="error", error=str(exc), flash_after_stage=False)
 
     def _restore_session_after_upload(self):
         # The event lease normally expires during a long M998 transfer because
@@ -6291,11 +6325,25 @@ class RmeCompatibilityPlugin(
         if should_open:
             self._open_session()
 
-    def _flash_firmware(self):
-        self._require_print_idle("Firmware flashing")
+    def _validate_staged_firmware(self):
         with self._state_lock:
             if self._state["firmware"].get("status") not in ("ready", "staged"):
                 raise UploadError("Upload and verify firmware on the printer before flashing")
+            staged_sha = self._state["firmware"].get("sha256")
+            filename = self._state["firmware"].get("filename")
+        verified = self._firmware_verified_source
+        path = verified[0] if verified and verified[1] == staged_sha else (
+            self._firmware_path(filename) if filename else None
+        )
+        if not path or not staged_sha or not os.path.isfile(path):
+            raise UploadError("Restage a compatible BBF before flashing; staged image identity is unavailable")
+        self._validate_firmware_path(path)
+        if firmware_metadata(path)["sha256"] != staged_sha:
+            raise UploadError("Local BBF no longer matches the verified printer candidate; restage it")
+
+    def _flash_firmware(self):
+        self._require_print_idle("Firmware flashing")
+        self._validate_staged_firmware()
         self._arm_firmware_reconnect()
         try:
             self._file_service.mutate("FLASH", "FWUPD.RME")

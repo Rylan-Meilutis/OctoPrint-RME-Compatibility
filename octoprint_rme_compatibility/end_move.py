@@ -27,6 +27,10 @@ def analyze(path, timeout=5.0):
             code = normalized(raw.decode("utf-8"))
             if not code:
                 continue
+            # Orca/CancelObject host bookkeeping has no motion semantics.
+            # Other at-commands (including explicit SNAPSHOT) still fail closed.
+            if re.match(r"^@OBJECT(?:STOP)?(?:\s|$)", code):
+                continue
             # Explicit markers win; never capture twice. Numbered files,
             # expressions, parenthesized comments and macros are not guessed.
             if code.startswith("@") or any(c in code for c in "()*{}") or re.match(r"^N\d", code):

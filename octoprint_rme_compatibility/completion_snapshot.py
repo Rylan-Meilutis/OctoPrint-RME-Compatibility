@@ -19,6 +19,9 @@ class CompletionSnapshot:
         self._original = None
         self._adapter = None
         self._ready = threading.Event()
+        self._notification_original = None
+        self._notification_adapter = None
+        self._context = threading.local()
 
     def reset(self):
         with self._lock:
@@ -28,6 +31,10 @@ class CompletionSnapshot:
             self._expires = 0
             if self._owner is not None and self._owner.image is self._adapter:
                 self._owner.image = self._original
+            name = "_JobNotifications__send_print_complete_or_silent_notification"
+            if self._owner is not None and getattr(self._owner, name, None) is self._notification_adapter:
+                setattr(self._owner, name, self._notification_original)
+            self._notification_original = self._notification_adapter = None
             self._owner = self._original = self._adapter = None
 
     def arm(self, manager, printer, logger, notification_timeout=30.0):
@@ -45,7 +52,7 @@ class CompletionSnapshot:
             ready, generation = self._ready, self._generation
 
             def completion_image(*args, **kwargs):
-                if printer.get_state_id() in ("FINISHING", "OPERATIONAL"):
+                if getattr(self._context, "completion", False) or printer.get_state_id() in ("FINISHING", "OPERATIONAL"):
                     if not ready.wait(notification_timeout):
                         logger.warning("RME completion notification timed out waiting for capture barrier")
                     with self._lock:
@@ -56,6 +63,24 @@ class CompletionSnapshot:
 
             self._owner, self._original, self._adapter = owner, original, completion_image
             owner.image = completion_image
+            # OctoPod may deliver a delayed FINISHING notification after the
+            # live printer state changed. Identify the notification itself,
+            # not just the printer's state at camera-fetch time.
+            name = "_JobNotifications__send_print_complete_or_silent_notification"
+            notify = getattr(owner, name, None)
+            if callable(notify):
+                def completion_notification(*args, **kwargs):
+                    state = kwargs.get("current_printer_state_id", args[4] if len(args) > 4 else None)
+                    was_printing = kwargs.get("was_printing", args[9] if len(args) > 9 else False)
+                    previous = getattr(self._context, "completion", False)
+                    self._context.completion = state == "FINISHING" and bool(was_printing)
+                    try:
+                        return notify(*args, **kwargs)
+                    finally:
+                        self._context.completion = previous
+                self._notification_original = notify
+                self._notification_adapter = completion_notification
+                setattr(owner, name, completion_notification)
         return True
 
     def capture(self, manager, printer, logger, timeout=4.0):
@@ -84,6 +109,10 @@ class CompletionSnapshot:
                 self.reset()
                 return False
             orientation = [settings.get([key]) for key in ("webcam_flipH", "webcam_flipV", "webcam_rotate90")]
+            try:
+                notification_delay = max(0, int(settings.get(["print_complete_delay_seconds"]) or 0))
+            except (ValueError, TypeError):
+                notification_delay = 0
             ready = threading.Event()
             result = []
 
@@ -114,7 +143,7 @@ class CompletionSnapshot:
                     self.reset()
                 return False
             self._frame = result[0]
-            self._expires = time.monotonic() + 600
+            self._expires = time.monotonic() + min(86400, max(600, notification_delay + 120))
 
             self._ready.set()
         logger.info("RME completion snapshot captured before final bed move")

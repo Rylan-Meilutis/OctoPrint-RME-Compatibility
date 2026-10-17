@@ -1,4 +1,5 @@
 import ast
+from bbf_fixture import bbf
 import hashlib
 import importlib.machinery
 import logging
@@ -1226,6 +1227,7 @@ class ToolmapGateTests(unittest.TestCase):
         plugin = RmeCompatibilityPlugin()
         plugin._printer = _Printer()
         plugin._logger = logging.getLogger("rme-one-click-flash-test")
+        plugin._validate_staged_firmware = lambda: None  # Transport ordering is tested here.
         plugin._uploader = types.SimpleNamespace(busy=False)
         plugin._file_service = types.SimpleNamespace(
             mutate=lambda action, path: mutations.append((action, path))
@@ -1275,14 +1277,14 @@ class ToolmapGateTests(unittest.TestCase):
                     "state": "ready",
                     "path": "FWUPD.RME",
                     "size": os.path.getsize(self.upload[0]),
-                    "sha256": hashlib.sha256(b"signed-rme-bbf").hexdigest(),
+                    "sha256": hashlib.sha256(bbf()).hexdigest(),
                 }
 
         with tempfile.TemporaryDirectory() as firmware_directory:
             filename = "coreone-rme.bbf"
             path = os.path.join(firmware_directory, filename)
             with open(path, "wb") as firmware_file:
-                firmware_file.write(b"signed-rme-bbf")
+                firmware_file.write(bbf())
 
             plugin = RmeCompatibilityPlugin()
             plugin._printer = _Printer()
@@ -1294,6 +1296,8 @@ class ToolmapGateTests(unittest.TestCase):
             plugin._persist_and_publish = lambda: None
             plugin._defer = lambda callback, *args: None
             plugin._state.update(connected=True, supported=True)
+            plugin._settings = _Settings()
+            plugin._state["running_firmware"]["model"] = "COREONE"
             plugin._state["storage"].update(
                 supported=True, caps={"write": 1, "flash": 1}
             )
@@ -1471,7 +1475,8 @@ class ToolmapGateTests(unittest.TestCase):
             supported=True, caps={"write": 1, "flash": 1}
         )
 
-        plugin._flash_firmware()
+        with patch.object(plugin, "_validate_staged_firmware"):
+            plugin._flash_firmware()
 
         self.assertEqual([("FLASH", "FWUPD.RME")], plugin._file_service.mutations)
         self.assertEqual([], plugin._printer.command_batches)
@@ -1492,7 +1497,8 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._state.update(connected=True, supported=True)
         plugin._state["firmware"]["status"] = "ready"
 
-        plugin._flash_firmware()
+        with patch.object(plugin, "_validate_staged_firmware"):
+            plugin._flash_firmware()
         self.assertTrue(plugin._firmware_reconnect_pending())
         plugin._handle_record(parse_line("RME_FIRMWARE_RESTART reconnect=1"))
 
@@ -1857,7 +1863,7 @@ class ToolmapGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as source_directory, tempfile.TemporaryDirectory() as firmware_directory:
             source = os.path.join(source_directory, "octoprint-upload.tmp")
             with open(source, "wb") as firmware_file:
-                firmware_file.write(b"signed-bbf-test")
+                firmware_file.write(bbf())
             flask.request.files = {}
             flask.request.values = {
                 "file.path": source,
@@ -1869,12 +1875,13 @@ class ToolmapGateTests(unittest.TestCase):
             plugin._logger = logging.getLogger("rme-upload-test")
             plugin._firmware_directory = firmware_directory
             plugin._public_state = lambda: {"supported": True}
+            plugin._state["running_firmware"]["model"] = "COREONE"
 
             response = plugin.upload_firmware()
 
             self.assertEqual("coreone_6.5.7-RME.bbf", response["file"]["name"])
             with open(os.path.join(firmware_directory, response["file"]["name"]), "rb") as stored:
-                self.assertEqual(b"signed-bbf-test", stored.read())
+                self.assertEqual(bbf(), stored.read())
 
     def test_standard_octoprint_file_can_start_guarded_firmware_workflow(self):
         with tempfile.TemporaryDirectory() as local_directory:
@@ -3304,7 +3311,8 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._begin_firmware_reconnect = lambda *args, **kwargs: reconnects.append(True)
 
         try:
-            plugin._flash_firmware()
+            with patch.object(plugin, "_validate_staged_firmware"):
+                plugin._flash_firmware()
             self.assertEqual("restarting", plugin._state["firmware"]["status"])
             self.assertTrue(plugin._state["firmware"]["reconnect_expected"])
             self.assertEqual([True], reconnects)

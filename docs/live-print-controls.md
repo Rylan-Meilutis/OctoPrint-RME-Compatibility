@@ -1,5 +1,16 @@
 # Live print controls
 
+Firmware advertising live_controls=1 accepts @RME CONTROL SET with exactly one
+of bed=N, nozzle=N, fan=N, speed=N or flow=N. Nozzle and flow support tool=N
+as a direct slot; the plugin resolves logical API tool selections before sending.
+Nozzle defaults to the mounted tool when omitted; no tool is ever picked by
+this service. Native heater limits and thermal protections remain authoritative.
+Fan is the print fan (0–255), speed is 10–300%, flow is 50–150%.
+These operator changes bypass waits; file-derived G-code remains FIFO.
+The touchscreen's non-motion variable requests have a separate bounded mailbox,
+serviced during nested waits. Motion, calibration and tool-change requests do
+not gain recursive execution privileges.
+
 Firmware with live_chamber=1 accepts operator/API chamber changes through
 @RME TEMPERATURE SET chamber=N while a heater wait is active. Zero switches
 chamber control off. Targets remain clamped by firmware capabilities. File

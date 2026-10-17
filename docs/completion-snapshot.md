@@ -1,5 +1,13 @@
 # OctoPod completion snapshot before lowering the bed
 
+The current detector accepts Orca/CancelObject @Object and @Objectstop markers.
+Previously these host-only markers aborted analysis, so no capture was armed
+and OctoPod fetched its normal post-lowering image. The supplied soda-can job
+now matches G1 Z207 F720 before it is sent. Delayed completion notifications
+use the cached frame based on the notification's FINISHING context, even if
+the live printer state has changed. Camera timeout/failure still falls back
+with a diagnostic log; hardware verification is required.
+
 Starting with b119, RME automatically inserts a capture barrier for recognizable end-of-print bed
 lowering in local text jobs. No slicer change or re-slicing is needed for the
 standard sequence below. At preflight it finds a final absolute Z-only move

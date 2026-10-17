@@ -13,6 +13,10 @@ TAIL = "\nM400\nM572 S0\nM221 S100\nM84 X Y E\nM151 W0 D0 T500\nM77\nM73 P100 R0
 
 
 class EndMoveTests(unittest.TestCase):
+    def test_orca_object_markers_do_not_disable_snapshot(self):
+        code = "@Object named_part id:0 copy 0\n" + PREFIX + "@Objectstop named_part\n" + MOVE + TAIL
+        self.assertIsNotNone(self.analyze(code))
+
     def analyze(self, code, **kwargs):
         with tempfile.NamedTemporaryFile(mode="wb") as f:
             f.write(code.encode("utf-8"))
