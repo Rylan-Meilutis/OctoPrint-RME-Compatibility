@@ -20,6 +20,10 @@ class FirmwareReleaseTests(unittest.TestCase):
             self.assertEqual(get.call_count, 1)
 
     def test_machine_support_matches_upstream(self):
+        for model in ("Prusa-MK4S", "Prusa-MK3.9", "Prusa-MK3.9S"):
+            self.assertEqual(fw.variant_for(model), "mk4")
+        self.assertEqual(fw.variant_for("Prusa-COREONE+GEN2"), "coreone")
+        self.assertEqual(fw.variant_for("Prusa-XL+"), "xl")
         self.assertEqual(fw.SUPPORTED["6.10.3"], {"xl"})
         self.assertEqual(fw.SUPPORTED["6.9.2"], {"coreone_indx"})
         self.assertEqual(fw.SUPPORTED["6.8.1"], {"coreone", "coreonel"})

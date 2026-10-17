@@ -15,6 +15,13 @@ MAX_SIZE = 32 * 1024 * 1024
 MODELS = {"COREONE": "coreone", "COREONEINDX": "coreone_indx",
           "COREONEL": "coreonel", "MINI": "mini", "MK4": "mk4",
           "MK3.5": "mk3.5", "XL": "xl"}
+MODELS.update({
+    "COREONE+": "coreone", "COREONE+GEN2": "coreone",
+    "COREONE_L": "coreonel", "COREONE_L+": "coreonel",
+    "COREONEL+": "coreonel", "XL+": "xl",
+    "MK4S": "mk4", "MK3.9": "mk4", "MK3.9S": "mk4",
+    "MK3.5S": "mk3.5",
+})
 
 
 def digest(value):

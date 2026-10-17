@@ -41,7 +41,8 @@ queue-backpressure tests do not substitute for a physical-printer soak.
 The reported pause cause appears above the main progress bar and in RME only
 while paused. Resume hides it; completion clears it. Genuine causes remain in
 job-local diagnostic state until completion and are logged. Routine tool-change,
-heating and probing text is not a cause. If no cause is reported, RME says so.
+heating and probing text is not a cause. If no cause is reported, the banner
+stays hidden and the unreported pause remains in diagnostic state.
 
 Changed host progress estimates are sent at most every five seconds; unchanged
 estimates use a twenty-second heartbeat within the firmware's sixty-second
