@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b127 — 2026-10-17
 
 - Profile the populated UI in real headless Chromium using OctoPrint's jQuery,
   Knockout and PNotify. Add searchable, paged filament choices instead of
