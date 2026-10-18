@@ -1338,13 +1338,22 @@ $(function () {
             })).join("|");
             if (selectionKey !== self.spoolSelectionKey) {
                 self.spoolSelectionKey = selectionKey;
+                var drafts = {};
+                ko.utils.arrayForEach(self.spoolSelectionRows(), function (row) {
+                    if (row.dirty()) drafts[row.tool] = normalizeDatabaseId(row.selected());
+                });
                 var selectionRows = [];
                 for (var tool = 0; tool < machineTools; tool++) {
-                    selectionRows.push(makeSpoolSelectionRow(
+                    var selectionRow = makeSpoolSelectionRow(
                         tool,
                         loadedByTool[tool] || null,
                         selectedByTool[tool] === undefined ? null : selectedByTool[tool]
-                    ));
+                    );
+                    if (Object.prototype.hasOwnProperty.call(drafts, tool)) {
+                        selectionRow.selected(drafts[tool]);
+                        self.changeSpoolSelection(selectionRow);
+                    }
+                    selectionRows.push(selectionRow);
                 }
                 self.spoolSelectionRows(selectionRows);
             }
@@ -1626,6 +1635,7 @@ $(function () {
                 });
                 return;
             }
+            if (spoolManager.spoolDialog.rmeRestoreNewSpool) spoolManager.spoolDialog.rmeRestoreNewSpool();
             self.showSpoolManagerTab();
             spoolManager.addNewSpool();
             var item = spoolManager.spoolDialog.spoolItemForEditing;
@@ -1642,6 +1652,47 @@ $(function () {
             setSpoolManagerField(item, "totalCombinedWeight", values.weight);
             setSpoolManagerField(item, "usedWeight", 0);
             setSpoolManagerField(item, "selectedForTool", row.tool);
+            // Native Save only persists the record; selectedForTool is merely
+            // the separate "select for printing" dropdown. Save through RME
+            // to obtain the exact created ID, retaining all native fields.
+            var dialog = spoolManager.spoolDialog;
+            var api = dialog.apiClient;
+            if (!api || typeof api.callSaveSpool !== "function") return;
+            var originalSave = api.callSaveSpool;
+            var pending = false;
+            var createdId = null;
+            var modal = $(dialog.spoolDialog);
+            function restoreSave() {
+                if (api.callSaveSpool === saveForSlot) api.callSaveSpool = originalSave;
+                if (dialog.rmeRestoreNewSpool === restoreSave) dialog.rmeRestoreNewSpool = null;
+                modal.off("hidden.rmeNewSpool", restoreSave);
+            }
+            function saveForSlot(edited, callback) {
+                if (edited !== item) return originalSave.apply(this, arguments);
+                if (pending) return;
+                pending = true;
+                function assignCreated() {
+                    self.command("select_spool", {tool: Number(row.tool), database_id: createdId})
+                        .done(function () {
+                            restoreSave();
+                            self.command("refresh_spool_inventory");
+                            callback(); // Preserve native table/sidebar reload and dialog close.
+                        }).always(function () { pending = false; });
+                }
+                if (createdId !== null) {
+                    assignCreated(); // Assignment retry must not create another spool.
+                    return;
+                }
+                self.command("create_native_spool", {tool: Number(row.tool), spool: ko.toJS(edited)})
+                    .done(function (result) {
+                        createdId = result.created_spool.database_id;
+                        setSpoolManagerField(item, "databaseId", createdId);
+                        assignCreated();
+                    }).fail(function () { pending = false; });
+            }
+            api.callSaveSpool = saveForSlot;
+            dialog.rmeRestoreNewSpool = restoreSave;
+            modal.on("hidden.rmeNewSpool", restoreSave);
         };
         self.createSpoolForMappingRow = function (row) {
             if (self.spoolManagerProvider()) {

@@ -579,6 +579,7 @@ class RmeCompatibilityPlugin(
             "begin_new_spool": ["tool"],
             "activate_pending_spool": ["tool"],
             "create_spool": ["display_name", "material", "color", "total_weight"],
+            "create_native_spool": ["tool", "spool"],
             "cancel_new_spool": [],
             "touch_toolmap": [],
             "storage_caps": [],
@@ -832,7 +833,7 @@ class RmeCompatibilityPlugin(
         elif command == "sync_spoolmanager":
             self._sync_filaments_to_printer()
         elif command == "refresh_spool_inventory":
-            self._sync_spoolmanager(True, False)
+            self._refresh_spool_inventory()
         elif command == "sync_filaments_from_printer":
             self._sync_filaments_from_printer()
         elif command in ("sync_filaments_to_printer", "confirm_provider_sync"):
@@ -851,6 +852,17 @@ class RmeCompatibilityPlugin(
             self._activate_pending_spool(data["tool"])
         elif command == "create_spool":
             self._create_spool(data)
+        elif command == "create_native_spool":
+            self._tool_index(data["tool"])
+            provider, provider_name = self._active_spool_provider()
+            if provider_name != "spoolmanager":
+                raise ValueError("SpoolManager is not the active inventory provider")
+            created = provider.create_native(data["spool"])
+            self._refresh_provider_clients(provider)
+            self._refresh_spool_inventory()
+            result = self._public_state()
+            result["created_spool"] = created
+            return flask.jsonify(result)
         elif command == "cancel_new_spool":
             self._cancel_pending_spool()
         elif command == "touch_toolmap":
@@ -4225,6 +4237,22 @@ class RmeCompatibilityPlugin(
             "Deferring filament-provider synchronization until print is idle"
         )
 
+    def _refresh_spool_inventory(self):
+        """Refresh UI data without waiting for firmware writes or an idle print."""
+        provider, provider_name = self._active_spool_provider()
+        try:
+            records = provider.inventory(include_unavailable=True)
+        except TypeError:
+            records = provider.inventory()
+        inventory = [self._public_spool_record(item) for item in records]
+        selected = [dict(self._public_spool_record(item), tool=tool)
+                    for tool, item in enumerate(provider.selected()) if item is not None]
+        with self._state_lock:
+            self._state["spoolmanager"].update(
+                provider=provider_name, available=True, inventory=inventory, selected=selected,
+            )
+        self._persist_and_publish()
+
     def _sync_spoolmanager(self, force=False, push_to_firmware=True):
         """Reconcile the active inventory provider with eight firmware presets.
 
@@ -4377,6 +4405,16 @@ class RmeCompatibilityPlugin(
                 record.update(slot=slot, alias=alias)
                 published.append(record)
             published.sort(key=lambda item: item["slot"])
+            # Seven menu presets plus NEW cannot represent eight distinct
+            # loaded spools. Extra selections use Buddy's per-tool ad-hoc
+            # storage instead of silently dropping the eighth assignment.
+            assigned_profiles = list(published)
+            for database_id in sorted(selected_ids - set(ordered_ids)):
+                record = copy.deepcopy(records[database_id])
+                alias = spool_alias(record["material"], database_id, used_aliases)
+                used_aliases.add(alias)
+                record.update(slot=None, alias=alias)
+                assigned_profiles.append(record)
 
             firmware_signature = (
                 tuple(
@@ -4387,7 +4425,7 @@ class RmeCompatibilityPlugin(
                         int(item.get("nozzle_temperature", 0)),
                         int(item.get("bed_temperature", 0)),
                     )
-                    for item in published
+                    for item in assigned_profiles
                 ),
                 tuple(
                     (int(item.get("tool", 0)), item.get("database_id"))
@@ -4424,7 +4462,7 @@ class RmeCompatibilityPlugin(
                 self._defer_spool_sync_until_idle(force, push_to_firmware)
                 should_push = False
             profile_commands, manufacturer_by_spool = self._provider_profile_commands(
-                published, provider_name
+                assigned_profiles, provider_name
             )
             metadata_changed = (
                 force or self._provider_firmware_signature != firmware_signature
@@ -4476,7 +4514,7 @@ class RmeCompatibilityPlugin(
                 # Reassert selected tool assignments after reconnects and after
                 # inventory edits; publishing a preset alone does not mark it as
                 # physically loaded in Buddy's M865 metadata.
-                slot_by_id = {item["database_id"]: item for item in published}
+                slot_by_id = {item["database_id"]: item for item in assigned_profiles}
                 assignments = []
                 selected_tools = {int(item["tool"]) for item in selected}
                 tool_count = max(logical_tools, max(selected_tools, default=-1) + 1)
@@ -4502,17 +4540,24 @@ class RmeCompatibilityPlugin(
                         # M865 load makes this batch usable on older 6.5.7,
                         # 6.6.3, and early 6.8.1 RME builds as well.
                         base = self._firmware_filament_base(item.get("material"))
-                        assignments.append(self._with_transaction(
-                            "@RME FILAMENT ASSIGN tool=%d profile=%s material=%s"
-                            % (selected_item["tool"], item["alias"], base),
-                            suppress_refresh=True,
-                        ))
-                        assignments.append(
-                            'M865 U%d L%d O"%s"'
-                            % (
-                                item["slot"], selected_item["tool"], item["color"],
+                        if item["slot"] is None:
+                            nozzle = max(0, min(500, int(item["nozzle_temperature"])))
+                            bed = max(0, min(500, int(item["bed_temperature"])))
+                            assignments.append(
+                                'M865 X R N"%s" J"%s" T%d P%d B%d G%d L%d O"%s"'
+                                % (item["alias"], base, nozzle, max(0, nozzle - 40), bed,
+                                   int(base == "FLEX"), selected_item["tool"], item["color"])
                             )
-                        )
+                        else:
+                            assignments.append(self._with_transaction(
+                                "@RME FILAMENT ASSIGN tool=%d profile=%s material=%s"
+                                % (selected_item["tool"], item["alias"], base),
+                                suppress_refresh=True,
+                            ))
+                            assignments.append(
+                                'M865 U%d L%d O"%s"'
+                                % (item["slot"], selected_item["tool"], item["color"])
+                            )
                         manufacturer = manufacturer_by_spool.get(
                             item["database_id"], "none"
                         )

@@ -242,7 +242,15 @@ RME's graphical mapping dialog supports SpoolManager, Spoolman and the built-in
 provider. Colored cards show each loaded tool and its assigned spool, with
 same-material choices only and one batch Apply. Unknown loaded material has
 no compatible choices. The full inventory remains accessible in the provider's
-own UI. New-spool creation is prefilled from printer data.
+own UI. New-spool creation is prefilled from printer data. Saving a new spool
+opened from a machine-slot card also assigns it to that slot and updates both
+RME and SpoolManager without a browser refresh. Canceling leaves the slot unchanged.
+Unsaved mapping choices survive background updates. Eight distinct loaded spools
+are supported using per-tool storage for the extra spool; the menu retains seven
+shared profiles plus NEW. Matching updated firmware preserves loaded material
+independently when a shared preset is replaced. An already incorrect assignment
+must be corrected by selecting the actual spool in SpoolManager and applying it;
+do not import the incorrect printer mapping back into SpoolManager.
 Empty and inactive concrete spools remain visible for deliberate manual mapping
 but do not consume firmware preset slots unless selected.
 

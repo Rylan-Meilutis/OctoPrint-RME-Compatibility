@@ -189,6 +189,28 @@ class SpoolManagerBridge(object):
                 )
             return False
 
+    def create_native(self, values):
+        """Save the complete native editor record and return its exact ID."""
+        implementation = self._implementation()
+        mapper = getattr(implementation, "_updateSpoolModelFromJSONData", None)
+        manager = getattr(implementation, "_databaseManager", None)
+        if not callable(mapper) or manager is None or not hasattr(manager, "saveSpool"):
+            raise SpoolManagerUnavailable("Installed SpoolManager has no compatible create API")
+        if not isinstance(values, dict) or values.get("databaseId") not in (None, ""):
+            raise ValueError("A new spool record is required")
+        if not str(values.get("displayName") or "").strip():
+            raise ValueError("A spool display name is required")
+        if values.get("isTemplate"):
+            raise ValueError("A template cannot be assigned to a machine slot")
+        from octoprint_SpoolManager.models.SpoolModel import SpoolModel
+
+        model = SpoolModel()
+        mapper(model, values)
+        database_id = manager.saveSpool(model)
+        if database_id is None:
+            raise RuntimeError("SpoolManager did not create the spool")
+        return self._record(manager.loadSpool(database_id))
+
     def create(self, values):
         """Create a concrete (non-template) spool from the persistent RME form."""
         implementation = self._implementation()

@@ -807,6 +807,48 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIs(internal, provider)
         self.assertEqual("internal", name)
 
+    def test_inventory_refresh_does_not_wait_for_firmware_or_idle_print(self):
+        record = {"database_id": 99, "material": "PLA", "_private": "hidden"}
+        provider = types.SimpleNamespace(
+            inventory=lambda **kwargs: [dict(record)], selected=lambda: [None, dict(record)],
+        )
+        plugin = RmeCompatibilityPlugin()
+        plugin._active_spool_provider = lambda: (provider, "spoolmanager")
+        plugin._pending_provider_profile_sync = {"expected": {}}
+        plugin._print_job_active = lambda: True
+        published = []
+        plugin._persist_and_publish = lambda: published.append(True)
+        plugin._refresh_spool_inventory()
+        self.assertEqual([{"database_id": 99, "material": "PLA"}], plugin._state["spoolmanager"]["inventory"])
+        self.assertEqual(1, plugin._state["spoolmanager"]["selected"][0]["tool"])
+        self.assertEqual([True], published)
+        self.assertIsNotNone(plugin._pending_provider_profile_sync)
+
+    def test_eight_distinct_spools_do_not_drop_the_last_tool(self):
+        records = [{"database_id": index + 1, "display_name": "Spool %d" % index,
+                    "vendor": "", "material": "PLA", "color_name": "Blue", "color": "#0073ff",
+                    "nozzle_temperature": 215, "bed_temperature": 60,
+                    "remaining_weight": 600, "is_active": True, "is_template": False}
+                   for index in range(8)]
+        provider = types.SimpleNamespace(available=lambda: True,
+                                        inventory=lambda **kwargs: records, selected=lambda: records)
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._active_spool_provider = lambda: (provider, "spoolmanager")
+        plugin._printer = _Printer()
+        plugin._logger = logging.getLogger("eight-spool-test")
+        plugin._state.update(connected=True, supported=True,
+                             machine={"logical_tools": 8, "tool_capacity": 8})
+        plugin._sync_spoolmanager(True)
+        pending = plugin._pending_provider_profile_sync
+        self.assertEqual(7, len(plugin._state["spoolmanager"]["published"]))
+        self.assertEqual(8, len(plugin._state["spoolmanager"]["selected"]))
+        assignments = pending["assignments"]
+        for tool in range(7):
+            self.assertTrue(any("M865 U%d L%d" % (tool, tool) in command for command in assignments))
+        self.assertIn('M865 X R N"PLA-008" J"PLA" T215 P175 B60 G0 L7 O"#0073ff"', assignments)
+        self.assertTrue(assignments[-1] == "M865 Q")
+
     def test_external_provider_preserves_unselected_firmware_material(self):
         record = {
             "database_id": 7, "display_name": "External PETG", "vendor": "Atomic Filament",

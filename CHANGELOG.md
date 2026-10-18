@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Saving a native SpoolManager New Spool opened from an RME machine slot now
+  assigns the saved spool to that slot and synchronizes the machine. Refresh
+  both inventories immediately, without reloading the browser. Retain all native
+  editor metadata, and retry failed assignments without creating duplicate spools.
+- Preserve unsaved mapping selections when background loadout/provider updates
+  rebuild the slot cards. Inventory refreshes no longer wait behind firmware
+  synchronization or an active print.
+- Assign an eighth distinct spool through per-tool ad-hoc storage rather than
+  dropping its assignment when the seven shared presets are full. Companion
+  firmware preserves loaded profiles before a shared catalog slot is reused.
+- Validation: 302 Python tests (four skipped) and all ten JavaScript UI suites
+  pass. Physical spool creation/assignment still requires an installed-system check.
+
 ## 0.1.0b124 — 2026-10-17
 
 - Recognize Orca @Object/@Objectstop bookkeeping while detecting the final
