@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b128 — 2026-10-17
 
 - Fix a reproduced multi-second Settings-opening stall in the restored
   OctoPrint 1.11.8/SpoolManager 1.7.8 setup. Settings refreshes printer profiles;
