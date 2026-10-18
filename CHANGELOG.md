@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b126 — 2026-10-17
 
 - Add Stop and disconnect recovery for stalled transfers, retaining the source
   and durable partial. Keep transmission locked until reboot/reconnect evidence;
