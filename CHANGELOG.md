@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Include loadcell runout in recovery-action queries and retain its physical
+  cause during intervening parking/tool-change/heating messages. Matching
+  firmware enables the confirmation on INDX without a discrete extruder
+  filament sensor, aligns Continue/Unload/Abort with the handler, and
+  reannounces the fault only after its prompt is actionable.
+
 ## 0.1.0b128 — 2026-10-17
 
 - Fix a reproduced multi-second Settings-opening stall in the restored

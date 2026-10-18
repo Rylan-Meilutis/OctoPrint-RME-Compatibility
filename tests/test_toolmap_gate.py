@@ -3697,7 +3697,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual("filament_unload", plugin._state["workflow"]["workflow"])
         self.assertIsNone(plugin._state["prompt"])
 
-    def test_runout_uses_dialog_only_and_print_end_clears_fault(self):
+    def test_runout_queries_recovery_actions_and_print_end_clears_fault(self):
         from octoprint.events import Events
 
         plugin = RmeCompatibilityPlugin()
@@ -3713,8 +3713,26 @@ class ToolmapGateTests(unittest.TestCase):
             "workflow": "filament_runout", "state": "waiting",
             "code": "runout", "message": "Loadcell detected filament runout",
         })
-        self.assertEqual(["@RME DIALOG QUERY"], commands)
-        plugin._state["prompt"] = {"kind": "firmware", "actions": ["Continue"]}
+        self.assertEqual(["@RME DIALOG QUERY", "@RME STUCK QUERY"], commands)
+        plugin._handle_record({
+            "record": "event", "seq": 2, "type": "workflow",
+            "workflow": "tool_change", "state": "open",
+            "message": "Tool change in progress",
+        })
+        self.assertEqual("filament_runout", plugin._state["workflow"]["workflow"])
+        plugin._handle_record({
+            "record": "prompt", "actions": ["Continue", "Unload", "Abort"],
+        })
+        self.assertEqual("filament_runout", plugin._state["prompt"]["workflow"])
+        self.assertIn("Loadcell", plugin._state["prompt"]["message"])
+        self.assertEqual(["Continue", "Unload", "Abort"], plugin._state["prompt"]["actions"])
+        plugin._handle_record({
+            "record": "event", "seq": 3, "type": "workflow",
+            "workflow": "tool_change", "state": "closed", "progress": 100,
+            "message": "Tool change complete",
+        })
+        self.assertEqual("filament_runout", plugin._state["workflow"]["workflow"])
+        self.assertEqual(["Continue", "Unload", "Abort"], plugin._state["prompt"]["actions"])
 
         plugin._defer = lambda callback, *args: None
         plugin.on_event(Events.PRINT_CANCELLED, {})
