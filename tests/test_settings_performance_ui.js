@@ -63,6 +63,33 @@ const {jQueryFactory} = require('jquery/factory');
     vm.acceptState({firmware: {offset: 200}}); // Immediate operator response wins.
     frames.shift()();
     assert.equal(vm.state().firmware.offset, 200);
+    // Unchanged nested objects still notify by default in Knockout. With a
+    // real inventory this repeatedly filters all spools for all eight tools,
+    // even when only progress or provider status changed.
+    const inventoryState = {connected: true, supported: true, machine: {logical_tools: 8},
+        loaded_filaments: Array.from({length: 8}, (_, tool) => ({tool, material: 'PLA'})),
+        spoolmanager: {provider: 'spoolmanager', inventory: Array.from({length: 1000}, (_, i) =>
+            ({database_id: i + 1, material: 'PLA', display_name: 'Spool ' + i}))}};
+    vm.acceptState(JSON.parse(JSON.stringify(inventoryState)));
+    let choiceUpdates = 0;
+    const subscriptions = vm.spoolSelectionRows().map(row => row.availableSpools.subscribe(() => choiceUpdates++));
+    for (let i = 0; i < 100; i++) {
+        inventoryState.firmware = {offset: i};
+        inventoryState.spoolmanager.status = 'Poll ' + i;
+        vm.acceptState(JSON.parse(JSON.stringify(inventoryState)));
+    }
+    assert.equal(choiceUpdates, 0, 'telemetry and provider status must not rebuild all spool choices');
+    inventoryState.spoolmanager.inventory.push({database_id: 1001, material: 'PLA'});
+    vm.acceptState(JSON.parse(JSON.stringify(inventoryState)));
+    assert.equal(choiceUpdates, 8, 'a real inventory change refreshes every affected tool');
+    subscriptions.forEach(subscription => subscription.dispose());
+    let created = 0, removed = 0;
+    w.PNotify = function () { created++; this.remove = () => removed++; };
+    for (let i = 0; i < 100; i++) vm.updateFirmwareRecoveryNotice({type: 'error',
+        workflow: 'printer', state: 'waiting', message: 'Check filament', seq: i, received_at: i}, {});
+    assert.equal(created, 1, 'repeated event IDs must not recreate the same notice');
+    vm.updateFirmwareRecoveryNotice({}, {});
+    assert.equal(removed, 1);
     console.log('Settings list identity and updates passed');
     w.close();
 })();

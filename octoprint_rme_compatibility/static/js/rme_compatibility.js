@@ -528,7 +528,16 @@ $(function () {
             var remaining = Math.max(0, Math.ceil(Number(prompt.deadline) - Date.now() / 1000));
             return "Current mapping will be kept in " + formatDuration(remaining) + " unless you interact.";
         });
-        self.spoolmanager = ko.pureComputed(function () { return self.state().spoolmanager || {}; });
+        // KO's default comparer treats every object as changed, even when
+        // reconciliation retained its identity. Stop unrelated telemetry from
+        // invalidating the inventory and every tool's spool-choice list.
+        function snapshotSelector(read) {
+            var selected = ko.pureComputed(read);
+            selected.equalityComparer = function (left, right) { return left === right; };
+            return selected;
+        }
+        var emptySnapshot = {}, emptyRows = [];
+        self.spoolmanager = snapshotSelector(function () { return self.state().spoolmanager || emptySnapshot; });
         self.externalSpoolProvider = ko.pureComputed(function () {
             return ["spoolmanager", "spoolman"].indexOf(String(self.spoolmanager().provider || "").toLowerCase()) >= 0;
         });
@@ -556,7 +565,7 @@ $(function () {
             return provider + (spool.error || spool.status || "not checked");
         });
         self.publishedSpools = ko.pureComputed(function () { return self.spoolmanager().published || []; });
-        self.inventorySpools = ko.pureComputed(function () { return self.spoolmanager().inventory || []; });
+        self.inventorySpools = snapshotSelector(function () { return self.spoolmanager().inventory || emptyRows; });
         // Mapping must never look like the provider has fewer spools than it
         // really does.  Start with the complete inventory and let operators
         // explicitly narrow it when that is useful.
@@ -1161,7 +1170,7 @@ $(function () {
             var state = String(workflow.state || "").toLowerCase();
             var needsAction = workflow.type === "error" || state === "waiting";
             var actions = prompt.kind === "firmware" ? (prompt.actions || []) : [];
-            var key = needsAction ? [workflow.seq, workflow.received_at,
+            var key = needsAction ? [workflow.workflow, state,
                 workflow.code, workflow.message, actions.join(",")].join(":") : "";
             if (key === self.firmwareRecoveryNoticeKey) return;
             if (self.firmwareRecoveryNotice && typeof self.firmwareRecoveryNotice.remove === "function") {
@@ -1177,7 +1186,10 @@ $(function () {
                     title: "Printer action required",
                     text: text,
                     type: "error",
-                    hide: false
+                    hide: false,
+                    animate: false,
+                    text_escape: true,
+                    nonblock: {nonblock: true}
                 });
             }
         };
@@ -2089,9 +2101,15 @@ $(function () {
                     var context = ko.contextFor(this);
                     if (!context || !context.$index) return;
                     var tool = Number(ko.unwrap(context.$index));
-                    $(this).attr({role: "button", tabindex: "0", title: "Select spool for T" + tool});
-                    $(this).parent().toggleClass("rme-sidebar-tool-active",
-                        active !== null && active !== undefined && Number(active) === tool);
+                    var label = $(this), attributes = {role: "button", tabindex: "0", title: "Select spool for T" + tool};
+                    Object.keys(attributes).forEach(function (key) {
+                        if (label.attr(key) !== attributes[key]) label.attr(key, attributes[key]);
+                    });
+                    var parent = label.parent();
+                    var selected = active !== null && active !== undefined && Number(active) === tool;
+                    if (parent.hasClass("rme-sidebar-tool-active") !== selected) {
+                        parent.toggleClass("rme-sidebar-tool-active", selected);
+                    }
                 });
             }
             self.activeTool.subscribe(refreshSidebar);

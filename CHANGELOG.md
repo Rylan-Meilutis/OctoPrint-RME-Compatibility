@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Stop unchanged inventory snapshots from invalidating every tool's spool
+  choices on routine telemetry or provider-status updates. A regression with
+  eight tools and 1,000 spools previously triggered 800 unnecessary list
+  updates for 100 polls; it now triggers none, while real inventory edits
+  still refresh all eight tools. All eleven JavaScript suites pass. This is
+  a reproduced source of UI load, not yet a confirmed fix for the reported
+  continuous freeze on the installed browser.
+- Reuse action-required notices when only event IDs/timestamps change, disable
+  their animation, escape printer text, and make sidebar decoration idempotent.
+
 ## 0.1.0b126 — 2026-10-17
 
 - Add Stop and disconnect recovery for stalled transfers, retaining the source
