@@ -46,11 +46,7 @@
             </div>
             <p data-bind="text: firmwareStatus"></p>
             <div class="alert alert-error" data-bind="visible: firmwareError, text: firmwareError"></div>
-            <div class="alert alert-warning" data-bind="visible: transportRecoveryRequired">
-                <strong>Printer reboot required.</strong>
-                Power-cycle the printer. RME command, file, and firmware traffic is locked until reboot recovery is confirmed.
-                <button type="button" class="btn btn-warning" data-bind="click: confirmPrinterReboot">I rebooted the printer</button>
-            </div>
+            <p data-bind="visible: transferRecoveryVisible"><button type="button" class="btn btn-warning" data-bind="click: function () { showRmeSection('recovery'); }">Open transfer recovery</button></p>
             <p class="help-block">Choose the BBF in the “Firmware on Pi” list, then upload it or upload and flash. Current firmware protects and verifies the candidate as hidden <code>/usb/FWUPD.RME</code>, but it is not armed for the bootloader until the explicit FILE FLASH handoff. Unstage removes only that protected candidate; Delete from Pi removes only the source copy. Ordinary BBFs downloaded by Prusa Connect are never treated as staged updates.</p>
         </div>
     </div>

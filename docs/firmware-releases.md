@@ -72,6 +72,10 @@ button; use the firmware update panel to select and download a release.
 RME uses the GitHub token already saved in OctoPrint Software Update, if present.
 It stays server-side and is sent only to GitHub's API, never asset CDN redirects.
 
-USB storage, printer settings, and firmware files/flashing are collapsed by
-default in Settings to avoid constructing hidden lists and controls. Expand
-the matching show/hide section when needed. Auto PA and Sync now stay visible.
+Use **RME → Firmware updates** to upload or flash, and **RME → Printer files**
+for USB storage. File lists remain collapsed until opened. Settings contains
+saved defaults and discovery policy, not duplicate firmware/file panels.
+Transfer errors expose a recovery panel at the top of RME and a shortcut in
+its top-bar menu. **Stop and disconnect** preserves retry data and locks traffic;
+power-cycle the printer, then reconnect or confirm the reboot before resuming
+or discarding the partial. It never assumes an unknown receiver accepts ASCII.

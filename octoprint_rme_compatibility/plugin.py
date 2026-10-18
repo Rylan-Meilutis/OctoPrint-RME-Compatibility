@@ -564,6 +564,7 @@ class RmeCompatibilityPlugin(
             "stage_and_flash_octoprint_firmware": ["path"],
             "unstage_firmware": [],
             "cancel_firmware": [],
+            "recover_transfer": [],
             "flash_firmware": [],
             "confirm_printer_reboot": [],
             "delete_firmware": ["filename"],
@@ -803,12 +804,13 @@ class RmeCompatibilityPlugin(
         elif command == "unstage_firmware":
             self._unstage_firmware()
         elif command == "cancel_firmware":
+            self._firmware_file_cancel.set()
             if self._uploader:
                 self._uploader.cancel()
             with self._state_lock:
                 firmware_status = self._state["firmware"].get("status")
                 file_firmware_active = firmware_status in (
-                    "starting", "uploading", "verifying"
+                    "starting", "uploading", "verifying", "canceling"
                 )
             if firmware_status == "queued":
                 # Do not abort the unrelated USB operation currently ahead of
@@ -818,6 +820,8 @@ class RmeCompatibilityPlugin(
                 self._firmware_state_changed(status="canceling")
             if file_firmware_active and self._file_service and self._file_service.busy:
                 self._file_service.cancel()
+        elif command == "recover_transfer":
+            self._stop_transfer_for_recovery()
         elif command == "flash_firmware":
             self._flash_firmware()
         elif command == "confirm_printer_reboot":
@@ -2793,6 +2797,30 @@ class RmeCompatibilityPlugin(
             else FIRMWARE_RECONNECT_INTERVAL_SECONDS
         )
         return True
+
+    def _stop_transfer_for_recovery(self):
+        """Stop local writers without guessing whether the receiver is in raw mode."""
+        self._require_print_idle("Transfer recovery")
+        self._firmware_file_cancel.set()
+        if self._uploader:
+            self._uploader.cancel()
+        if self._file_service:
+            self._file_service.cancel()
+        with self._state_lock:
+            self._state["firmware"].update(
+                status="error", recovery_required=True, flash_after_stage=False,
+                error="Transfer stopped. Power-cycle the printer, then confirm the reboot or reconnect.",
+            )
+            partial = self._state["storage"].get("partial")
+            if partial:
+                partial.update(status="interrupted", recovery_active=False)
+        # Close the descriptor before releasing any waiter. Never enqueue an
+        # ASCII ABORT/M112 into an unknown raw receiver. Durable sources and
+        # printer partials remain intact for a later Resume or Discard.
+        self._disconnect_for_transport_recovery()
+        if self._file_service:
+            self._file_service.reset("Transfer stopped for printer reboot")
+        self._persist_and_publish()
 
     def _clear_transport_recovery(self, evidence):
         """Unlock RME traffic only after observed or user-confirmed reboot."""
@@ -5553,6 +5581,8 @@ class RmeCompatibilityPlugin(
         opens Settings while printing. Mutations and transfers retain the
         strict exception path.
         """
+        if self._transport_recovery_required():
+            raise FileServiceError("Printer reboot required before resuming or discarding an upload")
         with self._state_lock:
             connected = self._state["connected"] and self._state["supported"]
         if not connected or not self._file_service:
@@ -6293,6 +6323,10 @@ class RmeCompatibilityPlugin(
     def _firmware_state_changed(self, **changes):
         status = changes.get("status")
         with self._state_lock:
+            if self._state["firmware"].get("recovery_required"):
+                # A canceled worker may finish after emergency recovery was
+                # requested. Its cleanup cannot unlock an uncertain receiver.
+                changes.pop("recovery_required", None)
             self._state["firmware"].update(changes)
             recovery_required = bool(
                 self._state["firmware"].get("recovery_required")
@@ -6306,12 +6340,12 @@ class RmeCompatibilityPlugin(
             else:
                 error_to_clear = None
         now = time.monotonic()
-        if status != "uploading" or now - self._last_fw_publish >= 0.25:
+        if status != "uploading" or now - self._last_fw_publish >= 0.5:
             self._last_fw_publish = now
             self._persist_and_publish()
-        if status == "ready" and flash_after_stage:
+        if status == "ready" and flash_after_stage and not recovery_required:
             self._defer(self._flash_after_verified_stage)
-        elif status == "ready" or (status == "error" and not recovery_required):
+        elif status in ("ready", "error") and not recovery_required:
             self._defer(self._restore_session_after_upload)
         if error_to_clear and not recovery_required:
             timer = threading.Timer(

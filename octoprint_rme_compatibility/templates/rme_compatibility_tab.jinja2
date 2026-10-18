@@ -1,4 +1,11 @@
 <div class="rme-panel">
+    <nav class="rme-firmware-action-row" aria-label="RME workspace">
+        <button class="btn" data-bind="click: showLiveControls">Live controls</button>
+        <button class="btn" data-bind="click: function () { showRmeSection('filaments'); }">Filaments and spools</button>
+        <button class="btn" data-bind="click: function () { showRmeSection('storage'); }">Printer files</button>
+        <button class="btn" data-bind="click: function () { showRmeSection('firmware'); }">Firmware updates</button>
+    </nav>
+    {% include "rme_compatibility_transfer_recovery.jinja2" %}
     <section id="rme-print-controls" class="rme-card" data-bind="visible: tuneAvailable">
         <h4>RME print controls</h4>
         <p>Live printer state. Changes apply during printing without changing saved light profiles.</p>
@@ -110,7 +117,7 @@
     </div>
 
     <div class="rme-card">
-        <h4>Filament and tool state</h4>
+        <h4 id="rme-tab-filaments">Filament and tool state</h4>
         <p><span class="label" data-bind="css: {'label-success': spoolmanager().available, 'label-warning': !spoolmanager().available}, text: spoolmanagerStatus"></span></p>
         <p class="alert alert-info" data-bind="visible: externalSpoolProvider, text: spoolOwnershipText"></p>
         <ul data-bind="visible: internalSpoolProvider, foreach: publishedSpools">
@@ -179,6 +186,12 @@
     <div id="rme-tab-firmware" class="rme-card form-horizontal">
         {% include "rme_compatibility_firmware_controls.jinja2" %}
     </div>
+    <section id="rme-tab-storage" class="rme-card form-horizontal">
+        <h4><button type="button" class="btn" data-bind="click: function () { settingsStorageExpanded(!settingsStorageExpanded()); }, attr: {'aria-expanded': settingsStorageExpanded}">Printer files — show/hide</button></h4>
+        <!-- ko if: settingsStorageExpanded -->
+        {% include "rme_compatibility_storage_controls.jinja2" %}
+        <!-- /ko -->
+    </section>
 
     <div class="rme-card" data-bind="visible: hasMachine() && spooljoin().supported !== false">
         <h4>SpoolJoin — automatic fallback</h4>

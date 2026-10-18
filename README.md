@@ -142,7 +142,7 @@ underlying operation and persisted state are equivalent.
   and `/plugin/rme_compatibility/filament-report` aliases so OrcaSlicer and other
   clients can poll active tool, mapping, material/color loadout, available
   inventory, selected spools, and firmware statistics with an OctoPrint API key.
-- Integrates the current RME firmware's sandboxed `/usb` filesystem in Settings:
+- Integrates the current RME firmware's sandboxed `/usb` filesystem in **RME → Printer files**:
   browse directories, download files through authenticated OctoPrint, upload
   with negotiated raw binary frames when firmware advertises `binary=1`
   (otherwise pipelined bulk or acknowledged text transport), SHA-256 atomic
@@ -194,10 +194,10 @@ chunks; retry the command after the transfer completes.
 
 ## Remote prompts and recovery
 
-Live firmware state, tool mapping, and firmware action dialogs are rendered in
-the **RME** tab. Routine configuration, inventory synchronization, remote
-controls, and firmware update operations live in **Settings → RME
-Compatibility**, keeping the main tab focused on status and telemetry.
+Use **Control** for live print adjustments; **RME** for firmware state, filament
+mapping, printer files, firmware updates, and transfer recovery; and
+**Settings → RME Compatibility** for saved defaults and discovery policy.
+The RME navigation buttons take you directly to each operational section.
 This includes MMU loading/errors, filament runout, filament-not-moving and
 flow-pressure-limit faults, stuck filament, tool-change
 or pickup failures, purge-bucket/waste-bin warnings, and any future RME dialog
@@ -367,6 +367,13 @@ For a legacy candidate without that cache it returns `state=validating`, hashes
 in small background slices while normal serial traffic continues, and later
 emits the authoritative ready/error result. The UI remains in **verifying**
 until that terminal result arrives.
+
+If an upload stalls, **RME → Transfer and recovery** and the RME top-bar menu
+offer **Stop and disconnect**. It cancels local writers and closes the printer
+connection without injecting ASCII into a potentially raw receiver. Power-cycle
+the printer before confirming the reboot or reconnecting. The source and durable
+partial are kept; use **Resume upload** or **Discard printer partial** after a
+safe reconnection. Do not send terminal commands into an uncertain receiver.
 
 ## Development
 

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Add Stop and disconnect recovery for stalled transfers, retaining the source
+  and durable partial. Keep transmission locked until reboot/reconnect evidence;
+  late worker cleanup cannot clear that lock. Cancel now also handles canceling
+  and queued firmware transfers consistently.
+- Put transfer recovery at the top of RME and in its top-bar menu. Keep Resume
+  and Discard next to firmware errors, enabled only after safe reconnection.
+- Separate the UI: Control for live print adjustments, RME for filament/files/
+  firmware operations, Settings for saved defaults. Remove duplicate operational
+  panels from Settings and keep file lists lazy-loaded on the RME page.
+- Coalesce pending WebSocket snapshots to the latest state per browser frame
+  and limit firmware progress broadcasts to twice per second; explicit command
+  responses remain immediate. Real-browser performance still needs confirmation.
+- Validation: 303 Python tests (four skipped) and eleven JavaScript suites,
+  including full workspace/Settings bindings, recovery controls and a 100-frame
+  state burst. The original on-printer upload failure remains undiagnosed.
 - Avoid forcing a complete temperature-graph redraw on unrelated RME state
   updates. Native temperature samples retain their usual plot updates, and
   head changes still redraw. The reported Settings-opening delay needs an

@@ -1677,6 +1677,34 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual("idle", persisted["status"])
         self.assertIsNone(persisted["error"])
 
+    def test_emergency_transfer_stop_disconnects_and_keeps_recovery_data(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+        plugin._logger = logging.getLogger("recovery-stop-test")
+        plugin._persist_and_publish = lambda: None
+        canceled = []
+        plugin._file_service = types.SimpleNamespace(
+            cancel=lambda: canceled.append("cancel"), reset=lambda reason: canceled.append(reason),
+        )
+        partial = {"remote_path": "FWUPD.BBF", "source_available": True, "status": "transferring", "recovery_active": True}
+        plugin._state["storage"]["partial"] = partial
+        plugin._state["firmware"].update(status="canceling", flash_after_stage=True)
+        plugin._stop_transfer_for_recovery()
+        self.assertEqual(1, plugin._printer.disconnect_calls)
+        self.assertEqual([], plugin._printer.command_batches)
+        self.assertEqual("cancel", canceled[0])
+        self.assertTrue(plugin._firmware_file_cancel.is_set())
+        self.assertTrue(plugin._state["firmware"]["recovery_required"])
+        self.assertFalse(plugin._state["firmware"]["flash_after_stage"])
+        self.assertEqual("interrupted", partial["status"])
+        self.assertTrue(partial["source_available"])
+        self.assertFalse(partial["recovery_active"])
+        with self.assertRaisesRegex(Exception, "Printer reboot required"):
+            plugin._require_storage()
+        plugin._defer = lambda *args: None
+        plugin._firmware_state_changed(status="error", error="cancelled", recovery_required=False)
+        self.assertTrue(plugin._state["firmware"]["recovery_required"], "late worker cleanup must not unlock raw mode")
+
     def test_uncertain_binary_transport_unlocks_after_line_mode_reconnect(self):
         plugin = RmeCompatibilityPlugin()
         plugin._printer = _Printer()
@@ -1737,7 +1765,8 @@ class ToolmapGateTests(unittest.TestCase):
         ) as template_file:
             settings_template = template_file.read()
         shared_firmware = "rme_compatibility_firmware_controls.jinja2"
-        self.assertIn('{% include "' + shared_firmware + '" %}', settings_template)
+        self.assertNotIn('{% include "' + shared_firmware + '" %}', settings_template)
+        self.assertIn("showRmeSection('firmware')", settings_template)
         with open("octoprint_rme_compatibility/templates/" + shared_firmware) as template_file:
             settings_template += template_file.read()
         self.assertIn("Plugin status", settings_template)
@@ -1759,7 +1788,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("Unstage from printer", settings_template)
         self.assertIn("Saved lighting", settings_template)
         self.assertIn("Printer lock", settings_template)
-        self.assertIn("Printer USB storage", settings_template)
+        self.assertIn("Files and firmware", settings_template)
         self.assertNotIn("stats_poll_interval", settings_template)
         self.assertNotIn("Poll supported firmware every", settings_template)
         self.assertNotIn("spoolmanager_sync_interval", settings_template)
@@ -1850,6 +1879,10 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn('self.command("storage_download"', javascript)
         self.assertIn("storage/downloads/", javascript)
         self.assertIn("installFileManagerBridge", javascript)
+        with open("octoprint_rme_compatibility/templates/rme_compatibility_storage_controls.jinja2") as template_file:
+            storage_template = template_file.read()
+        settings_template += storage_template
+        self.assertIn("rme_compatibility_storage_controls.jinja2", main_tab)
         self.assertIn("Download to Pi", settings_template)
         self.assertIn("Download to device", settings_template)
         self.assertIn('class="rme-storage-actions"', settings_template)
@@ -1871,7 +1904,7 @@ class ToolmapGateTests(unittest.TestCase):
         ) as template_file:
             tab_template = template_file.read()
         self.assertIn("RME printer statistics", tab_template)
-        self.assertNotIn("Firmware update", tab_template)
+        self.assertIn("Firmware updates", tab_template)
         self.assertNotIn("RME printer controls", tab_template)
         self.assertIn('"plugin/rme_compatibility/firmware"', javascript)
         with open(

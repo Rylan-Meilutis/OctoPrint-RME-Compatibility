@@ -1,4 +1,8 @@
 <form class="form-horizontal">
+    <h3>RME saved defaults</h3>
+    <p>Configure saved behavior here. Live print controls are in Control; filament mapping, files, firmware updates and transfer recovery are on the RME page.</p>
+    <p><button type="button" class="btn" data-bind="click: showLiveControls">Open live controls</button>
+       <button type="button" class="btn" data-bind="click: function () { showRmeSection('filaments'); }">Open RME workspace</button></p>
     <div class="control-group">
         <label class="control-label">Auto PA mode</label>
         <div class="controls">
@@ -139,88 +143,12 @@
         </div>
     </div>
     <hr>
-    <h4><button type="button" class="btn" data-bind="click: function () { settingsStorageExpanded(!settingsStorageExpanded()); }, attr: {'aria-expanded': settingsStorageExpanded}">Printer USB storage — show/hide</button></h4>
-    <!-- ko if: settingsStorageExpanded -->
-    <p>Browse and manage the firmware-exported <code>/usb</code> volume. RME confines every operation to this user-visible storage root.</p>
-    <div class="control-group">
-        <label class="control-label">Current directory</label>
-        <div class="controls">
-            <code data-bind="text: storage().path || '/'"></code>
-            <span class="label" data-bind="css: {'label-success': storage().supported, 'label-warning': !storage().supported}, text: storageStatus"></span>
-            <button type="button" class="btn btn-mini" data-bind="click: refreshStorage, enable: state().supported">Refresh</button>
-            <button type="button" class="btn btn-mini" data-bind="click: storageParent, visible: storageParentVisible">Up</button>
-            <button type="button" class="btn btn-mini" data-bind="click: storageMkdir, enable: storage().supported">New folder…</button>
-        </div>
-    </div>
-    <div class="control-group">
-        <label class="control-label">Upload</label>
-        <div class="controls">
-            <input type="file" data-bind="event: {change: chooseStorageUpload}">
-            <button type="button" class="btn" data-bind="click: uploadStorage, enable: pendingStorageUpload">Upload to current directory</button>
-            <p class="help-block">Uploads negotiate the fastest safe RME FILE mode, pipeline bulk chunks when supported, verify SHA-256, and atomically rename the <code>.rme-part</code> file.</p>
-        </div>
-    </div>
-    <div class="alert alert-info" data-bind="visible: partialTransfer">
-        <strong>Interrupted printer upload available.</strong>
-        <span data-bind="text: partialTransferSummary"></span>
-        <div>
-            <button type="button" class="btn btn-primary" data-bind="click: resumePartialTransfer, enable: partialTransfer() && partialTransfer().source_available">Resume</button>
-            <button type="button" class="btn" data-bind="click: deferPartialTransfer, enable: !partialRecoveryActive()">Defer recovery</button>
-            <button type="button" class="btn" data-bind="click: discardPartialTransfer">Discard partial</button>
-        </div>
-        <span class="text-error" data-bind="visible: partialTransfer() && partialTransfer().error, text: partialTransfer() && partialTransfer().error"></span>
-    </div>
-    <div class="control-group">
-        <label class="control-label">Lost-manifest cleanup</label>
-        <div class="controls">
-            <input type="text" placeholder="jobs/original-name.bgcode" data-bind="value: partialCleanupPath, enable: !partialTransfer()">
-            <button type="button" class="btn" data-bind="click: cleanupNamedPartial, enable: partialCleanupPath() && !partialTransfer()">Clean exact partial…</button>
-            <p class="help-block">If the host manifest was lost, enter the original final USB path. The plugin probes and removes only its derived <code>.rme-part</code> and <code>.rme-meta</code> siblings. It never scans hidden files, parses metadata, or deletes <code>.rme-old</code>.</p>
-        </div>
-    </div>
-    <table class="table table-condensed rme-storage-table" data-bind="visible: storage().supported">
-        <thead><tr><th>Name</th><th>Type/size</th><th>Actions</th></tr></thead>
-        <tbody data-bind="foreach: storageEntries"><tr>
-            <td>
-                <a href="#" data-bind="visible: type === 'dir', text: name, click: $parent.storageOpen"></a>
-                <span data-bind="visible: type !== 'dir', text: name"></span>
-            </td>
-            <td data-bind="text: $parent.storageFileSize($data)"></td>
-            <td><div class="rme-storage-actions">
-                <div class="rme-action-group">
-                    <button type="button" class="btn btn-mini" data-bind="visible: type === 'file', click: $parent.storageDownloadToPi">Download to Pi</button>
-                    <button type="button" class="btn btn-mini" data-bind="visible: type === 'file', click: $parent.storageDownloadToDevice">Download to device</button>
-                    <button type="button" class="btn btn-mini" data-bind="visible: $parent.storageCanPrint($data), click: $parent.storagePrint">Print…</button>
-                    <button type="button" class="btn btn-mini btn-danger" data-bind="visible: $parent.storageCanFlash($data), click: $parent.storageFlash">Flash…</button>
-                </div>
-                <div class="rme-action-group rme-action-group-secondary">
-                    <button type="button" class="btn btn-mini" data-bind="click: $parent.storageRename">Rename…</button>
-                    <button type="button" class="btn btn-mini" data-bind="click: $parent.storageMove">Move…</button>
-                    <button type="button" class="btn btn-mini btn-danger" data-bind="click: $parent.storageDelete">Delete…</button>
-                </div>
-            </div></td>
-        </tr></tbody>
-    </table>
-    <div data-bind="visible: storageDownloadJob().id">
-        <div class="progress progress-striped" data-bind="css: {active: storageDownloadActive}">
-            <div class="bar" data-bind="style: {width: storageDownloadWidth}"></div>
-        </div>
-        <p class="help-block" data-bind="text: storageDownloadSummary, css: {'text-error': storageDownloadJob().status === 'error'}"></p>
-    </div>
-    <div data-bind="visible: storageDownloads().length">
-        <h5>Files stored on this Pi</h5>
-        <table class="table table-condensed">
-            <tbody data-bind="foreach: storageDownloads"><tr>
-                <td data-bind="text: name"></td>
-                <td data-bind="text: $parent.storageFileSize({type: 'file', size: size})"></td>
-                <td><button type="button" class="btn btn-mini" data-bind="click: $parent.downloadCachedStorageFile">Download to device</button></td>
-            </tr></tbody>
-        </table>
-    </div>
-    <p class="help-block" data-bind="visible: storage().supported && !storageEntries().length">This directory is empty.</p>
+    <h4>Files and firmware</h4>
+    <p>Operational tools now live together on the RME page.</p>
+    <button type="button" class="btn" data-bind="click: function () { showRmeSection('storage'); }">Open printer files</button>
+    <button type="button" class="btn" data-bind="click: function () { showRmeSection('firmware'); }">Open firmware updates</button>
     <hr>
-    <!-- /ko -->
-    <h4><button type="button" class="btn" data-bind="click: function () { settingsPrinterExpanded(!settingsPrinterExpanded()); }, attr: {'aria-expanded': settingsPrinterExpanded}">Printer settings — show/hide</button></h4>
+    <h4><button type="button" class="btn" data-bind="click: function () { settingsPrinterExpanded(!settingsPrinterExpanded()); }, attr: {'aria-expanded': settingsPrinterExpanded}">Saved printer defaults — show/hide</button></h4>
     <!-- ko if: settingsPrinterExpanded -->
     <p>These controls edit settings exposed by the connected RME firmware. Revision events refresh changed settings after saving or front-panel edits.</p>
     <p>
@@ -286,16 +214,6 @@
         </div>
     </div>
     <div class="control-group">
-        <label class="control-label">Print lighting</label>
-        <div class="controls">
-            <p data-bind="text: currentLightsText"></p>
-            <label>LCD <input type="range" min="0" max="100" data-bind="value: lightScreen"> <span data-bind="text: lightScreen"></span>%</label>
-            <label>Chamber <input type="range" min="0" max="100" data-bind="value: lightChamber"> <span data-bind="text: lightChamber"></span>%</label>
-            <label>Status <input type="range" min="0" max="100" data-bind="value: lightStatus"> <span data-bind="text: lightStatus"></span>%</label>
-            <button type="button" class="btn" data-bind="click: applyLights, enable: state().supported">Apply temporary print values</button>
-        </div>
-    </div>
-    <div class="control-group">
         <label class="control-label">Saved lighting</label>
         <div class="controls">
             <table class="table table-condensed rme-light-table">
@@ -314,9 +232,5 @@
         </div>
     </div>
     <hr>
-    <!-- /ko -->
-    <h4><button type="button" class="btn" data-bind="click: function () { settingsFirmwareExpanded(!settingsFirmwareExpanded()); }, attr: {'aria-expanded': settingsFirmwareExpanded}">Firmware files and flashing — show/hide</button></h4>
-    <!-- ko if: settingsFirmwareExpanded -->
-    {% include "rme_compatibility_firmware_controls.jinja2" %}
     <!-- /ko -->
 </form>

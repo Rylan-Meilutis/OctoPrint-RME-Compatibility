@@ -1048,6 +1048,13 @@ $(function () {
             var partial = self.partialTransfer();
             return !!partial && partial.recovery_active === true;
         });
+        self.transferRecoveryVisible = ko.pureComputed(function () {
+            return self.firmwareBusy() || !!self.partialTransfer() || self.transportRecoveryRequired() || !!self.firmwareError();
+        });
+        self.canRecoverPartial = ko.pureComputed(function () {
+            return self.state().connected && self.state().supported && !self.transportRecoveryRequired() &&
+                !self.firmwareBusy() && !self.partialRecoveryActive();
+        });
         self.partialTransferSummary = ko.pureComputed(function () {
             var partial = self.partialTransfer();
             if (!partial) return "";
@@ -1093,9 +1100,10 @@ $(function () {
         });
         self.canStage = ko.pureComputed(function () {
             return !!self.selectedFirmware() && self.state().supported &&
+                !self.transportRecoveryRequired() && !self.partialTransfer() &&
                 !self.firmwareBusy() && ["flash_queued", "flashing", "restarting"].indexOf(self.firmware().status) < 0;
         });
-        self.canFlash = ko.pureComputed(function () { return ["ready", "staged"].indexOf(self.firmware().status) >= 0; });
+        self.canFlash = ko.pureComputed(function () { return !self.transportRecoveryRequired() && ["ready", "staged"].indexOf(self.firmware().status) >= 0; });
         self.canUnstage = ko.pureComputed(function () { return ["ready", "staged"].indexOf(self.firmware().status) >= 0; });
 
         self.hasMachine = ko.pureComputed(function () {
@@ -1175,6 +1183,8 @@ $(function () {
         };
         self.acceptState = function (value) {
             if (!value) return;
+            // An explicit command response supersedes any older queued frame.
+            self.pendingStateSnapshot = null;
             // JSON snapshots create new objects even for unchanged files/spools.
             // Preserve their identities so KO does not destroy/rebind whole lists
             // on every tune/temperature update, including hidden Settings tables.
@@ -1449,6 +1459,22 @@ $(function () {
             self.command(command, {path: entry.path});
         };
         self.cancelFirmware = function () { self.command("cancel_firmware"); };
+        self.recoverTransfer = function () {
+            if (window.confirm("Stop RME transfers and disconnect? The uploaded source is kept. Power-cycle the printer before reconnecting or confirming recovery.")) {
+                self.command("recover_transfer");
+            }
+        };
+        self.showRmeSection = function (section) {
+            $("#settings_dialog").modal("hide");
+            self.showRmeTab();
+            if (section === "storage") self.settingsStorageExpanded(true);
+            var target = document.getElementById("rme-tab-" + section);
+            if (target && target.scrollIntoView) target.scrollIntoView({block: "start"});
+        };
+        self.showLiveControls = function () {
+            $("#settings_dialog").modal("hide");
+            $("a[href='#control']").tab("show");
+        };
         self.unstageFirmware = function () {
             if (window.confirm("Remove the staged firmware from the printer? The BBF stored on this Pi will be kept.")) {
                 self.command("unstage_firmware");
@@ -1916,7 +1942,18 @@ $(function () {
                     type: data.retry_notice.error ? "error" : "success"});
                 return;
             }
-            if (plugin === "rme_compatibility") self.acceptState(data);
+            if (plugin === "rme_compatibility") {
+                self.pendingStateSnapshot = data;
+                if (!self.stateFrameScheduled) {
+                    self.stateFrameScheduled = true;
+                    (window.requestAnimationFrame || function (callback) { return window.setTimeout(callback, 16); })(function () {
+                        self.stateFrameScheduled = false;
+                        var latest = self.pendingStateSnapshot;
+                        self.pendingStateSnapshot = null;
+                        if (latest) self.acceptState(latest);
+                    });
+                }
+            }
             if (plugin === "cancelobject" && Array.isArray(data.objects)) {
                 self.cancelObjects(data.objects.filter(function (o) { return !o.ignore; }));
             }
