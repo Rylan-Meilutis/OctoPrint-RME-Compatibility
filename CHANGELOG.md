@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b125 — 2026-10-17
 
 - Saving a native SpoolManager New Spool opened from an RME machine slot now
   assigns the saved spool to that slot and synchronizes the machine. Refresh
