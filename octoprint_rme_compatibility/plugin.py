@@ -3260,7 +3260,12 @@ class RmeCompatibilityPlugin(
             r"^PA_CALIBRATION\s+(?:cached\s+result=|anchor\s+slot\s+cleared=|tool=\d+\s+slot=\d+\s+(?:result|fallback)=)",
             line, re.IGNORECASE,
         )
-        if not accepted and not terminal and not single_result:
+        temperature_point = re.match(
+            r"^PA_CALIBRATION\s+temperature_point\s+tool=(\d+)\s+slot=(\d+)"
+            r"\s+temperature=(\d+)\s+point=(\d+)\s+points=(\d+)(?:\s|$)",
+            line, re.IGNORECASE,
+        )
+        if not accepted and not terminal and not single_result and not temperature_point:
             return
         changed = False
         with self._state_lock:
@@ -3275,7 +3280,18 @@ class RmeCompatibilityPlugin(
             if single_result and not self._auto_pa_batch:
                 terminal = True
             workflow = self._state.get("workflow") or {}
-            if accepted and workflow.get("workflow") == "pressure_advance":
+            if temperature_point and workflow.get("workflow") == "pressure_advance":
+                tool, slot, temperature, point, points = map(int, temperature_point.groups())
+                if 0 <= tool < 8 and 0 <= slot < 8 and 170 <= temperature <= 300 and 1 <= point <= points <= 8:
+                    workflow = dict(workflow)
+                    workflow.update(
+                        message="Auto PA: Tool %d, %d°C (temperature %d/%d)" % (
+                            tool + 1, temperature, point, points),
+                        received_at=int(time.time()),
+                    )
+                    self._state["workflow"] = workflow
+                    changed = True
+            elif accepted and workflow.get("workflow") == "pressure_advance":
                 workflow = dict(workflow)
                 workflow.update(
                     progress=max(2, int(workflow.get("progress", 0) or 0)),

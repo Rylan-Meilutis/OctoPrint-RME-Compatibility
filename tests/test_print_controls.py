@@ -6,6 +6,26 @@ from octoprint_rme_compatibility.protocol import parse_line
 
 
 class PrintControlsTests(unittest.TestCase):
+    def test_temperature_plan_keeps_parent_workflow_through_all_points(self):
+        plugin = self.plugin()
+        plugin._schedule_publish = lambda: None
+        plugin._state.update(connected=True, supported=True)
+        command = "M976 A 0:0:HIPS:250/240"
+        self.assertIsNone(plugin.gcode_queuing_hook(None, "queuing", command, None, "M976", tags={"source:job"}))
+        plugin.gcode_sent_hook(None, "sent", command, None, "M976")
+        plugin._observe_pressure_advance_output("PA_CALIBRATION batch accepted entries=1")
+        for point, temperature in ((1, 250), (2, 240)):
+            plugin._observe_pressure_advance_output(
+                "PA_CALIBRATION temperature_point tool=0 slot=0 temperature=%d point=%d points=2" % (temperature, point))
+            self.assertTrue(plugin._auto_pa_active)
+            self.assertIn("%d°C" % temperature, plugin._state["workflow"]["message"])
+            self.assertIn("%d/2" % point, plugin._state["workflow"]["message"])
+            plugin._observe_pressure_advance_output("PA_CALIBRATION tool=0 slot=0 result=0.046 max_flow=12 confidence=0.81")
+            self.assertTrue(plugin._auto_pa_active)
+        plugin._observe_pressure_advance_output("PA_CALIBRATION batch complete entries=1")
+        self.assertFalse(plugin._auto_pa_active)
+        self.assertIsNone(plugin._state["workflow"])
+
     def test_operator_chamber_target_is_live_only_with_capability(self):
         plugin = self.plugin()
         plugin._state.update(supported=True)

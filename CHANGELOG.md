@@ -1620,3 +1620,10 @@ First development release.
 - Added acknowledged BBF upload, printer-side verification, and explicit
   bootloader flashing.
 - Added Stable (`main`) and Beta (`beta`) OctoPrint update channels.
+# 0.1.0b131
+
+- Keep multi-temperature Auto PA under one calibration workflow and show the
+  current tool, temperature and temperature-point number from firmware output.
+- Preserve slash-separated temperature manifests unchanged; inspection queries
+  remain read-only and do not replace an active calibration workflow.
+
