@@ -135,8 +135,16 @@ $(function () {
                 if (RmePassiveTools.isIndx(self.state())) parameters[4].hasChamber(true);
                 return result;
             };
+            var plotPresentationKey = null;
             self.state.subscribe(function (state) {
-                if (RmePassiveTools.isIndx(state)) parameters[4].hasChamber(true);
+                var indx = RmePassiveTools.isIndx(state);
+                if (indx) parameters[4].hasChamber(true);
+                var key = indx ? "indx:" + String((state.active_tool || {}).physical) : "native";
+                if (key === plotPresentationKey) return;
+                plotPresentationKey = key;
+                // OctoPrint already plots incoming temperature samples. Only
+                // redraw here when RME changes which physical head is shown;
+                // inventory, progress and settings snapshots are not samples.
                 parameters[4].updatePlot();
             });
         }

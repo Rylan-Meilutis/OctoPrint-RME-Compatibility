@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Avoid forcing a complete temperature-graph redraw on unrelated RME state
+  updates. Native temperature samples retain their usual plot updates, and
+  head changes still redraw. The reported Settings-opening delay needs an
+  installed-browser timing check; this is not a confirmed complete fix.
+
 ## 0.1.0b125 — 2026-10-17
 
 - Saving a native SpoolManager New Spool opened from an RME machine slot now
