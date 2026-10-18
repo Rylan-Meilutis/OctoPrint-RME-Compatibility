@@ -3735,6 +3735,13 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual(["Continue", "Unload", "Abort"], plugin._state["prompt"]["actions"])
 
         plugin._defer = lambda callback, *args: None
+        plugin._handle_record({
+            "record": "event", "seq": 4, "type": "workflow",
+            "workflow": "filament_runout", "state": "closed",
+            "message": "Extrusion recovery ended",
+        })
+        self.assertIsNone(plugin._state["prompt"])
+        plugin._state["prompt"] = {"kind": "firmware", "actions": ["Continue"]}
         plugin.on_event(Events.PRINT_CANCELLED, {})
         self.assertIsNone(plugin._state["workflow"])
         self.assertIsNone(plugin._state["prompt"])
