@@ -6,6 +6,9 @@ $(function () {
     function RmeCompatibilityViewModel(parameters) {
         var self = this;
         self.settings = parameters[0];
+        if (typeof RmeUiPerformance !== "undefined") {
+            RmeUiPerformance.installStableProfileUpdates(self.settings.printerProfiles, ko);
+        }
         self.loginState = parameters[1];
         self.printerState = parameters[2];
         self.files = parameters[3];

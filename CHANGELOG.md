@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- Fix a reproduced multi-second Settings-opening stall in the restored
+  OctoPrint 1.11.8/SpoolManager 1.7.8 setup. Settings refreshes printer profiles;
+  an unchanged mapped profile used to notify every subscriber again, triggering
+  a sidebar rebuild and repeated shared Quill-editor updates for read-only
+  spools. Suppress only identical complete profile values. Real profile edits
+  and explicit notifications still propagate; do not override another plugin's
+  custom comparer, and preserve native behavior if serialization fails.
+- Verify the integrated asset in a real isolated OctoPrint server using the
+  backup's 23-spool database, saved RME state and UI Customizer/Cyborg settings,
+  plus the active plugins with Settings-opening hooks. At 4x CPU throttling,
+  the worst event-loop gap fell from 5,912 ms to 563 ms, with no injected
+  workaround. No stored credentials or printer connections were restored.
+- Extend Chromium tooling to profile the actual modal manager, real Settings
+  hooks and local request timings. Add regressions for unchanged mapped
+  profiles, real tool/offset/envelope/speed edits, explicit notifications,
+  duplicate installation and serialization fallback. 303 Python tests (four
+  skipped) and all twelve JavaScript suites pass.
+
 ## 0.1.0b127 — 2026-10-17
 
 - Profile the populated UI in real headless Chromium using OctoPrint's jQuery,

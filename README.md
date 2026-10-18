@@ -3,6 +3,9 @@
 Firmware discovery: [GitHub releases and verified Pi downloads](docs/firmware-releases.md).
 
 UI performance: [reproducible headless Chromium profiles](docs/ui-performance.md).
+The Settings-opening integration skips identical printer-profile notifications
+that would otherwise trigger unnecessary SpoolManager sidebar/editor rebuilds.
+Actual tool, offset and volume changes continue to propagate normally.
 
 Print setup: [per-print tool mapping, fallback spools and Auto PA](docs/print-preparation.md).
 Reported pause reasons appear above OctoPrint's main progress bar and in the
