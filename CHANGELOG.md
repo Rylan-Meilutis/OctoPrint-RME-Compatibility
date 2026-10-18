@@ -1,12 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b129 — 2026-10-18
 
 - Include loadcell runout in recovery-action queries and retain its physical
   cause during intervening parking/tool-change/heating messages. Matching
   firmware enables the confirmation on INDX without a discrete extruder
   filament sensor, aligns Continue/Unload/Abort with the handler, and
   reannounces the fault only after its prompt is actionable.
+- Verify that the parent's recovery-completion event clears the host actions.
+  Validation: 303 Python tests (four skipped) and twelve JavaScript UI suites.
+  Install the matching updated firmware for the INDX confirmation fix.
 
 ## 0.1.0b128 — 2026-10-17
 
