@@ -1875,7 +1875,7 @@ class RmeCompatibilityPlugin(
             else:
                 self._set_active_tool(logical_tool)
         if (supported and re.match(r"^\s*M976(?:\s|$)", str(cmd or ""), re.IGNORECASE)
-                and not re.search(r"(?:^|\s)W(?:\d|\s|$)", str(cmd or ""), re.IGNORECASE)):
+                and not re.search(r"(?:^|\s)(?:W(?:\d|\s|$)|I(?=\s|$))", str(cmd or "").split(";", 1)[0], re.IGNORECASE)):
             self._start_pressure_advance_workflow(batch=bool(re.search(
                 r"(?:^|\s)[AK](?:\s|\d|$)", str(cmd).split(";", 1)[0], re.IGNORECASE
             )))

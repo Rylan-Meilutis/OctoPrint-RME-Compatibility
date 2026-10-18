@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0b130 — 2026-10-18
+
+- Treat the new firmware `M976 I` Auto PA diagnostics as read-only inspection,
+  not the start of a calibration workflow. Queries also leave an existing
+  calibration workflow intact.
+- Matching firmware reports last-attempt failure reasons and measurements,
+  plus an idle INDX flash-cache eligibility check (`M976 I L0 S240`).
+  Attempt history is RAM-only; accepted INDX cache records survive reboot.
+
 ## 0.1.0b129 — 2026-10-18
 
 - Include loadcell runout in recovery-action queries and retain its physical

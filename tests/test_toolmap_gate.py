@@ -3808,6 +3808,20 @@ class ToolmapGateTests(unittest.TestCase):
             None, "M976", tags={"source:job"},
         ))
 
+    def test_pa_inspection_does_not_open_or_replace_calibration_workflow(self):
+        for command in ("M976 I", "M976 I T0", "M976 L0 I S240 ; inspect cache"):
+            plugin = RmeCompatibilityPlugin()
+            plugin._schedule_publish = lambda: None
+            plugin._state.update(connected=True, supported=True)
+            plugin.gcode_sent_hook(None, "sent", command, None, "M976")
+            self.assertFalse(plugin._auto_pa_active)
+            self.assertIsNone(plugin._state["workflow"])
+            plugin._start_pressure_advance_workflow(batch=True)
+            original = dict(plugin._state["workflow"])
+            plugin.gcode_sent_hook(None, "sent", command, None, "M976")
+            self.assertTrue(plugin._auto_pa_active)
+            self.assertEqual(original, plugin._state["workflow"])
+
     def test_sent_m976_creates_parent_workflow_until_batch_completes(self):
         plugin = RmeCompatibilityPlugin()
         plugin._schedule_publish = lambda: None
