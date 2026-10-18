@@ -848,6 +848,24 @@ class ToolmapGateTests(unittest.TestCase):
             self.assertTrue(any("M865 U%d L%d" % (tool, tool) in command for command in assignments))
         self.assertIn('M865 X R N"PLA-008" J"PLA" T215 P175 B60 G0 L7 O"#0073ff"', assignments)
         self.assertTrue(assignments[-1] == "M865 Q")
+        plugin._defer = lambda callback, *args: None
+        plugin._handle_record({"record": "loaded_filament", "tool": 7,
+                               "material": "PLA-008", "profile": "PLA-008",
+                               "material_family_reported": True,
+                               "color_name": "Blue", "color": "#0073ff"})
+        loaded = next(item for item in plugin._state["loaded_filaments"] if item["tool"] == 7)
+        self.assertEqual("PLA", loaded["material"])
+        self.assertEqual("PLA", loaded["firmware_material"])
+        self.assertEqual(8, loaded["database_id"])
+        # A b126 state restored after upgrading has no assigned_profiles.
+        plugin._state["spoolmanager"].pop("assigned_profiles")
+        plugin._handle_record({"record": "loaded_filament", "tool": 7,
+                               "material": "PLA-008", "profile": "PLA-008",
+                               "material_family_reported": True,
+                               "color_name": "Blue", "color": "#0073ff"})
+        loaded = next(item for item in plugin._state["loaded_filaments"] if item["tool"] == 7)
+        self.assertEqual("PLA", loaded["material"])
+        self.assertEqual(8, loaded["database_id"])
 
     def test_external_provider_preserves_unselected_firmware_material(self):
         record = {
@@ -1840,7 +1858,8 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("Select spool…", javascript)
         self.assertIn("self.mappingSelectionLabel", javascript)
         self.assertIn("self.chooseMappingSpool", javascript)
-        self.assertIn("foreach: availableSpools", javascript)
+        self.assertIn("foreach: visibleSpools", javascript)
+        self.assertIn("Search all matching spools", javascript)
         self.assertIn("var internalAlias", javascript)
         self.assertNotIn("if (filament.display_name) details.push(filament.display_name)", javascript)
         self.assertIn("installSpoolManagerPanel", javascript)

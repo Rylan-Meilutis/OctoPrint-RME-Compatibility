@@ -2024,6 +2024,19 @@ $(function () {
                 });
                 return matching;
             });
+            row.search = ko.observable("");
+            row.choiceLimit = ko.observable(30);
+            row.filteredSpools = ko.pureComputed(function () {
+                var query = row.search().trim().toLowerCase();
+                return row.availableSpools().filter(function (spool) {
+                    return !query || [spool.display_name, spool.material, spool.vendor,
+                        spool.color_name, spool.database_id].join(" ").toLowerCase().indexOf(query) >= 0;
+                });
+            });
+            row.visibleSpools = ko.pureComputed(function () { return row.filteredSpools().slice(0, row.choiceLimit()); });
+            row.moreSpools = ko.pureComputed(function () { return row.filteredSpools().length > row.choiceLimit(); });
+            row.showMore = function () { row.choiceLimit(row.choiceLimit() + 30); };
+            row.search.subscribe(function () { row.choiceLimit(30); });
             return row;
         }
 
@@ -2131,8 +2144,11 @@ $(function () {
                 '<div class="rme-routing-cards" data-bind="foreach: spoolSelectionRows"><section class="rme-route-card" data-bind="css: {\'rme-spool-mapping-dirty\': dirty}">' +
                 '<div class="rme-route-source"><span class="rme-spool-swatch" data-bind="style: {backgroundColor: $root.mappingColor(loaded && loaded.color)}"></span><strong data-bind="text: \'T\' + tool"></strong> ' +
                 '<span data-bind="text: $root.loadedFilamentLabel(loaded)"></span><span class="rme-route-arrow">→</span><span data-bind="text: $root.mappingSelectionLabel($data)"></span></div>' +
-                '<div class="rme-route-choices" data-bind="foreach: availableSpools"><button type="button" class="btn rme-tool-choice" data-bind="css: {selected: String($parent.selected()) === String(database_id)}, attr: {\'aria-pressed\': String($parent.selected()) === String(database_id)}, click: function() {$root.chooseMappingSpool($parent, $data);}">' +
+                '<label>Search all matching spools <input type="search" data-bind="textInput: search" placeholder="Name, brand, color or spool ID"></label>' +
+                '<small data-bind="text: visibleSpools().length + \' shown / \' + filteredSpools().length + \' matching spools\'"></small>' +
+                '<div class="rme-route-choices" data-bind="foreach: visibleSpools"><button type="button" class="btn rme-tool-choice" data-bind="css: {selected: String($parent.selected()) === String(database_id)}, attr: {\'aria-pressed\': String($parent.selected()) === String(database_id)}, click: function() {$root.chooseMappingSpool($parent, $data);}">' +
                 '<span class="rme-spool-swatch" data-bind="style: {backgroundColor: $root.mappingColor($data.color)}"></span><span data-bind="text: $root.spoolLabel($data)"></span></button></div>' +
+                '<button type="button" class="btn btn-mini" data-bind="visible: moreSpools, click: showMore">Show 30 more</button>' +
                 '<p class="text-warning" data-bind="visible: !availableSpools().length">No matching spools, or loaded material is unknown. Refresh the printer loadout/inventory first.</p>' +
                 '<button class="btn btn-mini" data-bind="click: function() {selected(null); $root.changeSpoolSelection($data);}">Unassign</button> ' +
                 '<button class="btn btn-mini" data-bind="click: $root.createSpoolForMappingRow">Create new…</button></section></div>' +

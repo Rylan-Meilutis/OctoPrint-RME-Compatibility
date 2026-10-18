@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Profile the populated UI in real headless Chromium using OctoPrint's jQuery,
+  Knockout and PNotify. Add searchable, paged filament choices instead of
+  mounting the entire inventory for every tool. In the 1,000-spool/eight-tool
+  fixture, the DOM shrinks from about 24,800 to 1,400 elements. Under 4x CPU
+  throttling, 60 updates take 148 ms instead of 1,443 ms in JavaScript; no long
+  tasks occur in the fixed measured window. See docs/ui-performance.md for
+  methodology, limits and reproduction. The installed-site freeze still
+  requires a live browser capture to conclusively diagnose.
+- Resolve loaded-material labels through all eight assigned profiles, not only
+  the seven menu presets. Restore exact alias metadata from cached inventory
+  when upgrading an older state. This fixes the eighth PLA spool being shown
+  as Unassigned without changing the printer's material or provider selection.
 - Stop unchanged inventory snapshots from invalidating every tool's spool
   choices on routine telemetry or provider-status updates. A regression with
   eight tools and 1,000 spools previously triggered 800 unnecessary list

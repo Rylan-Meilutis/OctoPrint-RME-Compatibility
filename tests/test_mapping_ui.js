@@ -143,6 +143,9 @@ const {jQueryFactory} = require('jquery/factory');
     vm.acceptState = acceptState;
     vm.spoolSelectionRows([{tool: 0, loaded: {material: 'PLA', color: '#ffffff'},
         selected: ko.observable(null), dirty: ko.observable(false),
+        search: ko.observable(''), visibleSpools: ko.observableArray([{database_id: 1, material: 'PLA', display_name: 'White PLA'}]),
+        filteredSpools: ko.observableArray([{database_id: 1, material: 'PLA', display_name: 'White PLA'}]),
+        moreSpools: ko.observable(false), showMore: () => {},
         availableSpools: ko.observableArray([{database_id: 1, material: 'PLA', display_name: 'White PLA'}])}]);
     vm.showFilamentMapping();
     assert.equal(w.document.querySelector('#rme-spool-mapping-dialog'), null);

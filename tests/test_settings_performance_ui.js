@@ -71,6 +71,16 @@ const {jQueryFactory} = require('jquery/factory');
         spoolmanager: {provider: 'spoolmanager', inventory: Array.from({length: 1000}, (_, i) =>
             ({database_id: i + 1, material: 'PLA', display_name: 'Spool ' + i}))}};
     vm.acceptState(JSON.parse(JSON.stringify(inventoryState)));
+    const chooser = vm.spoolSelectionRows()[0];
+    assert.equal(chooser.availableSpools().length, 1000, 'all inventory remains available');
+    assert.equal(chooser.visibleSpools().length, 30, 'bound rendering is paged');
+    chooser.showMore();
+    assert.equal(chooser.visibleSpools().length, 60);
+    chooser.search('Spool 999');
+    assert.equal(chooser.visibleSpools().length, 1, 'search includes spools beyond the first page');
+    assert.equal(chooser.visibleSpools()[0].database_id, 1000);
+    chooser.search('');
+    assert.equal(chooser.visibleSpools().length, 30);
     let choiceUpdates = 0;
     const subscriptions = vm.spoolSelectionRows().map(row => row.availableSpools.subscribe(() => choiceUpdates++));
     for (let i = 0; i < 100; i++) {

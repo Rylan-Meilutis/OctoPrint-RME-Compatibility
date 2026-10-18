@@ -2398,11 +2398,26 @@ class RmeCompatibilityPlugin(
                 # seven-character alias identifies a published spool.
                 provider_match = next(
                     (
-                        item for item in self._state["spoolmanager"].get("published", [])
+                        item for item in (self._state["spoolmanager"].get("assigned_profiles", [])
+                                          + self._state["spoolmanager"].get("published", []))
                         if item.get("alias") == loadout.get("profile")
                     ),
                     None,
                 )
+                if provider_match is None:
+                    # Older persisted state has only the seven menu presets.
+                    # Resolve an exact, unique alias from cached inventory too;
+                    # never infer the loaded spool from material or selection.
+                    profile = loadout.get("profile", "")
+                    candidates = []
+                    if re.fullmatch(r"(?:[A-Z0-9]{1,3}-[0-9A-Z]{3}|S[0-9A-Z]{6})", profile):
+                        for item in self._state["spoolmanager"].get("inventory", []):
+                            alias = spool_alias(item["material"], item["database_id"])
+                            collision_alias = spool_alias(item["material"], item["database_id"], {alias})
+                            if profile in (alias, collision_alias):
+                                candidates.append(dict(item, alias=profile))
+                    if len(candidates) == 1:
+                        provider_match = candidates[0]
                 if provider_match:
                     # Some 6.8.1-RME builds echo the seven-character custom
                     # profile into both S and P even though FILAMENT SET was
@@ -4477,6 +4492,7 @@ class RmeCompatibilityPlugin(
                     "status": "synchronizing" if can_send else "ready; printer disconnected",
                     "inventory": inventory,
                     "published": published,
+                    "assigned_profiles": assigned_profiles,
                     "selected": selected,
                     "pending_new": pending,
                     "pending_new_queue": pending_queue,
@@ -5098,7 +5114,8 @@ class RmeCompatibilityPlugin(
         tool = int(record["tool"])
         provider, provider_name = self._active_spool_provider()
         with self._state_lock:
-            published = copy.deepcopy(self._state["spoolmanager"].get("published", []))
+            published = copy.deepcopy(self._state["spoolmanager"].get("assigned_profiles", [])
+                                      + self._state["spoolmanager"].get("published", []))
             selected = copy.deepcopy(self._state["spoolmanager"].get("selected", []))
         match = next((item for item in published if item["alias"] == profile), None)
         # The printer retains aliases even when their spools are no longer in
