@@ -38,6 +38,7 @@
                 <div class="rme-firmware-action-row rme-firmware-secondary-actions">
                     <button type="button" class="btn" data-bind="click: unstageFirmware, enable: canUnstage">Unstage from printer…</button>
                     <button type="button" class="btn" data-bind="click: deleteFirmware, enable: selectedFirmware() && !firmwareBusy()">Delete Pi copy…</button>
+                    <button type="button" class="btn btn-danger" data-bind="click: deleteAllFirmwareCopies, enable: firmwareFiles().length && !firmwareBusy() && !piUploadActive()">Delete all Pi copies…</button>
                     <button type="button" class="btn" data-bind="click: cancelFirmware, visible: firmwareBusy">Cancel transfer</button>
                 </div>
             </div>

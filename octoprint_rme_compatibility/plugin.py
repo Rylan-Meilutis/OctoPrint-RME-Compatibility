@@ -570,6 +570,7 @@ class RmeCompatibilityPlugin(
             "flash_firmware": [],
             "confirm_printer_reboot": [],
             "delete_firmware": ["filename"],
+            "delete_firmware_copies": ["filenames"],
             "sync_spoolmanager": [],
             "refresh_spool_inventory": [],
             "sync_filaments_from_printer": [],
@@ -836,6 +837,8 @@ class RmeCompatibilityPlugin(
                     self._defer(self._send_command, "@RME MACHINE QUERY")
         elif command == "delete_firmware":
             self._delete_firmware(data["filename"])
+        elif command == "delete_firmware_copies":
+            self._delete_firmware_copies(data["filenames"])
         elif command == "sync_spoolmanager":
             self._sync_filaments_to_printer()
         elif command == "refresh_spool_inventory":
@@ -6498,16 +6501,36 @@ class RmeCompatibilityPlugin(
 
     def _delete_firmware(self, filename):
         """Remove one explicitly selected BBF from the plugin's Pi storage."""
+        self._delete_firmware_copies([filename])
+
+    def _delete_firmware_copies(self, filenames):
+        """Delete only the browser-confirmed snapshot of local BBF copies."""
         self._require_print_idle("Firmware actions")
-        if (self._uploader and self._uploader.busy) or (
-            self._firmware_file_thread and self._firmware_file_thread.is_alive()
+        if not isinstance(filenames, list) or not filenames or not all(
+            isinstance(name, str) for name in filenames
         ):
-            raise UploadError("Cannot delete firmware during a transfer")
-        path = self._firmware_path(filename)
-        if not os.path.isfile(path):
-            flask.abort(404)
-        os.unlink(path)
-        self._logger.info("Deleted staged Pi firmware file %s", filename)
+            raise ValueError("Select firmware filenames to delete")
+        with self._firmware_action_lock:
+            if (self._uploader and self._uploader.busy) or (
+                self._firmware_file_thread and self._firmware_file_thread.is_alive()
+            ) or self._state["firmware"].get("status") in (
+                "queued", "starting", "uploading", "verifying", "canceling",
+                "flash_queued", "flashing", "restarting",
+            ):
+                raise UploadError("Cannot delete firmware during a transfer")
+            if not self._release_lock.acquire(False):
+                raise UploadError("Cannot delete firmware during a release operation")
+            try:
+                # Validate every target before removing anything. Never recurse,
+                # expand wildcards, or delete files added after confirmation.
+                paths = [self._firmware_path(name) for name in dict.fromkeys(filenames)]
+                if any(not os.path.isfile(path) or os.path.islink(path) for path in paths):
+                    raise ValueError("Firmware selection changed; refresh before deleting")
+                for path in paths:
+                    os.unlink(path)
+                    self._logger.info("Deleted Pi firmware copy %s", os.path.basename(path))
+            finally:
+                self._release_lock.release()
 
     # -- State publication --------------------------------------------------
 

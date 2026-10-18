@@ -55,6 +55,11 @@ firmware repository's `utils/rme_firmware_manifest.py` and upload it alongside
 each release's assets. Regenerate it whenever any BBF is replaced. The plugin
 does not silently publish or modify GitHub releases.
 
+**Delete all Pi copies…** removes only the confirmed BBF filenames in RME's
+firmware-on-Pi list. It does not touch the printer's staged candidate or running
+firmware, or recurse through OctoPrint's general Files storage. Firmware copies
+can be downloaded again; deletion is blocked during printing and transfers.
+
 Hardware checks remain required: running identity after success/rejection of
 a flash, reconnect to a different printer, and end-to-end UI download/stage/
 flash with the installed OctoPrint version. Network failures and missing

@@ -1523,6 +1523,15 @@ $(function () {
                 self.selectedFirmware(null);
             });
         };
+        self.deleteAllFirmwareCopies = function () {
+            var filenames = self.firmwareFiles().map(function (file) { return file.name; });
+            if (!filenames.length || !window.confirm("Delete all " + filenames.length +
+                " firmware BBF copies from this Pi? Printer firmware and the printer's staged image are not changed.\n\n" +
+                filenames.join("\n"))) return;
+            self.command("delete_firmware_copies", {filenames: filenames}).done(function () {
+                self.selectedFirmware(null);
+            });
+        };
         self.flashFirmware = function () {
             if (window.confirm("Flash the verified firmware now? The printer will reboot and the bootloader will validate its signature and machine compatibility.")) {
                 self.command("flash_firmware");

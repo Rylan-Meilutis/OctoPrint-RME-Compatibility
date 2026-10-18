@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0b132 — 2026-10-18
+
+- Add a confirmed “Delete all Pi copies” action for the firmware BBF list.
+  Only the explicitly confirmed filenames in RME's Pi firmware storage are
+  deleted; printer staging and installed firmware are untouched. Validate all
+  targets before deletion and block prints, transfers, queued flashes and
+  release downloads. Reject traversal, symlinks and directories.
+- Companion firmware corrects staging cleanup after reboot: retained bootloader
+  handoff RAM no longer counts as a request armed by the new application boot.
+  A newly armed request remains protected until reset.
+
 ## 0.1.0b130 — 2026-10-18
 
 - Treat the new firmware `M976 I` Auto PA diagnostics as read-only inspection,

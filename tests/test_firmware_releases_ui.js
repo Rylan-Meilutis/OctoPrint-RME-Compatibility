@@ -29,6 +29,28 @@ const {jQueryFactory} = require('jquery/factory');
     vm.state({firmware_releases: {status: 'downloaded', filename: 'verified.bbf'}});
     vm.useDownloadedFirmware();
     assert.equal(vm.selectedFirmware(), 'verified.bbf');
+    vm.state({firmware_files: [{name: 'one.bbf'}, {name: 'two.bbf'}]});
+    vm.command = (name, data) => {
+        commands.push([name, data]);
+        return {done: callback => callback()};
+    };
+    const beforeDelete = commands.length;
+    w.confirm = () => false;
+    vm.deleteAllFirmwareCopies();
+    assert.equal(commands.length, beforeDelete);
+    w.confirm = message => {
+        assert.match(message, /all 2/);
+        assert.match(message, /one.bbf/);
+        assert.match(message, /two.bbf/);
+        return true;
+    };
+    vm.deleteAllFirmwareCopies();
+    assert.equal(commands.at(-1)[0], 'delete_firmware_copies');
+    assert.deepEqual(Array.from(commands.at(-1)[1].filenames), ['one.bbf', 'two.bbf']);
+    assert.equal(vm.selectedFirmware(), null);
+    vm.state({firmware_files: []});
+    vm.deleteAllFirmwareCopies();
+    assert.equal(commands.length, beforeDelete + 1);
     dom.window.close();
     console.log('Firmware release UI tests passed');
 })().catch(error => { console.error(error); process.exit(1); });
