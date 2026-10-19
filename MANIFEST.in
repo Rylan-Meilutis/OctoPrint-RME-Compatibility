@@ -2,5 +2,6 @@ recursive-include octoprint_rme_compatibility/templates *
 recursive-include octoprint_rme_compatibility/static *
 include README.md
 include CHANGELOG.md
+recursive-include docs *.md
 include LICENSE
 global-exclude .DS_Store

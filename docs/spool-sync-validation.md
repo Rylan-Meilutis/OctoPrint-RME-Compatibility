@@ -14,6 +14,11 @@ Validation:
 - Regression: reconnect still reads M865 Q with a pending provider-sync prompt.
 - Regression: printer imports do not write provider assignments back mid-snapshot.
 - DOM: material-only labels retain raw aliases and existing mapping controls.
+- Regression: the eighth ad-hoc profile resolves to PLA and its exact database
+  ID in both fresh state and a restored state containing only the seven menu
+  presets. This does not guess from the selected spool or overwrite a tool.
+- Mapping choices render 30 matches per tool at a time. Search covers the full
+  material-matching inventory, including later pages; Show more adds 30 choices.
 - Hardware pending: choose a known spool on the LCD, verify SpoolManager's tool
   selection changes without pressing sync, then verify usage charges that spool.
 - Hardware pending: repeat after reconnect with more than seven inventory spools.

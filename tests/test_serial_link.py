@@ -1188,7 +1188,11 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
         # 6.6.3 confirms through the transaction-tagged RME_CHANGE. Both use
         # the same explicit command and persistent material/profile semantics.
         self.assertTrue(all("@RME FILAMENT ASSIGN" in item for item in protocols))
-        self.assertEqual(integrations[0], integrations[1])
+        # Maintained releases can document additional machine-specific APIs;
+        # compatibility requires shared guarantees, not identical prose.
+        for integration in integrations:
+            self.assertIn("retry the identical BEGIN", integration)
+            self.assertIn("accept the later unsolicited `state=ready`", integration)
         self.assertIn("code=resume_failed", protocols[0])
         self.assertIn("retry the identical BEGIN", integrations[0])
         self.assertIn('S"PLA" P"PLA-00D"', protocols[0])
@@ -1247,8 +1251,10 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
                 self.assertIn(command, marlin_server)
                 self.assertIn("workflow=%s" % workflow, protocol_doc)
 
-        self.assertRegex(file_service, r"binary_chunk_size\s*=\s*1024\s*;")
-        self.assertRegex(file_service, r"binary_window_size\s*=\s*8\s*;")
+        self.assertIn("binary_chunk_size = rme_file_transfer::binary_payload_size", file_service)
+        self.assertIn("binary_window_size = rme_file_transfer::binary_window_size", file_service)
+        self.assertRegex(transfer_contract, r"binary_payload_size\s*=\s*512\s*;")
+        self.assertRegex(transfer_contract, r"binary_window_size\s*=\s*3\s*;")
         self.assertRegex(
             transfer_contract,
             r"bulk_payload_size\s*=\s*%d\s*;"

@@ -1,5 +1,42 @@
 # OctoPrint RME Compatibility
 
+Firmware discovery: [GitHub releases and verified Pi downloads](docs/firmware-releases.md).
+
+UI performance: [reproducible headless Chromium profiles](docs/ui-performance.md).
+The Settings-opening integration skips identical printer-profile notifications
+that would otherwise trigger unnecessary SpoolManager sidebar/editor rebuilds.
+Actual tool, offset and volume changes continue to propagate normally.
+
+Print setup: [per-print tool mapping, fallback spools and Auto PA](docs/print-preparation.md).
+Reported pause reasons appear above OctoPrint's main progress bar and in the
+RME tab only while paused; resuming hides the banner and job completion clears
+it. The last genuine reason remains in job-local diagnostic state until completion.
+When neither firmware nor OctoPrint reports a reason, the banner stays hidden.
+Unreported pauses remain in diagnostic state; RME does not guess from normal
+heating or detector-setting messages.
+Routine tool-change progress is not a pause cause. Background telemetry is
+rate-limited (controls every 10 seconds; changed progress every 5 seconds,
+unchanged progress heartbeat every 20 seconds). Explicit control refreshes are
+not delayed by this polling limit. These queries do not insert motion barriers.
+The installed-firmware checksum comparison requires the companion firmware
+identity update and a release manifest; older builds display unknown.
+
+For an OctoPod completion image taken before the final accessibility bed move,
+see [pre-lowering snapshots](docs/completion-snapshot.md). Recognizable end
+sequences are detected automatically; `@RME SNAPSHOT` remains an explicit
+fallback for custom sequences. Available starting with b119; no firmware update
+is required for this snapshot feature.
+
+### File-derived adaptive meshing (b118)
+
+With the October 4 firmware releases (6.9.0-RME or 6.10.1-RME), local text
+jobs are analyzed before streaming. RME sends their extrusion XY bounds before
+ordinary G29 P1 probing, retaining the native probe grid and safety margins.
+No slicer edit is needed when that probe command is already present. Older
+firmware, MINI, unsupported geometry and explicitly sized probes keep their
+existing behavior. See [adaptive meshing](docs/adaptive-meshing.md) for the
+command, limits and validation requirements.
+
 ### Independent lighting controls (b98)
 
 With matching firmware, Control/RME provides a separate LCD Off/On slider and
@@ -110,7 +147,7 @@ underlying operation and persisted state are equivalent.
   and `/plugin/rme_compatibility/filament-report` aliases so OrcaSlicer and other
   clients can poll active tool, mapping, material/color loadout, available
   inventory, selected spools, and firmware statistics with an OctoPrint API key.
-- Integrates the current RME firmware's sandboxed `/usb` filesystem in Settings:
+- Integrates the current RME firmware's sandboxed `/usb` filesystem in **RME → Printer files**:
   browse directories, download files through authenticated OctoPrint, upload
   with negotiated raw binary frames when firmware advertises `binary=1`
   (otherwise pipelined bulk or acknowledged text transport), SHA-256 atomic
@@ -162,10 +199,10 @@ chunks; retry the command after the transfer completes.
 
 ## Remote prompts and recovery
 
-Live firmware state, tool mapping, and firmware action dialogs are rendered in
-the **RME** tab. Routine configuration, inventory synchronization, remote
-controls, and firmware update operations live in **Settings → RME
-Compatibility**, keeping the main tab focused on status and telemetry.
+Use **Control** for live print adjustments; **RME** for firmware state, filament
+mapping, printer files, firmware updates, and transfer recovery; and
+**Settings → RME Compatibility** for saved defaults and discovery policy.
+The RME navigation buttons take you directly to each operational section.
 This includes MMU loading/errors, filament runout, filament-not-moving and
 flow-pressure-limit faults, stuck filament, tool-change
 or pickup failures, purge-bucket/waste-bin warnings, and any future RME dialog
@@ -210,7 +247,15 @@ RME's graphical mapping dialog supports SpoolManager, Spoolman and the built-in
 provider. Colored cards show each loaded tool and its assigned spool, with
 same-material choices only and one batch Apply. Unknown loaded material has
 no compatible choices. The full inventory remains accessible in the provider's
-own UI. New-spool creation is prefilled from printer data.
+own UI. New-spool creation is prefilled from printer data. Saving a new spool
+opened from a machine-slot card also assigns it to that slot and updates both
+RME and SpoolManager without a browser refresh. Canceling leaves the slot unchanged.
+Unsaved mapping choices survive background updates. Eight distinct loaded spools
+are supported using per-tool storage for the extra spool; the menu retains seven
+shared profiles plus NEW. Matching updated firmware preserves loaded material
+independently when a shared preset is replaced. An already incorrect assignment
+must be corrected by selecting the actual spool in SpoolManager and applying it;
+do not import the incorrect printer mapping back into SpoolManager.
 Empty and inactive concrete spools remain visible for deliberate manual mapping
 but do not consume firmware preset slots unless selected.
 
@@ -264,6 +309,10 @@ or does not respond, is probed only once per connection and otherwise sees no
 statistics traffic.
 
 ## Priority print controls
+
+For RME serial printing, configure Pause as `M601` and Resume as `M602` only.
+Do not add `G92 E0`, positioning-mode changes or driver changes to the resume
+script: firmware owns tool pickup, reheating and saved-position restoration.
 
 On an RME printer, any OctoPrint pause, resume, or cancel transition—and any
 explicit `M601`, `M602`, or `M604` submitted by an API client or another
@@ -324,6 +373,13 @@ in small background slices while normal serial traffic continues, and later
 emits the authoritative ready/error result. The UI remains in **verifying**
 until that terminal result arrives.
 
+If an upload stalls, **RME → Transfer and recovery** and the RME top-bar menu
+offer **Stop and disconnect**. It cancels local writers and closes the printer
+connection without injecting ASCII into a potentially raw receiver. Power-cycle
+the printer before confirming the reboot or reconnecting. The source and durable
+partial are kept; use **Resume upload** or **Discard printer partial** after a
+safe reconnection. Do not send terminal commands into an uncertain receiver.
+
 ## Development
 
 Protocol and transport tests do not require OctoPrint itself:
@@ -359,3 +415,14 @@ provide an independent chamber heater. A target may be unreachable with a cold
 bed or unfavorable ambient conditions. During printing, normal print-fan control
 is preserved. Reconnect after updating and synchronize the printer profile if
 automatic profile synchronization is disabled.
+# OctoPod lighting compatibility
+
+The bundled **RME OctoPod Lighting Bridge** exposes OctoPod's existing
+`octolightHA` discovery and light API using RME chamber-light controls. Restart
+OctoPrint after installing the update and refresh the printer in OctoPod.
+No GPIO or Home Assistant configuration is needed. Do not install the real
+OctoLight HA plugin alongside the bridge: the shared API identifier can only
+have one owner; the bridge declines loading when that package is present.
+Status requires STATUS permission; changes require CONTROL permission and
+retain RME's lock/transfer guards. On/Off during a print is independent of
+idle timers; idle On remains timed. Physical confirmation follows telemetry.

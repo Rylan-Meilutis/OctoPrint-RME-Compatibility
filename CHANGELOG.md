@@ -1,5 +1,376 @@
 # Changelog
 
+## 0.1.0b134 — 2026-10-19
+
+- Order public snapshots across HTTP command replies and WebSocket updates.
+  A late queued snapshot can no longer rewind completed downloads to 0% or
+  discard a newer completion waiting for the next browser animation frame.
+  Snapshot ordering resets correctly after an OctoPrint process restart.
+- Show GitHub-to-Pi firmware download progress in the RME transfer indicator;
+  downloaded/error states do not leave it active.
+- Retain b133's firmware-status refresh and selected-baud reconnect fixes.
+
+## 0.1.0b133 — 2026-10-19
+
+- Refresh staged-firmware truth while idle after reconnect, rate-limited to
+  thirty seconds while a candidate remains reported, and add a manual
+  “Refresh printer status” button. Never infer successful cleanup from the
+  running version or hide a candidate that the printer still reports.
+- Preserve the active connection's selected baud rate across an explicit
+  firmware-update reconnect instead of silently using OctoPrint's saved
+  default. USB port discovery remains automatic after re-enumeration.
+- Companion INDX/XL firmware retries lost sensor verification replies and
+  bounds required-sensor bootstrap recovery. It does not bypass hash matching
+  or sensor readiness. Companion firmware also retries transient USB cleanup
+  failures instead of abandoning cleanup after the first check.
+
+## 0.1.0b132 — 2026-10-18
+
+- Add a confirmed “Delete all Pi copies” action for the firmware BBF list.
+  Only the explicitly confirmed filenames in RME's Pi firmware storage are
+  deleted; printer staging and installed firmware are untouched. Validate all
+  targets before deletion and block prints, transfers, queued flashes and
+  release downloads. Reject traversal, symlinks and directories.
+- Companion firmware corrects staging cleanup after reboot: retained bootloader
+  handoff RAM no longer counts as a request armed by the new application boot.
+  A newly armed request remains protected until reset.
+
+## 0.1.0b130 — 2026-10-18
+
+- Treat the new firmware `M976 I` Auto PA diagnostics as read-only inspection,
+  not the start of a calibration workflow. Queries also leave an existing
+  calibration workflow intact.
+- Matching firmware reports last-attempt failure reasons and measurements,
+  plus an idle INDX flash-cache eligibility check (`M976 I L0 S240`).
+  Attempt history is RAM-only; accepted INDX cache records survive reboot.
+
+## 0.1.0b129 — 2026-10-18
+
+- Include loadcell runout in recovery-action queries and retain its physical
+  cause during intervening parking/tool-change/heating messages. Matching
+  firmware enables the confirmation on INDX without a discrete extruder
+  filament sensor, aligns Continue/Unload/Abort with the handler, and
+  reannounces the fault only after its prompt is actionable.
+- Verify that the parent's recovery-completion event clears the host actions.
+  Validation: 303 Python tests (four skipped) and twelve JavaScript UI suites.
+  Install the matching updated firmware for the INDX confirmation fix.
+
+## 0.1.0b128 — 2026-10-17
+
+- Fix a reproduced multi-second Settings-opening stall in the restored
+  OctoPrint 1.11.8/SpoolManager 1.7.8 setup. Settings refreshes printer profiles;
+  an unchanged mapped profile used to notify every subscriber again, triggering
+  a sidebar rebuild and repeated shared Quill-editor updates for read-only
+  spools. Suppress only identical complete profile values. Real profile edits
+  and explicit notifications still propagate; do not override another plugin's
+  custom comparer, and preserve native behavior if serialization fails.
+- Verify the integrated asset in a real isolated OctoPrint server using the
+  backup's 23-spool database, saved RME state and UI Customizer/Cyborg settings,
+  plus the active plugins with Settings-opening hooks. At 4x CPU throttling,
+  the worst event-loop gap fell from 5,912 ms to 563 ms, with no injected
+  workaround. No stored credentials or printer connections were restored.
+- Extend Chromium tooling to profile the actual modal manager, real Settings
+  hooks and local request timings. Add regressions for unchanged mapped
+  profiles, real tool/offset/envelope/speed edits, explicit notifications,
+  duplicate installation and serialization fallback. 303 Python tests (four
+  skipped) and all twelve JavaScript suites pass.
+
+## 0.1.0b127 — 2026-10-17
+
+- Profile the populated UI in real headless Chromium using OctoPrint's jQuery,
+  Knockout and PNotify. Add searchable, paged filament choices instead of
+  mounting the entire inventory for every tool. In the 1,000-spool/eight-tool
+  fixture, the DOM shrinks from about 24,800 to 1,400 elements. Under 4x CPU
+  throttling, 60 updates take 148 ms instead of 1,443 ms in JavaScript; no long
+  tasks occur in the fixed measured window. See docs/ui-performance.md for
+  methodology, limits and reproduction. The installed-site freeze still
+  requires a live browser capture to conclusively diagnose.
+- Resolve loaded-material labels through all eight assigned profiles, not only
+  the seven menu presets. Restore exact alias metadata from cached inventory
+  when upgrading an older state. This fixes the eighth PLA spool being shown
+  as Unassigned without changing the printer's material or provider selection.
+- Stop unchanged inventory snapshots from invalidating every tool's spool
+  choices on routine telemetry or provider-status updates. A regression with
+  eight tools and 1,000 spools previously triggered 800 unnecessary list
+  updates for 100 polls; it now triggers none, while real inventory edits
+  still refresh all eight tools. All eleven JavaScript suites pass. This is
+  a reproduced source of UI load, not yet a confirmed fix for the reported
+  continuous freeze on the installed browser.
+- Reuse action-required notices when only event IDs/timestamps change, disable
+  their animation, escape printer text, and make sidebar decoration idempotent.
+
+## 0.1.0b126 — 2026-10-17
+
+- Add Stop and disconnect recovery for stalled transfers, retaining the source
+  and durable partial. Keep transmission locked until reboot/reconnect evidence;
+  late worker cleanup cannot clear that lock. Cancel now also handles canceling
+  and queued firmware transfers consistently.
+- Put transfer recovery at the top of RME and in its top-bar menu. Keep Resume
+  and Discard next to firmware errors, enabled only after safe reconnection.
+- Separate the UI: Control for live print adjustments, RME for filament/files/
+  firmware operations, Settings for saved defaults. Remove duplicate operational
+  panels from Settings and keep file lists lazy-loaded on the RME page.
+- Coalesce pending WebSocket snapshots to the latest state per browser frame
+  and limit firmware progress broadcasts to twice per second; explicit command
+  responses remain immediate. Real-browser performance still needs confirmation.
+- Validation: 303 Python tests (four skipped) and eleven JavaScript suites,
+  including full workspace/Settings bindings, recovery controls and a 100-frame
+  state burst. The original on-printer upload failure remains undiagnosed.
+- Avoid forcing a complete temperature-graph redraw on unrelated RME state
+  updates. Native temperature samples retain their usual plot updates, and
+  head changes still redraw. The reported Settings-opening delay needs an
+  installed-browser timing check; this is not a confirmed complete fix.
+
+## 0.1.0b125 — 2026-10-17
+
+- Saving a native SpoolManager New Spool opened from an RME machine slot now
+  assigns the saved spool to that slot and synchronizes the machine. Refresh
+  both inventories immediately, without reloading the browser. Retain all native
+  editor metadata, and retry failed assignments without creating duplicate spools.
+- Preserve unsaved mapping selections when background loadout/provider updates
+  rebuild the slot cards. Inventory refreshes no longer wait behind firmware
+  synchronization or an active print.
+- Assign an eighth distinct spool through per-tool ad-hoc storage rather than
+  dropping its assignment when the seven shared presets are full. Companion
+  firmware preserves loaded profiles before a shared catalog slot is reused.
+- Validation: 302 Python tests (four skipped) and all ten JavaScript UI suites
+  pass. Physical spool creation/assignment still requires an installed-system check.
+
+## 0.1.0b124 — 2026-10-17
+
+- Recognize Orca @Object/@Objectstop bookkeeping while detecting the final
+  bed move. Delayed OctoPod completion notifications reuse the captured frame
+  independently of the latest printer state, respecting configured delay.
+- Route operator bed/nozzle targets, print fan, speed and flow overrides through
+  the live control service on matching firmware. Never reorder file commands.
+- Validate embedded BBF version, machine identity and application checksum at
+  browser upload, printer staging and flash. Renaming a cross-built image does
+  not bypass the upstream support matrix; unknown candidates require restaging.
+
+- Filter firmware updates and downloads by verified upstream machine/version
+  support, not filenames: 6.9.2 is INDX-only and 6.10.3 is XL-only. Older
+  supported release lines remain eligible; unknown combinations are hidden.
+- Hide unknown/unreported pause-reason banners without discarding diagnostics.
+- Operator/API chamber targets use the non-motion RME service when firmware
+  advertises live_chamber=1. Sliced M141 commands retain their normal order.
+
+- Validation: 299 Python tests and all nine UI suites passed. The snapshot
+  adapter also passed an integration check against current upstream OctoPod
+  notification code. Physical camera/control timing still requires testing.
+
+## 0.1.0b123 — 2026-10-10
+
+- Hide pause banners after resume and clear them at job completion. Reject
+  routine tool-change/heating/probing text as pause evidence; preserve real
+  faults and log the reported pause cause.
+- Reduce periodic control polling to 10 seconds and coalesce progress frames:
+  changed estimates every 5 seconds, identical estimates every 20 seconds,
+  with pause-state changes exempt from the rate limit. Skip control polling during startup and
+  recovery; explicit user-control refreshes remain immediate.
+- Validation: 287 Python tests (four skipped) and all nine UI suites passed.
+  Reduced traffic is not a confirmed fix for intermittent motion stalls;
+  physical serial-print validation remains necessary.
+
+## 0.1.0b122 — 2026-10-08
+
+- Discover numbered firmware rebuilds on the maintained release lines without
+  replacing existing release tags or weakening checksum verification.
+
+- Validation: 284 Python tests (four skipped) and all nine JavaScript suites
+  passed. Camera timing and printer recovery still need hardware confirmation.
+
+- Show captured pause reasons above OctoPrint's main progress bar and in the
+  RME tab. Retain the last pause for this job; distinguish missing reasons
+  from explicit firmware faults without inventing a cause.
+
+- Arm the OctoPod completion-image bridge before end G-code is queued, so an
+  early FINISHING notification waits for the pre-bed-lowering capture. Keep
+  file tags on the injected barrier and permit capture during FINISHING.
+- Camera requests and notification waits are bounded; cancel/disconnect
+  releases waiters and prevents late frames from leaking into another job.
+
+## 0.1.0b121 — 2026-10-04
+
+- Preserve unchanged state objects and list rows across live updates, avoiding
+  repeated Knockout rebuilds of USB files and spool inventory inside Settings.
+- Render USB storage, printer settings, and firmware files/flashing controls
+  only when explicitly expanded. Auto PA and manual firmware sync stay visible.
+- Synthetic 300-file DOM regression: five unchanged updates dropped from
+  578 ms to 2–3 ms locally. This is not an end-to-end OctoPrint latency guarantee.
+
+- Add Settings “Sync now” using the current machine variant immediately, even
+  before Settings is saved; manual checks bypass the six-hour automatic interval.
+- Reuse Software Update's saved GitHub token server-side for release API calls;
+  never send it to download CDN redirects or expose it to the browser.
+- Validation: 277 Python tests (four skipped), nine JavaScript suites passed.
+  Target-browser Settings latency and authenticated live sync still need
+  confirmation on the installed OctoPrint instance.
+
+## 0.1.0b120 — 2026-10-04
+
+- Add the printer-backed Off/Auto/On Auto PA selector to OctoPrint Settings.
+- Stop full configuration refreshes and USB scans merely from opening Settings;
+  retain live tune polling and explicit refresh controls.
+- Integrate per-print, ordered SpoolJoin fallback selection into tool review.
+  Rank compatible loaded spools by RGB color distance; reject duplicate/shared
+  destinations and reset chains on every confirmation, including no fallbacks.
+- Jobs uploaded less than 24 hours ago with valid selected material/color
+  matches open directly at fallback review. Primary tools remain editable.
+  Fallback review always requires confirmation on supported printers and
+  never expires into an automatic print start.
+- Validation: 275 Python tests (four skipped), eight UI suites. Physical
+  takeover and browser latency still require testing on the target setup.
+
+- Add automatic idle-time GitHub firmware release discovery and exact printer
+  variant selection, with both maintained firmware lines available in the UI.
+- Compare release application hashes with freshly reported running-firmware
+  identity; never substitute a staged candidate or a version string.
+- Add administrator-confirmed, bounded BBF downloads with SHA-256 verification
+  and atomic Pi storage, followed by the existing explicit flash workflow.
+- Older firmware/releases without identity metadata remain visibly unknown.
+- Companion 6.9.0/6.10.1 firmware prepares SpoolJoin backups for offset and
+  Auto PA calibration, reusing valid PA caches in Auto mode. Configure chains
+  before sending the job's calibration commands; no plugin rewrite is needed.
+
+
+## 0.1.0b119 — 2026-10-04
+
+- Automatically detect a final absolute Z-only bed drop of at least 10 mm
+  after extrusion, heater shutdown and P0 parking in local text jobs. Insert
+  the capture barrier at its exact file position without editing the file or
+  requiring a manual marker. Ambiguous sequences retain existing behavior.
+- Add host-only `@RME SNAPSHOT` after end-G-code M400 and before final bed
+  lowering. Keep its image for OctoPod's actual completion notification.
+- Bound the capture barrier to four seconds; clear cached images on new jobs,
+  cancellation/disconnect, and expire them after ten minutes. Fall back safely
+  if OctoPod or its camera is unavailable. Explicit markers remain an optional
+  fallback for custom sequences; b118 did not include this feature.
+- Validation: 262 Python tests ran, four skipped; supervised camera and
+  bed-move validation on the installed OctoPrint/OctoPod versions remains required.
+
+## 0.1.0b118 — 2026-10-04
+
+- Analyze local text print files at preflight and supply their extrusion XY
+  bounds through the new firmware `@RME MESH SET` interface before G29 P1.
+- Include every tool, skirt/brim, wipe tower and conservative I/J arc bounds;
+  exclude travel and stationary purge. Retain the native mesh safety margin.
+- Capability-gate the feature and preserve slicer behavior for explicitly sized
+  probes, unsupported geometry, remote/binary files and bounded-analysis failures.
+- Companion firmware fixes the INDX no-tool homing crash, retains valid Auto PA
+  flash records during unsuccessful forced retries, and scales multi-tool dock
+  cooling by calibration temperature while preserving single-tool fan state.
+- Automated tests are not physical printer validation.
+
+## 0.1.0b117 — 2026-09-24
+
+- Restore pending tool-mapping review after browser reconnect and after initial
+  UI binding. Keep a dedicated review button in the RME dropdown.
+
+## 0.1.0b116 — 2026-09-23
+
+- Complete printer-to-SpoolManager selection reads even when every slot already
+  matches, including empty slots. Disconnected requests no longer leave a busy
+  status behind; provider failures end the read with a failure status.
+
+## 0.1.0b115 — 2026-09-23
+
+- Stop repeated filament-sync writes when the printer's shared RGB palette
+  label differs from a spool's color/display name. RGB and manufacturer
+  differences still trigger correction; provider color labels are preserved.
+
+## 0.1.0b114 — 2026-09-21
+
+- Give LCD switching immediate pending feedback with failure/timeout rollback.
+- Treat zero host remaining time before 100% completion as unknown, rather than
+  sending a false finishes-now estimate to the printer.
+
+- Expose current-print LCD, chamber and status brightness directly in Control
+  instead of a collapsed section. Keep lighting controls usable when a long
+  command delays telemetry; transfer and printer-lock protections remain.
+
+## 0.1.0b113 — 2026-09-20
+
+- Fix the tool-mapping dialog being clipped above the viewport by preventing
+  OctoPrint's modal manager from adding a second centering offset. Keep the
+  dialog viewport-bounded and scrollable.
+
+## 0.1.0b112 — 2026-09-20
+
+- Prevent priority progress frames during OctoPrint Starting and other transitional
+  states, with a second check at the queue boundary. This protects M110 N0 from
+  being displaced and avoids the repeated Resend: 1 startup failure.
+- Includes b111 filament sync controls and the centered optional tool-map dialog.
+
+## 0.1.0b111 — 2026-09-20
+
+- Keep pre-print tool remapping separate in a centered, scrollable modal. No
+  automatic opening when saved defaults are configured instead of a prompt.
+
+- Add Apply filament mapping to printer and Use printer filament mapping directly
+  to the RME integration panel on SpoolManager's page. Show pending sync there;
+  completing filament sync no longer requires the navbar. This is separate from
+  slicer tool remapping and does not start a print.
+
+## 0.1.0b110 — 2026-09-20
+
+- Review print tool mapping inline in the RME tab instead of a persistent
+  top-of-screen popup. The navbar links to the editor instead of applying defaults.
+- Move graphical spool mapping into the same page, with Save and apply actions
+  for spool assignments and print tool mapping. Print continuation stays explicit.
+
+- Remove the Dashboard RME gauge when disconnected or when the connected printer
+  is not RME-compatible; restore native fan placement when the gauge is removed.
+- Use native Dashboard gauge spacing instead of extra flex layout/padding so
+  the RME gauge follows the same vertical grid alignment as neighboring gauges.
+- Add connection, reconnect, printer-switch and grid-placement UI regressions.
+
+## 0.1.0b109 — 2026-09-20
+
+- Add a firmware-capability-gated Auto PA Off / Auto / On selector in Control.
+  The setting is saved by the printer and synchronized through RME tune state.
+  Off skips automatic commands, Auto uses valid cache entries, and On always
+  calibrates. A change does not interrupt an ongoing calibration.
+
+- Do not open a calibration workflow for mode selection. Close the workflow
+  when firmware skips calibration or reuses an entirely cached batch.
+- Companion firmware: refreshed 6.9.0-RME / 6.10.1-RME. TPU hardware
+  validation remains required; this release does not certify jam-free feeding.
+
+## 0.1.0b108 — 2026-09-19
+
+- Send OctoPrint's live completion and remaining-time estimate via the
+  capability-gated RME PROGRESS service during local streamed jobs. Unknown
+  stays unknown, pauses are explicit, and only one update is outstanding.
+  Firmware gives this estimate precedence over M73/M117 without reapplying
+  speed scaling. This synchronizes estimates; it does not make them exact.
+
+- Use binary On/Off during serial or local printing; retain timed On/Locked/Off
+  only while idle. Navbar and Control share immediate pending feedback, roll
+  back on API failure, and reconcile with firmware telemetry (5-second bound).
+- Route lighting and confirmation queries through the reserved RME service
+  path instead of waiting behind printing moves; remove motion-tune throttling
+  for discrete lighting clicks. Transfer/recovery/lock guards remain.
+- Bundle the clearly named RME OctoPod Lighting Bridge with the octolightHA
+  discovery/API contract. It delegates to RME, never GPIO/Home Assistant;
+  it declines loading if the real OctoLight HA package is installed.
+- Requires matching firmware for print overrides independent of idle/door
+  activity. Hardware and iOS integration validation remain pending.
+
+## 0.1.0b107 — 2026-09-18
+
+- Handle printer-confirmed RME Reprint requests through OctoPrint's normal
+  full-start/preflight path. Only the same completed local file is eligible;
+  changed files, active jobs, transfers, locks and reconnects reject retries.
+- Coalesce repeated requests and report restart/refusal to connected web UIs.
+  Requires firmware with the bed-clear confirmation and rme_retry action.
+
+- Keep navbar and Control lighting overrides usable during long print commands
+  even when a status snapshot is delayed; preserve transfer/recovery/lock guards.
+- Show the last firmware-reported light mode and label stale navbar status.
+  Navbar accessibility pressed state now follows On/Off rather than Locked.
+- Requires the firmware print-stream wakeup fix to prevent streamed moves from
+  immediately undoing light Off.
+
 ## 0.1.0b106 — 2026-09-17
 
 - Correct Dashboard maximum height from the selected file's validated slicer
@@ -1284,3 +1655,10 @@ First development release.
 - Added acknowledged BBF upload, printer-side verification, and explicit
   bootloader flashing.
 - Added Stable (`main`) and Beta (`beta`) OctoPrint update channels.
+# 0.1.0b131
+
+- Keep multi-temperature Auto PA under one calibration workflow and show the
+  current tool, temperature and temperature-point number from firmware output.
+- Preserve slash-separated temperature manifests unchanged; inspection queries
+  remain read-only and do not replace an active calibration workflow.
+

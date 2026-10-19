@@ -26,9 +26,10 @@ function item(key, actual) {
     return {key: ko.observable(key), name: ko.observable(key), actual: ko.observable(actual), newTarget: ko.observable(200)};
 }
 const sent = [];
+let plotUpdates = 0;
 const vm = {tools: ko.observableArray(Array.from({length: 8}, (_, n) => item('tool' + n, n === 3 ? 210 : -1))),
     bedTemp: item('bed', 60), chamberTemp: item('chamber', 35), clearAutosendTarget: () => {},
-    hasChamber: ko.observable(true), updatePlot: () => {}, _printerProfileUpdated: () => {},
+    hasChamber: ko.observable(true), updatePlot: () => { plotUpdates++; }, _printerProfileUpdated: () => {},
     _processTemperatureData: (_, data) => data,
     setTargetToValue: (entry, value) => sent.push([entry.key(), value]),
     rmeSendTemperature: command => {sent.push(command); return {done: cb => cb()};}};
@@ -46,6 +47,10 @@ await new Promise(resolve => $(resolve));
 const rme = new w.OCTOPRINT_VIEWMODELS[0].construct([{}, {}, {}, {}, vm]);
 const state = rme.state;
 state({supported: true, machine: {hotends: 8, tool_capacity: 8}, active_tool: {physical: 3, logical: 0}});
+assert.equal(plotUpdates, 1);
+for (let i = 0; i < 50; i++) state({...state(), spoolmanager: {revision: i}});
+rme.onSettingsShown();
+assert.equal(plotUpdates, 1, 'unrelated snapshots and opening Settings must not redraw the graph');
 assert(template.textContent.includes('<th'));
 ko.applyBindings(vm, w.document.getElementById('temp'));
 ko.applyBindings({temperatureModel: vm, convertTemp: x => x, tempSymbol: () => '°C',
@@ -86,6 +91,7 @@ preheat();
 assert.deepEqual(sent, ['M104 S215', ['bed', 60], 'M141 S35']);
 vm.tools()[3].actual(-1);
 state({...state(), active_tool: {physical: null}});
+assert.equal(plotUpdates, 2, 'parking still redraws the graph');
 assert.equal(w.document.querySelectorAll('#temp tr').length, 3);
 assert.equal(w.document.querySelectorAll('#tab_plugin_dashboard .tool').length, 1);
 assert.equal(w.document.querySelector('#tab_plugin_dashboard .tool').textContent, 'Unloaded');

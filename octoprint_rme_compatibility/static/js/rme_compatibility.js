@@ -6,9 +6,15 @@ $(function () {
     function RmeCompatibilityViewModel(parameters) {
         var self = this;
         self.settings = parameters[0];
+        if (typeof RmeUiPerformance !== "undefined") {
+            RmeUiPerformance.installStableProfileUpdates(self.settings.printerProfiles, ko);
+        }
         self.loginState = parameters[1];
         self.printerState = parameters[2];
         self.files = parameters[3];
+        self.settingsStorageExpanded = ko.observable(false);
+        self.settingsPrinterExpanded = ko.observable(false);
+        self.settingsFirmwareExpanded = ko.observable(false);
         self.cancelObjects = ko.observableArray([]);
         self.objectPreview = ko.observable({objects: [], bed: []});
         self.previewFile = null;
@@ -132,8 +138,16 @@ $(function () {
                 if (RmePassiveTools.isIndx(self.state())) parameters[4].hasChamber(true);
                 return result;
             };
+            var plotPresentationKey = null;
             self.state.subscribe(function (state) {
-                if (RmePassiveTools.isIndx(state)) parameters[4].hasChamber(true);
+                var indx = RmePassiveTools.isIndx(state);
+                if (indx) parameters[4].hasChamber(true);
+                var key = indx ? "indx:" + String((state.active_tool || {}).physical) : "native";
+                if (key === plotPresentationKey) return;
+                plotPresentationKey = key;
+                // OctoPrint already plots incoming temperature samples. Only
+                // redraw here when RME changes which physical head is shown;
+                // inventory, progress and settings snapshots are not samples.
                 parameters[4].updatePlot();
             });
         }
@@ -159,6 +173,31 @@ $(function () {
         self.selectedFirmware = ko.observable();
         self.partialCleanupPath = ko.observable("");
         self.mappingRows = ko.observableArray([]);
+        self.mappingExpanded = ko.observable(true);
+        self.fallbackSelections = ko.observable({});
+        self.fallbacksFor = function (row) { return self.fallbackSelections()[row.logical] || []; };
+        self.fallbackChoices = function (row) {
+            var occupied = self.graphicalMappingRows().map(function (r) { return self.mappingEnabled() ? Number(r.physical()) : r.logical; });
+            Object.keys(self.fallbackSelections()).forEach(function (key) { occupied = occupied.concat(self.fallbackSelections()[key]); });
+            var color = self.mappingRequirement(row).color;
+            function distance(other) {
+                if (!/^#[0-9a-f]{6}$/i.test(color || "") || !/^#[0-9a-f]{6}$/i.test(other || "")) return 200000;
+                return [1, 3, 5].reduce(function (sum, i) { return sum + Math.pow(parseInt(color.substr(i, 2), 16) - parseInt(other.substr(i, 2), 16), 2); }, 0);
+            }
+            return self.mappingChoices(row).filter(function (c) { return c.compatible && occupied.indexOf(c.tool) < 0; })
+                .sort(function (a, b) { return distance(a.color) - distance(b.color) || a.tool - b.tool; });
+        };
+        self.appendFallback = function (row, tool) {
+            var next = Object.assign({}, self.fallbackSelections());
+            next[row.logical] = self.fallbacksFor(row).concat([Number(tool)]);
+            self.fallbackSelections(next);
+            self.touchToolmap();
+        };
+        self.removeFallback = function (row, tool) {
+            var next = Object.assign({}, self.fallbackSelections());
+            next[row.logical] = self.fallbacksFor(row).filter(function (value) { return value !== tool; });
+            self.fallbackSelections(next);
+        };
         self.mappingRequirement = function (row) {
             return ((self.prompt().requirements || []).filter(function (item) {
                 return Number(item.logical) === row.logical;
@@ -185,6 +224,7 @@ $(function () {
                 if (other !== row && Number(other.physical()) === choice.tool) other.physical(previous);
             });
             row.physical(choice.tool);
+            self.fallbackSelections({});
             self.mappingEnabled(true);
         };
         self.useRecommendedMapping = function () {
@@ -192,6 +232,7 @@ $(function () {
             if (!recommendation) return;
             self.touchToolmap();
             self.mappingRows().forEach(function (row) { row.physical(Number(recommendation[row.logical])); });
+            self.fallbackSelections({});
             self.mappingEnabled(true);
         };
         self.materialMappingValid = ko.pureComputed(function () {
@@ -234,10 +275,52 @@ $(function () {
                 !self.transportRecoveryRequired() && !self.navbarTransferActive() &&
                 !(self.state().lock || {}).locked;
         });
-        self.tuneLight = ko.pureComputed(function () { return self.tune().light === undefined ? -1 : Number(self.tune().light); });
-        self.tuneLcd = ko.pureComputed(function () { return self.tune().lcd === undefined ? -1 : Number(self.tune().lcd); });
+        self.pendingLight = ko.observable(null);
+        self.tuneLight = ko.pureComputed(function () {
+            var pending = self.pendingLight();
+            var value = self.tune().light === undefined ? -1 : Number(self.tune().light);
+            if (pending && self.state().connected && self.tick() < pending.until) value = pending.value;
+            return self.chamberLightPrinterBusy() && value > 0 ? 1 : value;
+        });
+        self.tune.subscribe(function (snapshot) {
+            var pending = self.pendingLight();
+            if (pending && Number(snapshot.light) === pending.value && Number(snapshot.updated) > pending.sent) self.pendingLight(null);
+        });
+        self.requestChamberLight = function (value) {
+            if (!self.tuneLightingEnabled()) return;
+            value = self.chamberLightPrinterBusy() ? (value > 0 ? 1 : 0) : value;
+            var pending = {value: value, sent: Date.now() / 1000, until: Date.now() + 5000};
+            self.pendingLight(pending);
+            var request = self.command("set_print_override", {kind: "light", value: value});
+            if (request && request.fail) request.fail(function () {
+                if (self.pendingLight() === pending) self.pendingLight(null);
+            });
+        };
+        self.tuneLightingEnabled = ko.pureComputed(function () {
+            // Long print commands can delay snapshots. Lighting remains safe
+            // to request without disabling it merely because telemetry is old.
+            return self.tuneAvailable() && self.tuneLight() >= 0 &&
+                !self.transportRecoveryRequired() && !self.navbarTransferActive() &&
+                !(self.state().lock || {}).locked;
+        });
+        self.pendingLcd = ko.observable(null);
+        self.tuneLcd = ko.pureComputed(function () {
+            var pending = self.pendingLcd();
+            if (pending && self.state().connected && self.tick() < pending.until) return pending.value;
+            return self.tune().lcd === undefined ? -1 : Number(self.tune().lcd);
+        });
+        self.tune.subscribe(function (snapshot) {
+            var pending = self.pendingLcd();
+            if (pending && Number(snapshot.lcd) === pending.value && Number(snapshot.updated) > pending.sent) self.pendingLcd(null);
+        });
         self.changeTuneLcd = function (_, event) {
-            self.command("set_print_override", {kind: "lcd", value: Number(event.target.value)});
+            if (!self.tuneLightingEnabled()) return;
+            var pending = {value: Number(event.target.value), sent: Date.now() / 1000, until: Date.now() + 5000};
+            self.pendingLcd(pending);
+            var request = self.command("set_print_override", {kind: "lcd", value: pending.value});
+            if (request && request.fail) request.fail(function () {
+                if (self.pendingLcd() === pending) self.pendingLcd(null);
+            });
             event.target.value = self.tuneLcd();
         };
         self.printBrightnessRows = [
@@ -251,9 +334,12 @@ $(function () {
         self.applyTuneSpeed = function () { self.command("set_print_override", {kind: "speed", value: Number(self.tuneSpeed())}); };
         self.applyTuneFlow = function (row) { self.command("set_print_override", {kind: "flow", tool: row.tool, value: Number(row.draft())}); };
         self.toggleTuneStealth = function () { self.command("set_print_override", {kind: "stealth", value: Number(self.tune().stealth) ? 0 : 1}); };
+        self.changeAutoPa = function (_, event) {
+            self.command("set_print_override", {kind: "auto_pa", value: Number(event.target.value)});
+            event.target.value = self.tune().auto_pa;
+        };
         self.changeTuneLight = function (_, event) {
-            self.command("set_print_override", {kind: "light", value: Number(event.target.value)});
-            event.target.value = self.tuneLight();
+            self.requestChamberLight(Number(event.target.value));
         };
         self.liveMapping = ko.pureComputed(function () {
             var map = self.state().toolmap || {}, mapping = map.mapping || {};
@@ -372,6 +458,13 @@ $(function () {
             printer: "Printer workflow"
         };
         self.workflow = ko.pureComputed(function () { return self.state().workflow || {}; });
+        self.pauseReasonText = ko.pureComputed(function () {
+            var pause = self.state().pause || {};
+            if (!self.state().connected || !self.state().supported || !pause.active || !pause.reason) return "";
+            if (["unreported", "unknown"].indexOf(String(pause.source || "").toLowerCase()) >= 0
+                    || /^(unknown|reason unknown|reason not reported by printer or octoprint)[.!]?$/i.test(String(pause.reason).trim())) return "";
+            return "Print paused: " + pause.reason;
+        });
         self.workflowVisible = ko.pureComputed(function () {
             self.tick();
             var workflow = self.workflow();
@@ -438,7 +531,16 @@ $(function () {
             var remaining = Math.max(0, Math.ceil(Number(prompt.deadline) - Date.now() / 1000));
             return "Current mapping will be kept in " + formatDuration(remaining) + " unless you interact.";
         });
-        self.spoolmanager = ko.pureComputed(function () { return self.state().spoolmanager || {}; });
+        // KO's default comparer treats every object as changed, even when
+        // reconciliation retained its identity. Stop unrelated telemetry from
+        // invalidating the inventory and every tool's spool-choice list.
+        function snapshotSelector(read) {
+            var selected = ko.pureComputed(read);
+            selected.equalityComparer = function (left, right) { return left === right; };
+            return selected;
+        }
+        var emptySnapshot = {}, emptyRows = [];
+        self.spoolmanager = snapshotSelector(function () { return self.state().spoolmanager || emptySnapshot; });
         self.externalSpoolProvider = ko.pureComputed(function () {
             return ["spoolmanager", "spoolman"].indexOf(String(self.spoolmanager().provider || "").toLowerCase()) >= 0;
         });
@@ -466,7 +568,7 @@ $(function () {
             return provider + (spool.error || spool.status || "not checked");
         });
         self.publishedSpools = ko.pureComputed(function () { return self.spoolmanager().published || []; });
-        self.inventorySpools = ko.pureComputed(function () { return self.spoolmanager().inventory || []; });
+        self.inventorySpools = snapshotSelector(function () { return self.spoolmanager().inventory || emptyRows; });
         // Mapping must never look like the provider has fewer spools than it
         // really does.  Start with the complete inventory and let operators
         // explicitly narrow it when that is useful.
@@ -583,7 +685,13 @@ $(function () {
         });
         self.chamberLightTitle = ko.pureComputed(function () {
             if (self.chamberLightDisabled()) return self.chamberLightBlockedReason();
-            if (self.tuneAvailable()) return "Press to toggle the chamber light; select Locked in Control to keep it on";
+            if (self.tuneAvailable()) {
+                var stale = self.tick() - Number(self.tune().updated || 0) * 1000 >= 15000;
+                return "Chamber light: " + (["Off", "On", "Locked"][self.tuneLight()] || "Unknown") +
+                    (stale ? " (last reported; awaiting printer update)" : "") +
+                    (self.pendingLight() ? " (syncing)" : "") +
+                    (self.chamberLightPrinterBusy() ? "; press to toggle" : "; press to toggle, or select Locked in Control");
+            }
             if (self.chamberLightHeld()) return "Chamber light latched on; press to turn off";
             return self.chamberLightOn() ?
                 "Chamber light temporarily on; double-press within two seconds to latch, or press later to turn off" :
@@ -607,6 +715,7 @@ $(function () {
         self.navbarTransfer = ko.pureComputed(function () {
             var state = self.state();
             var firmware = state.firmware || {};
+            var release = state.firmware_releases || {};
             var storage = state.storage || {};
             var partial = storage.partial || null;
             var download = storage.download || {};
@@ -641,6 +750,14 @@ $(function () {
                     summary: firmwareLabel + (progress !== null ? " · " + Math.round(progress) + "%" : ""),
                     detail: firmware.filename || firmwareLabel,
                     progress: progress
+                };
+            }
+            if (release.status === "downloading") {
+                progress = numericProgress(release.progress);
+                return {
+                    active: true, icon: "fa-download", title: "Firmware download",
+                    summary: "GitHub → Pi" + (progress !== null ? " · " + Math.round(progress) + "%" : ""),
+                    detail: release.filename || "Downloading release firmware", progress: progress
                 };
             }
             if (partial && partial.status !== "deferred") {
@@ -685,7 +802,10 @@ $(function () {
         self.navbarTransferActive = ko.pureComputed(function () { return !!self.navbarTransfer().active; });
         self.chamberLightPrinterBusy = ko.pureComputed(function () {
             var stateName = String(ko.unwrap(self.printerState.stateString) || "").toLowerCase();
+            var localPrint = self.tune().printing === undefined ?
+                /^(PRINTING|PAUSED|PAUSING|RESUMING)$/.test(String((self.state().session || {}).printer_state || "")) : Number(self.tune().printing) === 1;
             return !!(
+                localPrint ||
                 ko.unwrap(self.printerState.isPrinting) ||
                 ko.unwrap(self.printerState.isPausing) ||
                 ko.unwrap(self.printerState.isResuming) ||
@@ -694,19 +814,21 @@ $(function () {
             );
         });
         self.chamberLightBlockedReason = ko.pureComputed(function () {
-            if (self.chamberLightPrinterBusy()) return "Chamber light control is unavailable while printing";
+            if ((self.state().lock || {}).locked) return "Printer is locked";
+            if (self.tuneAvailable() && self.tuneLight() < 0) return "Waiting for printer lighting state";
+            if (!self.tuneAvailable() && self.chamberLightPrinterBusy()) return "This firmware does not support light control while printing";
             if (self.transportRecoveryRequired()) return "Chamber light control is unavailable until the RME transport recovers";
             if (self.navbarTransferActive()) return "Chamber light control is unavailable during an RME transfer";
             return "Chamber light control is unavailable";
         });
         self.chamberLightBlocked = ko.pureComputed(function () {
-            if (self.tuneAvailable()) return !self.tuneEnabled();
+            if (!self.state().connected || !self.state().supported) return true;
+            if (self.tuneAvailable()) return !self.tuneLightingEnabled();
             return (self.chamberLightPrinterBusy() && !self.tuneAvailable()) || self.transportRecoveryRequired() || self.navbarTransferActive();
         });
         self.chamberLightDisabled = ko.pureComputed(function () {
-            // Printing owns its lighting profile, and raw RME transfers own
-            // the serial transport. Continue showing the reported light state
-            // while preventing a conflicting command in either case.
+            // Modern lighting overrides remain available during prints.
+            // Transfers, recovery and the printer lock still block commands.
             return self.chamberLightBlocked();
         });
         self.navbarTransferWidth = ko.pureComputed(function () {
@@ -876,15 +998,6 @@ $(function () {
             var provider = String(self.spoolmanager().provider || "").toLowerCase();
             var tool = Number(row && row.tool);
             if (!isFinite(tool) || tool < 0 || Math.floor(tool) !== tool) return;
-            // Bootstrap 2 cannot safely stack these modal dialogs. Finish
-            // hiding our mapping dialog before the provider takes focus.
-            var mappingDialog = $("#rme-spool-mapping-dialog");
-            if (mappingDialog.hasClass("in")) {
-                mappingDialog.one("hidden", function () {
-                    self.openNativeSpoolSelector(row);
-                }).modal("hide");
-                return;
-            }
             if (provider === "spoolmanager") {
                 var spoolManagerElement = document.getElementById("sidebar_spool_select");
                 var spoolManager = spoolManagerElement && ko.dataFor(spoolManagerElement);
@@ -925,12 +1038,28 @@ $(function () {
             return spool ? self.spoolLabel(spool) : "Selected spool " + selectedId;
         };
         self.hasDirtySpoolSelections = ko.pureComputed(function () {
-            return !!self.pendingProviderSync() || ko.utils.arrayFirst(self.spoolSelectionRows(), function (row) {
+            return !!self.pendingProviderSync() || !!ko.utils.arrayFirst(self.spoolSelectionRows(), function (row) {
                 return row.dirty();
-            }) !== null;
+            });
         });
 
         self.firmwareFiles = ko.pureComputed(function () { return self.state().firmware_files || []; });
+        self.releaseInfo = ko.pureComputed(function () { return self.state().firmware_releases || {}; });
+        self.releaseAssets = ko.pureComputed(function () { return self.releaseInfo().assets || []; });
+        self.selectedRelease = ko.observable();
+        self.releaseBusy = ko.pureComputed(function () { return ["checking", "downloading"].indexOf(self.releaseInfo().status) >= 0; });
+        self.releaseLabel = function (a) {
+            return a.version + " — " + a.variant + " — " + ({current: "Installed checksum matches", different: "Different from installed firmware", unknown: "Installed checksum unknown"}[a.comparison]);
+        };
+        self.checkFirmwareReleases = function () {
+            self.command("check_firmware_releases", {variant: ko.unwrap(self.settings.settings.plugins.rme_compatibility.firmware_variant) || ""});
+        };
+        self.downloadFirmwareRelease = function () {
+            var asset = ko.utils.arrayFirst(self.releaseAssets(), function (a) { return a.id === self.selectedRelease(); });
+            if (!asset || !window.confirm("Download " + asset.name + " to this Pi? It will NOT flash automatically. Use the existing Upload and flash controls after the download completes.")) return;
+            self.command("download_firmware_release", {id: asset.id, variant: asset.variant});
+        };
+        self.useDownloadedFirmware = function () { self.selectedFirmware(self.releaseInfo().filename); };
         self.firmwareLabel = function (file) { return file.name + " (" + formatBytes(file.size) + ")"; };
         self.firmware = ko.pureComputed(function () { return self.state().firmware || {}; });
         self.partialTransfer = ko.pureComputed(function () {
@@ -939,6 +1068,13 @@ $(function () {
         self.partialRecoveryActive = ko.pureComputed(function () {
             var partial = self.partialTransfer();
             return !!partial && partial.recovery_active === true;
+        });
+        self.transferRecoveryVisible = ko.pureComputed(function () {
+            return self.firmwareBusy() || !!self.partialTransfer() || self.transportRecoveryRequired() || !!self.firmwareError();
+        });
+        self.canRecoverPartial = ko.pureComputed(function () {
+            return self.state().connected && self.state().supported && !self.transportRecoveryRequired() &&
+                !self.firmwareBusy() && !self.partialRecoveryActive();
         });
         self.partialTransferSummary = ko.pureComputed(function () {
             var partial = self.partialTransfer();
@@ -985,9 +1121,10 @@ $(function () {
         });
         self.canStage = ko.pureComputed(function () {
             return !!self.selectedFirmware() && self.state().supported &&
+                !self.transportRecoveryRequired() && !self.partialTransfer() &&
                 !self.firmwareBusy() && ["flash_queued", "flashing", "restarting"].indexOf(self.firmware().status) < 0;
         });
-        self.canFlash = ko.pureComputed(function () { return ["ready", "staged"].indexOf(self.firmware().status) >= 0; });
+        self.canFlash = ko.pureComputed(function () { return !self.transportRecoveryRequired() && ["ready", "staged"].indexOf(self.firmware().status) >= 0; });
         self.canUnstage = ko.pureComputed(function () { return ["ready", "staged"].indexOf(self.firmware().status) >= 0; });
 
         self.hasMachine = ko.pureComputed(function () {
@@ -1032,13 +1169,11 @@ $(function () {
             }
             self.toolmapNotice = null;
             self.toolmapNoticeKey = key;
-            if (key) {
-                self.toolmapNotice = new PNotify({
-                    title: "Tool mapping required",
-                    text: "The print is waiting. Use the RME top-bar menu to continue with the current mapping or open the RME tab to review it.",
-                    type: "notice",
-                    hide: false
-                });
+            var settings = (((self.settings || {}).settings || {}).plugins || {}).rme_compatibility || {};
+            if (key && (prompt.spooljoin_review || ko.unwrap(settings.prompt_toolmap_on_print) !== false)) {
+                self.showToolMapping();
+            } else {
+                $("#rme-tool-mapping").modal("hide");
             }
         };
         self.updateFirmwareRecoveryNotice = function (workflow, prompt) {
@@ -1047,7 +1182,7 @@ $(function () {
             var state = String(workflow.state || "").toLowerCase();
             var needsAction = workflow.type === "error" || state === "waiting";
             var actions = prompt.kind === "firmware" ? (prompt.actions || []) : [];
-            var key = needsAction ? [workflow.seq, workflow.received_at,
+            var key = needsAction ? [workflow.workflow, state,
                 workflow.code, workflow.message, actions.join(",")].join(":") : "";
             if (key === self.firmwareRecoveryNoticeKey) return;
             if (self.firmwareRecoveryNotice && typeof self.firmwareRecoveryNotice.remove === "function") {
@@ -1063,12 +1198,29 @@ $(function () {
                     title: "Printer action required",
                     text: text,
                     type: "error",
-                    hide: false
+                    hide: false,
+                    animate: false,
+                    text_escape: true,
+                    nonblock: {nonblock: true}
                 });
             }
         };
         self.acceptState = function (value) {
             if (!value) return;
+            function newer(candidate, reference) {
+                var a = candidate && candidate._snapshot, b = reference && reference._snapshot;
+                return a && b && a.epoch === b.epoch && Number(a.revision) > Number(b.revision);
+            }
+            // HTTP command replies and WebSocket frames race. A late queued
+            // snapshot must not rewind a completed transfer to 0%, nor may
+            // it discard a newer completion frame waiting for animationFrame.
+            if (newer(self.pendingStateSnapshot, value)) value = self.pendingStateSnapshot;
+            if (newer(self.state(), value)) return;
+            self.pendingStateSnapshot = null;
+            // JSON snapshots create new objects even for unchanged files/spools.
+            // Preserve their identities so KO does not destroy/rebind whole lists
+            // on every tune/temperature update, including hidden Settings tables.
+            value = reconcileSnapshot(self.state(), value);
             var oldPrompt = self.state().prompt || {};
             self.state(value);
             if (value.tune) {
@@ -1157,6 +1309,8 @@ $(function () {
                 self.physicalTools(options);
                 self.mappingRows(rows);
                 self.mappingEnabled(prompt.enabled !== false);
+                self.mappingExpanded(!prompt.skip_mapping);
+                self.fallbackSelections({});
             }
             if (value.theme) {
                 ko.utils.arrayForEach(self.themeKeys, function (entry) {
@@ -1234,13 +1388,22 @@ $(function () {
             })).join("|");
             if (selectionKey !== self.spoolSelectionKey) {
                 self.spoolSelectionKey = selectionKey;
+                var drafts = {};
+                ko.utils.arrayForEach(self.spoolSelectionRows(), function (row) {
+                    if (row.dirty()) drafts[row.tool] = normalizeDatabaseId(row.selected());
+                });
                 var selectionRows = [];
                 for (var tool = 0; tool < machineTools; tool++) {
-                    selectionRows.push(makeSpoolSelectionRow(
+                    var selectionRow = makeSpoolSelectionRow(
                         tool,
                         loadedByTool[tool] || null,
                         selectedByTool[tool] === undefined ? null : selectedByTool[tool]
-                    ));
+                    );
+                    if (Object.prototype.hasOwnProperty.call(drafts, tool)) {
+                        selectionRow.selected(drafts[tool]);
+                        self.changeSpoolSelection(selectionRow);
+                    }
+                    selectionRows.push(selectionRow);
                 }
                 self.spoolSelectionRows(selectionRows);
             }
@@ -1252,6 +1415,10 @@ $(function () {
         self.respond = function (action) { self.command("respond", {action: action}); };
         self.selectIndxSlot = function (entry) { self.command("select_indx_slot", {slot: entry.slot}); };
         self.resetToolmap = function () { self.command("reset_toolmap"); };
+        self.showToolMapping = function () {
+            if (!self.hasToolmapPrompt()) return;
+            $("#rme-tool-mapping").modal("show");
+        };
         self.applyToolmap = function () {
             if (!self.materialMappingValid()) return;
             var mapping = {};
@@ -1267,7 +1434,7 @@ $(function () {
                 new PNotify({title: "Invalid tool mapping", text: "Each physical tool can only be selected once.", type: "error"});
                 return;
             }
-            self.command("apply_toolmap", {mapping: mapping, enabled: self.mappingEnabled()});
+            self.command("apply_toolmap", {mapping: mapping, enabled: self.mappingEnabled(), fallbacks: self.fallbackSelections()});
         };
         self.touchToolmap = function () {
             if (self.hasToolmapPrompt() && !self.prompt().timer_paused) self.command("touch_toolmap");
@@ -1324,10 +1491,29 @@ $(function () {
             self.command(command, {path: entry.path});
         };
         self.cancelFirmware = function () { self.command("cancel_firmware"); };
+        self.recoverTransfer = function () {
+            if (window.confirm("Stop RME transfers and disconnect? The uploaded source is kept. Power-cycle the printer before reconnecting or confirming recovery.")) {
+                self.command("recover_transfer");
+            }
+        };
+        self.showRmeSection = function (section) {
+            $("#settings_dialog").modal("hide");
+            self.showRmeTab();
+            if (section === "storage") self.settingsStorageExpanded(true);
+            var target = document.getElementById("rme-tab-" + section);
+            if (target && target.scrollIntoView) target.scrollIntoView({block: "start"});
+        };
+        self.showLiveControls = function () {
+            $("#settings_dialog").modal("hide");
+            $("a[href='#control']").tab("show");
+        };
         self.unstageFirmware = function () {
             if (window.confirm("Remove the staged firmware from the printer? The BBF stored on this Pi will be kept.")) {
                 self.command("unstage_firmware");
             }
+        };
+        self.refreshFirmwareStatus = function () {
+            self.command("refresh_firmware_status");
         };
         self.confirmPrinterReboot = function () {
             if (window.confirm("Confirm that the printer itself was power-cycled or rebooted? RME communication will be unlocked.")) {
@@ -1354,6 +1540,15 @@ $(function () {
             var filename = self.selectedFirmware();
             if (!filename || !window.confirm("Delete " + filename + " from this Pi?")) return;
             self.command("delete_firmware", {filename: filename}).done(function () {
+                self.selectedFirmware(null);
+            });
+        };
+        self.deleteAllFirmwareCopies = function () {
+            var filenames = self.firmwareFiles().map(function (file) { return file.name; });
+            if (!filenames.length || !window.confirm("Delete all " + filenames.length +
+                " firmware BBF copies from this Pi? Printer firmware and the printer's staged image are not changed.\n\n" +
+                filenames.join("\n"))) return;
+            self.command("delete_firmware_copies", {filenames: filenames}).done(function () {
                 self.selectedFirmware(null);
             });
         };
@@ -1388,7 +1583,7 @@ $(function () {
             var now = Date.now();
             if (self.chamberLightDisabled()) return;
             if (self.tuneAvailable()) {
-                self.command("set_print_override", {kind: "light", value: self.tuneLight() > 0 ? 0 : 1});
+                self.requestChamberLight(self.tuneLight() > 0 ? 0 : 1);
                 return;
             }
             if (self.chamberLightHeld()) {
@@ -1493,11 +1688,18 @@ $(function () {
             installSpoolManagerPanel();
         };
         self.showFilamentMapping = function () {
+            $("#rme-tool-mapping").modal("hide");
             // SpoolManager can be edited without passing through this plugin,
             // so each mapping session must start with a fresh full inventory.
             self.command("refresh_spool_inventory").always(function () {
                 $("#settings_dialog").modal("hide");
-                ensureRmeSpoolMappingDialog().modal("show");
+                self.showRmeTab();
+                var panel = ensureRmeSpoolMappingPanel();
+                panel.show();
+                if (panel.length) {
+                    panel[0].focus();
+                    if (panel[0].scrollIntoView) panel[0].scrollIntoView({block: "nearest"});
+                }
             });
         };
         self.createSpoolInSpoolManager = function (row) {
@@ -1511,6 +1713,7 @@ $(function () {
                 });
                 return;
             }
+            if (spoolManager.spoolDialog.rmeRestoreNewSpool) spoolManager.spoolDialog.rmeRestoreNewSpool();
             self.showSpoolManagerTab();
             spoolManager.addNewSpool();
             var item = spoolManager.spoolDialog.spoolItemForEditing;
@@ -1527,6 +1730,47 @@ $(function () {
             setSpoolManagerField(item, "totalCombinedWeight", values.weight);
             setSpoolManagerField(item, "usedWeight", 0);
             setSpoolManagerField(item, "selectedForTool", row.tool);
+            // Native Save only persists the record; selectedForTool is merely
+            // the separate "select for printing" dropdown. Save through RME
+            // to obtain the exact created ID, retaining all native fields.
+            var dialog = spoolManager.spoolDialog;
+            var api = dialog.apiClient;
+            if (!api || typeof api.callSaveSpool !== "function") return;
+            var originalSave = api.callSaveSpool;
+            var pending = false;
+            var createdId = null;
+            var modal = $(dialog.spoolDialog);
+            function restoreSave() {
+                if (api.callSaveSpool === saveForSlot) api.callSaveSpool = originalSave;
+                if (dialog.rmeRestoreNewSpool === restoreSave) dialog.rmeRestoreNewSpool = null;
+                modal.off("hidden.rmeNewSpool", restoreSave);
+            }
+            function saveForSlot(edited, callback) {
+                if (edited !== item) return originalSave.apply(this, arguments);
+                if (pending) return;
+                pending = true;
+                function assignCreated() {
+                    self.command("select_spool", {tool: Number(row.tool), database_id: createdId})
+                        .done(function () {
+                            restoreSave();
+                            self.command("refresh_spool_inventory");
+                            callback(); // Preserve native table/sidebar reload and dialog close.
+                        }).always(function () { pending = false; });
+                }
+                if (createdId !== null) {
+                    assignCreated(); // Assignment retry must not create another spool.
+                    return;
+                }
+                self.command("create_native_spool", {tool: Number(row.tool), spool: ko.toJS(edited)})
+                    .done(function (result) {
+                        createdId = result.created_spool.database_id;
+                        setSpoolManagerField(item, "databaseId", createdId);
+                        assignCreated();
+                    }).fail(function () { pending = false; });
+            }
+            api.callSaveSpool = saveForSlot;
+            dialog.rmeRestoreNewSpool = restoreSave;
+            modal.on("hidden.rmeNewSpool", restoreSave);
         };
         self.createSpoolForMappingRow = function (row) {
             if (self.spoolManagerProvider()) {
@@ -1544,7 +1788,6 @@ $(function () {
                 self.newSpoolWeight(values.weight);
                 self.newSpoolNozzle(values.nozzle);
                 self.newSpoolBed(values.bed);
-                $("#rme-spool-mapping-dialog").modal("hide");
                 self.showRmeTab();
             });
         };
@@ -1700,6 +1943,12 @@ $(function () {
                 scheduleCoreWorkflowRender();
             }, 1000);
         };
+        self.onServerReconnect = function () {
+            // A pending prompt may be unchanged while this browser was away.
+            // Fetch the authoritative state and allow it to open again once.
+            self.toolmapNoticeKey = "";
+            OctoPrint.simpleApiGet("rme_compatibility").done(self.acceptState);
+        };
         self.integrateCancelObjectPreview = function () {
             var list = $("#tab_plugin_cancelobject #cancel-table");
             var preview = $("#rme-object-overview");
@@ -1711,25 +1960,50 @@ $(function () {
             $("a[href='#tab_plugin_rme_compatibility_objects']").closest("li").hide();
         };
         self.onAllBound = function () {
+            // Keep the bound editor outside tab overflow/transform containers.
+            $("#rme-tool-mapping").detach().appendTo(document.body);
             self.installDashboardHeight();
             self.integrateCancelObjectPreview();
             // Move the already-bound controls once, preserving their KO context.
             if ($("#control").length) $("#rme-print-controls").detach().appendTo("#control");
             self.allViewModelsBound = true;
+            // The initial API reply can arrive before the modal is bound/moved.
+            self.toolmapNoticeKey = "";
+            self.updateToolmapNotice(self.prompt());
             installSpoolManagerPanel();
             installSpoolManagerSidebar();
             updateCorePrintClock();
             scheduleCoreWorkflowRender();
         };
         self.onSettingsShown = function () {
-            if (self.state().supported) {
-                self.queryControls();
-                if (self.storage().supported) self.refreshStorage();
-                else self.command("storage_caps");
-            }
+            // Use the live cached state. Opening OctoPrint Settings must not
+            // trigger a full configuration refresh or recursive USB scan.
+            // Explicit refresh buttons and the regular tune poll remain active.
         };
         self.onDataUpdaterPluginMessage = function (plugin, data) {
-            if (plugin === "rme_compatibility") self.acceptState(data);
+            if (plugin === "rme_compatibility" && data.retry_notice) {
+                new PNotify({title: "RME reprint", text: data.retry_notice.message,
+                    type: data.retry_notice.error ? "error" : "success"});
+                return;
+            }
+            if (plugin === "rme_compatibility") {
+                var incomingStamp = data && data._snapshot;
+                var pendingStamp = self.pendingStateSnapshot && self.pendingStateSnapshot._snapshot;
+                var currentStamp = self.state()._snapshot;
+                if (incomingStamp && [pendingStamp, currentStamp].some(function (stamp) {
+                    return stamp && stamp.epoch === incomingStamp.epoch && Number(stamp.revision) > Number(incomingStamp.revision);
+                })) return;
+                self.pendingStateSnapshot = data;
+                if (!self.stateFrameScheduled) {
+                    self.stateFrameScheduled = true;
+                    (window.requestAnimationFrame || function (callback) { return window.setTimeout(callback, 16); })(function () {
+                        self.stateFrameScheduled = false;
+                        var latest = self.pendingStateSnapshot;
+                        self.pendingStateSnapshot = null;
+                        if (latest) self.acceptState(latest);
+                    });
+                }
+            }
             if (plugin === "cancelobject" && Array.isArray(data.objects)) {
                 self.cancelObjects(data.objects.filter(function (o) { return !o.ignore; }));
             }
@@ -1788,6 +2062,19 @@ $(function () {
                 });
                 return matching;
             });
+            row.search = ko.observable("");
+            row.choiceLimit = ko.observable(30);
+            row.filteredSpools = ko.pureComputed(function () {
+                var query = row.search().trim().toLowerCase();
+                return row.availableSpools().filter(function (spool) {
+                    return !query || [spool.display_name, spool.material, spool.vendor,
+                        spool.color_name, spool.database_id].join(" ").toLowerCase().indexOf(query) >= 0;
+                });
+            });
+            row.visibleSpools = ko.pureComputed(function () { return row.filteredSpools().slice(0, row.choiceLimit()); });
+            row.moreSpools = ko.pureComputed(function () { return row.filteredSpools().length > row.choiceLimit(); });
+            row.showMore = function () { row.choiceLimit(row.choiceLimit() + 30); };
+            row.search.subscribe(function () { row.choiceLimit(30); });
             return row;
         }
 
@@ -1835,7 +2122,11 @@ $(function () {
                 '<td class="rme-native-provider-selection" data-bind="text: $parent.mappingSelectionLabel($data)"></td>' +
                 '<td class="rme-spool-mapping-actions"><button class="btn btn-mini" data-bind="click: $parent.openNativeSpoolSelector"><i class="fa fa-ellipsis-h"></i> Select spool…</button> ' +
                 '<button class="btn btn-mini" data-bind="click: $parent.createSpoolInSpoolManager"><i class="fa fa-plus"></i> Create new…</button></td>' +
-                '</tr></tbody></table><p class="help-block">Create new opens SpoolManager’s native spool editor with the printer’s known material, vendor, color, and temperatures prefilled.</p></div>'
+                '</tr></tbody></table><p class="help-block">Create new opens SpoolManager’s native spool editor with the printer’s known material, vendor, color, and temperatures prefilled.</p>' +
+                '<div class="alert alert-warning" data-bind="visible: pendingProviderSync, text: pendingProviderSync() && pendingProviderSync().message"></div>' +
+                '<div class="rme-mapping-actions"><button type="button" class="btn btn-primary" data-bind="click: syncFilamentsToPrinter, enable: canSyncFilaments">Apply filament mapping to printer</button>' +
+                '<button type="button" class="btn" data-bind="click: syncFilamentsFromPrinter, enable: canSyncFilaments">Use printer filament mapping</button></div>' +
+                '<p class="help-block">SpoolManager saves spool selections. Apply sends those selections to the printer; Use printer reads the printer’s selections back into the provider. This does not change slicer tool remapping or start a print.</p></div>'
             );
             tab.prepend(panel);
             ko.applyBindings(self, panel[0]);
@@ -1861,9 +2152,15 @@ $(function () {
                     var context = ko.contextFor(this);
                     if (!context || !context.$index) return;
                     var tool = Number(ko.unwrap(context.$index));
-                    $(this).attr({role: "button", tabindex: "0", title: "Select spool for T" + tool});
-                    $(this).parent().toggleClass("rme-sidebar-tool-active",
-                        active !== null && active !== undefined && Number(active) === tool);
+                    var label = $(this), attributes = {role: "button", tabindex: "0", title: "Select spool for T" + tool};
+                    Object.keys(attributes).forEach(function (key) {
+                        if (label.attr(key) !== attributes[key]) label.attr(key, attributes[key]);
+                    });
+                    var parent = label.parent();
+                    var selected = active !== null && active !== undefined && Number(active) === tool;
+                    if (parent.hasClass("rme-sidebar-tool-active") !== selected) {
+                        parent.toggleClass("rme-sidebar-tool-active", selected);
+                    }
                 });
             }
             self.activeTool.subscribe(refreshSidebar);
@@ -1872,27 +2169,32 @@ $(function () {
             refreshSidebar();
         }
 
-        function ensureRmeSpoolMappingDialog() {
-            var dialog = $("#rme-spool-mapping-dialog");
+        function ensureRmeSpoolMappingPanel() {
+            var dialog = $("#rme-spool-mapping-panel");
             if (dialog.length) return dialog;
+            var host = $("#rme-spool-mapping-host");
+            if (!host.length) return dialog;
             dialog = $(
-                '<div id="rme-spool-mapping-dialog" class="modal hide fade rme-spool-mapping-dialog" tabindex="-1">' +
-                '<div class="modal-header"><button type="button" class="close" data-dismiss="modal">&times;</button>' +
-                '<h3>Printer loadout mapping</h3><p data-bind="text: spoolOwnershipText"></p></div>' +
-                '<div class="modal-body"><div class="rme-mapping-toolbar">' +
-                '<p>Choose a same-material spool from <strong data-bind="text: mappingProviderName"></strong>. Changes are staged until Apply mappings.</p></div>' +
+                '<section id="rme-spool-mapping-panel" class="rme-card" tabindex="-1" aria-label="Spool mapping">' +
+                '<h4>Spool mapping</h4><p data-bind="text: spoolOwnershipText"></p>' +
+                '<div><div class="rme-mapping-toolbar">' +
+                '<p>Choose a same-material spool from <strong data-bind="text: mappingProviderName"></strong>. Changes are staged until Save and apply.</p></div>' +
                 '<div class="rme-routing-cards" data-bind="foreach: spoolSelectionRows"><section class="rme-route-card" data-bind="css: {\'rme-spool-mapping-dirty\': dirty}">' +
                 '<div class="rme-route-source"><span class="rme-spool-swatch" data-bind="style: {backgroundColor: $root.mappingColor(loaded && loaded.color)}"></span><strong data-bind="text: \'T\' + tool"></strong> ' +
                 '<span data-bind="text: $root.loadedFilamentLabel(loaded)"></span><span class="rme-route-arrow">→</span><span data-bind="text: $root.mappingSelectionLabel($data)"></span></div>' +
-                '<div class="rme-route-choices" data-bind="foreach: availableSpools"><button type="button" class="btn rme-tool-choice" data-bind="css: {selected: String($parent.selected()) === String(database_id)}, attr: {\'aria-pressed\': String($parent.selected()) === String(database_id)}, click: function() {$root.chooseMappingSpool($parent, $data);}">' +
+                '<label>Search all matching spools <input type="search" data-bind="textInput: search" placeholder="Name, brand, color or spool ID"></label>' +
+                '<small data-bind="text: visibleSpools().length + \' shown / \' + filteredSpools().length + \' matching spools\'"></small>' +
+                '<div class="rme-route-choices" data-bind="foreach: visibleSpools"><button type="button" class="btn rme-tool-choice" data-bind="css: {selected: String($parent.selected()) === String(database_id)}, attr: {\'aria-pressed\': String($parent.selected()) === String(database_id)}, click: function() {$root.chooseMappingSpool($parent, $data);}">' +
                 '<span class="rme-spool-swatch" data-bind="style: {backgroundColor: $root.mappingColor($data.color)}"></span><span data-bind="text: $root.spoolLabel($data)"></span></button></div>' +
+                '<button type="button" class="btn btn-mini" data-bind="visible: moreSpools, click: showMore">Show 30 more</button>' +
                 '<p class="text-warning" data-bind="visible: !availableSpools().length">No matching spools, or loaded material is unknown. Refresh the printer loadout/inventory first.</p>' +
                 '<button class="btn btn-mini" data-bind="click: function() {selected(null); $root.changeSpoolSelection($data);}">Unassign</button> ' +
                 '<button class="btn btn-mini" data-bind="click: $root.createSpoolForMappingRow">Create new…</button></section></div>' +
                 '<p class="help-block">Only matching known materials may be assigned. Brand and color are shown for review; specialty material names remain distinct.</p></div>' +
-                '<div class="modal-footer"><button class="btn" data-dismiss="modal">Close</button>' +
-                '<button class="btn btn-primary" data-bind="click: applySpoolSelections, enable: hasDirtySpoolSelections">Apply mappings</button></div></div>'
-            ).appendTo(document.body);
+                '<div class="rme-mapping-actions">' +
+                '<button class="btn btn-primary" data-bind="click: applySpoolSelections, enable: hasDirtySpoolSelections">Save and apply spool mapping</button>' +
+                '<button class="btn" data-bind="visible: hasToolmapPrompt, click: showToolMapping">Review print tool mapping</button></div></section>'
+            ).appendTo(host);
             ko.applyBindings(self, dialog[0]);
             return dialog;
         }
@@ -2104,6 +2406,12 @@ $(function () {
             var toolIndicator = $("#rme-active-tool-indicator");
             renderDashboardWorkflow(active, workflow);
             if (!target.length) return;
+            var pauseNotice = $("#rme-pause-reason");
+            if (!pauseNotice.length) {
+                pauseNotice = $('<div id="rme-pause-reason" class="alert alert-warning" role="status"></div>');
+                target.before(pauseNotice);
+            }
+            pauseNotice.text(self.pauseReasonText()).toggle(!!self.pauseReasonText());
             // Remove the separate workflow bar created by older plugin builds.
             // RME phases now temporarily occupy the normal OctoPrint progress
             // bar so there is only one progress display to follow.
@@ -2147,7 +2455,8 @@ $(function () {
             var fan = root.find(".dashboard_threeQuarterGauge").filter(function () {
                 return String($(this).attr("data-bind") || "").indexOf("'fan'") >= 0;
             }).first();
-            if (ko.unwrap(settings.dashboard_rme_progress) === false) {
+            if (!self.state().connected || !self.state().supported ||
+                ko.unwrap(settings.dashboard_rme_progress) === false) {
                 circle.remove();
                 fan.removeClass("rme-dashboard-fan-neighbor");
                 return;
@@ -2188,7 +2497,6 @@ $(function () {
             var determinate = active && raw !== null && raw !== undefined && isFinite(progress);
             var bounded = determinate ? Math.max(0, Math.min(100, progress)) : 0;
             var label = active ? self.workflowTitle() + " — " + (workflow.message || self.workflowState()) : "Ready";
-            if (!active && !self.state().connected) label = "Disconnected";
             if (determinate) label += " · " + Math.round(bounded) + "%";
             circle.toggleClass("rme-dashboard-workflow-active", active)
                 .toggleClass("rme-dashboard-workflow-indeterminate", active && !determinate);
@@ -2197,7 +2505,7 @@ $(function () {
                 "stroke-dasharray": arcLength, "stroke-dashoffset": arcLength * (1 - bounded / 100)
             });
             circle.find(".rme-dashboard-percentage").text(determinate ? Math.round(bounded) + "%" : (active ? "…" : ""));
-            circle.find(".rme-dashboard-workflow-caption").text(active ? "RME" : (self.state().connected ? "Ready" : "Offline"));
+            circle.find(".rme-dashboard-workflow-caption").text(active ? "RME" : "Ready");
             circle.attr("title", label).attr("aria-label", label);
         }
 
@@ -2259,6 +2567,19 @@ $(function () {
             });
         }
 
+    }
+
+    function reconcileSnapshot(previous, next) {
+        if (previous === next) return previous;
+        if (!previous || !next || typeof previous !== 'object' || typeof next !== 'object' ||
+                Array.isArray(previous) !== Array.isArray(next)) return next;
+        var keys = Object.keys(next), unchanged = keys.length === Object.keys(previous).length;
+        var result = Array.isArray(next) ? [] : {};
+        keys.forEach(function (key) {
+            result[key] = reconcileSnapshot(previous[key], next[key]);
+            if (!Object.prototype.hasOwnProperty.call(previous, key) || result[key] !== previous[key]) unchanged = false;
+        });
+        return unchanged ? previous : result;
     }
 
     function formatDuration(seconds) {

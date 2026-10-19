@@ -6,10 +6,57 @@ from octoprint_rme_compatibility.protocol import parse_line
 
 
 class PrintControlsTests(unittest.TestCase):
+    def test_temperature_plan_keeps_parent_workflow_through_all_points(self):
+        plugin = self.plugin()
+        plugin._schedule_publish = lambda: None
+        plugin._state.update(connected=True, supported=True)
+        command = "M976 A 0:0:HIPS:250/240"
+        self.assertIsNone(plugin.gcode_queuing_hook(None, "queuing", command, None, "M976", tags={"source:job"}))
+        plugin.gcode_sent_hook(None, "sent", command, None, "M976")
+        plugin._observe_pressure_advance_output("PA_CALIBRATION batch accepted entries=1")
+        for point, temperature in ((1, 250), (2, 240)):
+            plugin._observe_pressure_advance_output(
+                "PA_CALIBRATION temperature_point tool=0 slot=0 temperature=%d point=%d points=2" % (temperature, point))
+            self.assertTrue(plugin._auto_pa_active)
+            self.assertIn("%d°C" % temperature, plugin._state["workflow"]["message"])
+            self.assertIn("%d/2" % point, plugin._state["workflow"]["message"])
+            plugin._observe_pressure_advance_output("PA_CALIBRATION tool=0 slot=0 result=0.046 max_flow=12 confidence=0.81")
+            self.assertTrue(plugin._auto_pa_active)
+        plugin._observe_pressure_advance_output("PA_CALIBRATION batch complete entries=1")
+        self.assertFalse(plugin._auto_pa_active)
+        self.assertIsNone(plugin._state["workflow"])
+
+    def test_operator_chamber_target_is_live_only_with_capability(self):
+        plugin = self.plugin()
+        plugin._state.update(supported=True)
+        plugin._state["machine"]["live_chamber"] = 1
+        result = plugin.gcode_queuing_hook(None, "queuing", "M141 S35", None, "M141", tags={"source:api"})
+        self.assertEqual(result, (None,))
+        self.assertEqual(self.commands, ["@RME TEMPERATURE SET chamber=35"])
+
+    def test_file_chamber_command_keeps_fifo_and_old_firmware_falls_back(self):
+        plugin = self.plugin()
+        plugin._state.update(supported=True)
+        for tags in ({"source:file"}, {"source:api"}):
+            self.assertIsNone(plugin.gcode_queuing_hook(None, "queuing", "M141 S35", None, "M141", tags=tags))
+        self.assertEqual(self.commands, [])
+
+    def test_live_heaters_only_bypass_for_operator_commands(self):
+        plugin = self.plugin()
+        plugin._state.update(supported=True)
+        plugin._state["machine"]["live_controls"] = 1
+        self.assertIsNone(plugin.gcode_queuing_hook(None, "queuing", "M140 S55", None, "M140", tags={"source:file"}))
+        self.assertEqual(self.commands, [])
+        self.assertEqual(plugin.gcode_queuing_hook(None, "queuing", "M140 S55", None, "M140", tags={"source:api"}), (None,))
+        self.assertEqual(self.commands, ["@RME CONTROL SET bed=55"])
+
+
     def plugin(self):
         plugin = RmeCompatibilityPlugin()
         plugin._state["machine"].update(tune=1, tool_capacity=8)
         plugin._send_command = self.commands.append
+        plugin._send_priority_services = lambda commands, trigger: self.commands.extend(commands)
+        plugin._printer = types.SimpleNamespace(is_operational=lambda: True)
         return plugin
 
     def setUp(self):
@@ -28,7 +75,7 @@ class PrintControlsTests(unittest.TestCase):
             ({"kind": "light", "value": 2}, "@RME LIGHT MODE value=2"),
         ]:
             self.plugin()._set_print_override(data)
-            self.assertEqual(self.commands[-1], expected)
+            self.assertIn(expected, self.commands)
 
     def test_invalid_controls_never_send(self):
         for data in [
@@ -43,6 +90,37 @@ class PrintControlsTests(unittest.TestCase):
                 self.plugin()._set_print_override(data)
         self.assertEqual(self.commands, [])
 
+    def test_auto_pa_modes_require_firmware_support(self):
+        for mode in (0, 1, 2):
+            plugin = self.plugin()
+            plugin._state["tune"]["auto_pa"] = 1
+            plugin._set_print_override(dict(kind="auto_pa", value=mode))
+            self.assertIn("M976 W%d" % mode, self.commands)
+        self.commands.clear()
+        with self.assertRaises(ValueError):
+            self.plugin()._set_print_override(dict(kind="auto_pa", value=1))
+        plugin = self.plugin()
+        plugin._state["tune"]["auto_pa"] = 1
+        with self.assertRaises(ValueError):
+            plugin._set_print_override(dict(kind="auto_pa", value=3))
+        self.assertEqual(self.commands, [])
+
+    def test_auto_pa_snapshot_is_preserved(self):
+        plugin = self.plugin()
+        plugin._schedule_publish = lambda: None
+        plugin._handle_record(parse_line("RME_TUNE speed=100 auto_pa=2"))
+        self.assertEqual(plugin._state["tune"]["auto_pa"], 2)
+
+    def test_skipped_and_cached_batches_close_auto_pa_workflow(self):
+        for line in ("PA_CALIBRATION skipped mode=off",
+                     "PA_CALIBRATION batch cached; no calibration moves"):
+            plugin = self.plugin()
+            plugin._schedule_publish = lambda: None
+            plugin._start_pressure_advance_workflow()
+            plugin._observe_pressure_advance_output(line)
+            self.assertFalse(plugin._auto_pa_active)
+            self.assertIsNone(plugin._state["workflow"])
+
     def test_independent_lcd_and_single_channel_print_brightness(self):
         for kind, value, expected in [
             ("lcd", 0, "@RME LIGHT LCD value=0"),
@@ -55,7 +133,19 @@ class PrintControlsTests(unittest.TestCase):
             plugin._state["tune"] = dict(lcd=1, screen_print=100, chamber_print=100, status_print=100)
             plugin._print_job_active = lambda: True
             plugin._set_print_override(dict(kind=kind, value=value))
-            self.assertEqual(self.commands[-1], expected)
+            self.assertIn(expected, self.commands)
+
+    def test_print_light_is_binary_and_rapid_clicks_are_not_motion_throttled(self):
+        plugin = self.plugin()
+        plugin._print_job_active = lambda: True
+        for value in (0, 1, 0, 2):
+            plugin._set_print_override(dict(kind="light", value=value))
+        self.assertEqual(self.commands, [
+            "@RME LIGHT MODE value=0", "@RME TUNE QUERY",
+            "@RME LIGHT MODE value=1", "@RME TUNE QUERY",
+            "@RME LIGHT MODE value=0", "@RME TUNE QUERY",
+            "@RME LIGHT MODE value=1", "@RME TUNE QUERY",
+        ])
 
     def test_new_lighting_controls_require_capability_and_print(self):
         plugin = self.plugin()

@@ -26,6 +26,7 @@ from octoprint.events import Events
 from werkzeug.utils import secure_filename
 
 from .file_service import FileServiceError, RmeFileService
+from . import github_firmware
 from .protocol import (
     MAX_FIRMWARE_SIZE,
     classify_workflow,
@@ -43,8 +44,15 @@ from .spoolmanager import (
 )
 from .storage import StateStore, TransferManifestStore
 from .preview import read_preview
-from .mapping import read_requirements, recommend, validate, compatible
+from .progress import progress_command
+from .mesh_area import analyze as analyze_mesh_area, is_adaptive_probe
+from .completion_snapshot import CompletionSnapshot
+from .pause_reason import PauseReason
+from .end_move import analyze as analyze_end_move, normalized as normalize_end_move
+from .mapping import read_requirements, recommend, validate, compatible, fallback_commands, recent_mapping_valid
 from .uploader import FirmwareUploader, UploadError, firmware_metadata
+from .live_controls import command as live_control_command
+from .firmware_image import validate as validate_firmware_image
 
 
 EXTRUSION_FAULT_WORKFLOWS = frozenset((
@@ -54,6 +62,7 @@ EXTRUSION_FAULT_WORKFLOWS = frozenset((
     "stuck_filament",
 ))
 STUCK_ACTION_WORKFLOWS = frozenset((
+    "filament_runout",
     "filament_movement",
     "extrusion_flow_limit",
     "stuck_filament",
@@ -78,9 +87,10 @@ def _retain_extrusion_fault(previous, incoming):
     return bool(
         previous.get("workflow") in EXTRUSION_FAULT_WORKFLOWS
         and not workflow_is_terminal(previous)
-        and incoming.get("workflow") in ("filament_load", "filament_unload")
-        and incoming.get("type") == "progress"
-        and not workflow_is_terminal(incoming)
+        and incoming.get("workflow") in ("filament_load", "filament_unload", "tool_change", "printer", "heating")
+        and incoming.get("type") in ("progress", "workflow", "notification")
+        and (not workflow_is_terminal(incoming)
+             or incoming.get("workflow") in ("tool_change", "printer", "heating"))
     )
 
 
@@ -110,6 +120,8 @@ class RmeCompatibilityPlugin(
     def __init__(self):
         """Initialize only process-local state; OctoPrint injects services later."""
         self._state_lock = threading.RLock()
+        self._snapshot_epoch = uuid.uuid4().hex
+        self._snapshot_revision = 0
         self._state = self._empty_state()
         self._store = None
         self._manifest_store = None
@@ -124,10 +136,14 @@ class RmeCompatibilityPlugin(
         self._stop = threading.Event()
         self._keepalive_thread = None
         self._firmware_directory = None
+        self._release_lock = threading.Lock()
+        self._release_check_after = 0
+        self._running_query_sent = False
         self._last_fw_publish = 0
         self._spoolmanager = None
         self._spool_sync_lock = threading.Lock()
         self._spool_sync_pending = None
+        self._printer_selection_read = None
         self._expected_provider_events = {}
         self._expected_spoolman_event_until = 0
         self._toolmap_hold_active = False
@@ -136,6 +152,10 @@ class RmeCompatibilityPlugin(
         self._validator_mapping_implementation = None
         self._validator_mapping_signature = None
         self._preflight_gate_started = False
+        self._mesh_area_command = None
+        self._completion_snapshot = CompletionSnapshot()
+        self._completion_move = None
+        self._firmware_verified_source = None
         self._toolmap_preflight_decision = None
         self._print_job_gcode_sent = False
         self._skip_cancel_script = False
@@ -145,6 +165,7 @@ class RmeCompatibilityPlugin(
         self._toolmap_probe_sent = False
         self._priority_controls_sent = set()
         self._firmware_completed_controls = set()
+        self._pause_reason = PauseReason()
         self._firmware_action_lock = threading.Lock()
         self._last_storage_publish = 0
         self._native_refresh_lock = threading.Lock()
@@ -187,7 +208,15 @@ class RmeCompatibilityPlugin(
         self._auto_pa_active = False
         self._auto_pa_batch = True
         self._tune_query_pending = False
+        self._tune_poll_after = 0.0
         self._tune_last_mutation = 0.0
+        self._progress_pending_until = 0.0
+        self._progress_last_command = None
+        self._progress_last_sent = 0.0
+        self._retry_file = None
+        self._retry_job_path = None
+        self._retry_ready = False
+        self._retry_running = False
 
     @staticmethod
     def _empty_state():
@@ -200,6 +229,8 @@ class RmeCompatibilityPlugin(
                 "configuration_revision": 0,
             },
             "machine": {},
+            "running_firmware": {},
+            "firmware_releases": {"status": "idle", "assets": [], "error": None, "filename": None},
             "toolmap": {"enabled": False, "mapping": {}},
             "lock": {},
             "theme": {},
@@ -235,6 +266,7 @@ class RmeCompatibilityPlugin(
                 "error": None,
             },
             "workflow": None,
+            "pause": {"active": False, "reason": "", "source": ""},
             "prompt": None,
             "dialog": None,
             "spooljoin": {"supported": None, "entries": []},
@@ -371,6 +403,7 @@ class RmeCompatibilityPlugin(
         self._logger.info("RME Compatibility initialized")
 
     def on_shutdown(self):
+        self._completion_snapshot.reset()
         # A disabled/reloaded plugin must never strand OctoPrint's counted job
         # hold. In-flight prints remain under OctoPrint's normal control.
         self._release_toolmap_hold()
@@ -407,6 +440,8 @@ class RmeCompatibilityPlugin(
     def get_settings_defaults(self):
         return {
             "auto_open_session": True,
+            "firmware_auto_check": True,
+            "firmware_variant": "",
             "dashboard_rme_progress": True,
             "legacy_notifications": False,
             "auto_machine_profile": True,
@@ -423,7 +458,7 @@ class RmeCompatibilityPlugin(
 
     def get_assets(self):
         return {
-            "js": ["js/passive_tools.js", "js/rme_compatibility.js"],
+            "js": ["js/passive_tools.js", "js/ui_performance.js", "js/rme_compatibility.js"],
             "css": ["css/rme_compatibility.css"],
         }
 
@@ -526,14 +561,19 @@ class RmeCompatibilityPlugin(
             "set_print_override": ["kind", "value"],
             "set_filament": ["slot", "name", "nozzle", "preheat", "bed", "visible"],
             "stage_firmware": ["filename"],
+            "check_firmware_releases": [],
+            "download_firmware_release": ["id"],
             "stage_and_flash_firmware": ["filename"],
             "stage_octoprint_firmware": ["path"],
             "stage_and_flash_octoprint_firmware": ["path"],
             "unstage_firmware": [],
+            "refresh_firmware_status": [],
             "cancel_firmware": [],
+            "recover_transfer": [],
             "flash_firmware": [],
             "confirm_printer_reboot": [],
             "delete_firmware": ["filename"],
+            "delete_firmware_copies": ["filenames"],
             "sync_spoolmanager": [],
             "refresh_spool_inventory": [],
             "sync_filaments_from_printer": [],
@@ -546,6 +586,7 @@ class RmeCompatibilityPlugin(
             "begin_new_spool": ["tool"],
             "activate_pending_spool": ["tool"],
             "create_spool": ["display_name", "material", "color", "total_weight"],
+            "create_native_spool": ["tool", "spool"],
             "cancel_new_spool": [],
             "touch_toolmap": [],
             "storage_caps": [],
@@ -605,8 +646,10 @@ class RmeCompatibilityPlugin(
                 "@RME STUCK %s" % action, "stuck_response"
             )
         elif command == "apply_toolmap":
-            self._apply_toolmap(data["mapping"], bool(data["enabled"]), release_hold=True)
+            self._apply_toolmap(data["mapping"], bool(data["enabled"]), release_hold=True, fallbacks=data.get("fallbacks"))
         elif command == "reset_toolmap":
+            if (self._state.get("prompt") or {}).get("spooljoin_review"):
+                raise ValueError("Confirm the per-print fallback review before continuing")
             self._validate_material_mapping({}, False)
             self._send_commands(["@RME TOOLMAP RESET", "@RME TOOLMAP QUERY"])
             self._configure_validator_mapping({})
@@ -747,6 +790,13 @@ class RmeCompatibilityPlugin(
                     temperatures[2], visible,
                 )
             ))
+        elif command == "check_firmware_releases":
+            self._release_check_after = 0
+            self._start_release_task(variant_override=data.get("variant"))
+        elif command == "download_firmware_release":
+            if not Permissions.ADMIN.can():
+                flask.abort(403)
+            self._start_release_task(str(data["id"]), variant_override=data.get("variant"))
         elif command == "stage_firmware":
             self._start_firmware_upload(data["filename"])
         elif command == "stage_and_flash_firmware":
@@ -760,12 +810,13 @@ class RmeCompatibilityPlugin(
         elif command == "unstage_firmware":
             self._unstage_firmware()
         elif command == "cancel_firmware":
+            self._firmware_file_cancel.set()
             if self._uploader:
                 self._uploader.cancel()
             with self._state_lock:
                 firmware_status = self._state["firmware"].get("status")
                 file_firmware_active = firmware_status in (
-                    "starting", "uploading", "verifying"
+                    "starting", "uploading", "verifying", "canceling"
                 )
             if firmware_status == "queued":
                 # Do not abort the unrelated USB operation currently ahead of
@@ -775,6 +826,8 @@ class RmeCompatibilityPlugin(
                 self._firmware_state_changed(status="canceling")
             if file_firmware_active and self._file_service and self._file_service.busy:
                 self._file_service.cancel()
+        elif command == "recover_transfer":
+            self._stop_transfer_for_recovery()
         elif command == "flash_firmware":
             self._flash_firmware()
         elif command == "confirm_printer_reboot":
@@ -787,10 +840,16 @@ class RmeCompatibilityPlugin(
                     self._defer(self._send_command, "@RME MACHINE QUERY")
         elif command == "delete_firmware":
             self._delete_firmware(data["filename"])
+        elif command == "refresh_firmware_status":
+            self._require_print_idle("Firmware status refresh")
+            self._require_storage()
+            self._reconcile_firmware_stage()
+        elif command == "delete_firmware_copies":
+            self._delete_firmware_copies(data["filenames"])
         elif command == "sync_spoolmanager":
             self._sync_filaments_to_printer()
         elif command == "refresh_spool_inventory":
-            self._sync_spoolmanager(True, False)
+            self._refresh_spool_inventory()
         elif command == "sync_filaments_from_printer":
             self._sync_filaments_from_printer()
         elif command in ("sync_filaments_to_printer", "confirm_provider_sync"):
@@ -809,6 +868,17 @@ class RmeCompatibilityPlugin(
             self._activate_pending_spool(data["tool"])
         elif command == "create_spool":
             self._create_spool(data)
+        elif command == "create_native_spool":
+            self._tool_index(data["tool"])
+            provider, provider_name = self._active_spool_provider()
+            if provider_name != "spoolmanager":
+                raise ValueError("SpoolManager is not the active inventory provider")
+            created = provider.create_native(data["spool"])
+            self._refresh_provider_clients(provider)
+            self._refresh_spool_inventory()
+            result = self._public_state()
+            result["created_spool"] = created
+            return flask.jsonify(result)
         elif command == "cancel_new_spool":
             self._cancel_pending_spool()
         elif command == "touch_toolmap":
@@ -1022,6 +1092,10 @@ class RmeCompatibilityPlugin(
                 return flask.jsonify(
                     {"error": "Firmware must be between 1 byte and 32 MiB"}
                 ), 413
+            try:
+                self._validate_firmware_path(temporary)
+            except UploadError as exc:
+                return flask.jsonify({"error": str(exc)}), 400
             os.replace(temporary, destination)
         finally:
             if os.path.exists(temporary):
@@ -1049,6 +1123,9 @@ class RmeCompatibilityPlugin(
             self._defer(self._handle_spoolman_event)
             return
         if event == Events.CONNECTED:
+            self._retry_file = None
+            self._retry_job_path = None
+            self._retry_ready = False
             self._complete_firmware_reconnect()
             with self._state_lock:
                 self._connection_generation += 1
@@ -1068,6 +1145,10 @@ class RmeCompatibilityPlugin(
                 recovery_required = False
             with self._state_lock:
                 self._state["connected"] = True
+                self._state["running_firmware"] = {}
+                self._state["firmware_releases"] = self._empty_state()["firmware_releases"]
+                self._running_query_sent = False
+                self._release_check_after = 0
                 self._state["supported"] = False
                 self._state["session"] = {
                     "active": False, "legacy": True, "last_seq": 0,
@@ -1091,6 +1172,9 @@ class RmeCompatibilityPlugin(
                 self._state["light"] = {}
                 self._state["tune"] = {}
                 self._tune_query_pending = False
+                self._tune_poll_after = 0.0
+                self._progress_last_command = None
+                self._progress_last_sent = 0.0
                 self._active_tool_was_single_tool_default = False
                 self._pending_tool_park = False
                 self._auto_pa_active = False
@@ -1112,6 +1196,11 @@ class RmeCompatibilityPlugin(
             self._schedule_post_connect_reconciliation(connection_generation, 0)
             self._defer(self._sync_spoolmanager, True)
         elif event in (Events.DISCONNECTING, Events.DISCONNECTED):
+            self._completion_snapshot.reset()
+            self._completion_move = None
+            self._retry_file = None
+            self._retry_job_path = None
+            self._retry_ready = False
             if (
                 event == Events.DISCONNECTING
                 and self._state.get("supported")
@@ -1127,6 +1216,8 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 self._connection_generation += 1
                 self._state["connected"] = False
+                self._state["running_firmware"] = {}
+                self._state["firmware_releases"] = self._empty_state()["firmware_releases"]
                 self._state["supported"] = False
                 self._state["session"]["active"] = False
                 self._state["storage"].update(
@@ -1144,6 +1235,15 @@ class RmeCompatibilityPlugin(
             if event == Events.DISCONNECTED and self._firmware_reconnect_pending():
                 self._begin_firmware_reconnect()
         elif event == Events.PRINT_STARTED:
+            with self._state_lock:
+                self._pause_reason.reset()
+                self._state["pause"] = self._pause_reason.snapshot()
+                self._progress_last_command = None
+                self._progress_last_sent = 0.0
+                job = payload or {}
+                self._retry_job_path = (job.get("origin"), job.get("path"))
+                self._retry_file = None
+                self._retry_ready = False
             if self._printer_transfer_active():
                 self._stop_print_started_during_transfer()
                 return
@@ -1152,6 +1252,8 @@ class RmeCompatibilityPlugin(
                 self._firmware_completed_controls.clear()
             self._handle_print_started(payload)
         elif event == Events.PRINT_CANCELLING:
+            self._completion_snapshot.reset()
+            self._completion_move = None
             # Cancellation preparation is queued as part of the job, so the
             # mapping hold must be released before OctoPrint can process it.
             with self._state_lock:
@@ -1169,16 +1271,32 @@ class RmeCompatibilityPlugin(
                 return
             self._request_priority_control("cancel")
         elif event == Events.PRINT_PAUSED:
+            with self._state_lock:
+                self._state["pause"] = self._pause_reason.pause((payload or {}).get("reason"))
+                pause = dict(self._state["pause"])
+            self._logger.info("RME print paused: %s (source: %s)", pause["reason"], pause["source"])
+            self._schedule_publish()
             # Fallback for pause configurations that do not enqueue a tagged
             # preparation command before transitioning into PAUSED.
             if not self._consume_firmware_completed_control("pause"):
                 self._request_priority_control("pause")
         elif event == Events.PRINT_RESUMED:
+            with self._state_lock:
+                self._state["pause"] = self._pause_reason.resume()
+            self._schedule_publish()
             if not self._consume_firmware_completed_control("resume"):
                 self._request_priority_control("resume")
         elif event in (Events.PRINT_DONE, Events.PRINT_FAILED, Events.PRINT_CANCELLED):
+            with self._state_lock:
+                self._pause_reason.reset()
+                self._state["pause"] = self._pause_reason.snapshot()
+            if event != Events.PRINT_DONE:
+                self._completion_snapshot.reset()
             self._release_toolmap_hold()
             with self._state_lock:
+                selected = self._selected_retry_file()
+                self._retry_file = selected if selected and selected[:2] == self._retry_job_path else None
+                self._retry_ready = self._retry_file is not None
                 self._priority_controls_sent.clear()
                 self._firmware_completed_controls.clear()
                 self._transfer_conflict_cancel = False
@@ -1211,6 +1329,9 @@ class RmeCompatibilityPlugin(
         """Observe RME records without blocking or bypassing OctoPrint's queue."""
         normalized_line = str(line or "").strip()
         with self._state_lock:
+            if self._state.get("supported") and self._pause_reason.observe(normalized_line):
+                self._state["pause"] = self._pause_reason.snapshot()
+                self._schedule_publish()
             intentional_pa_abort = bool(
                 self._state.get("supported")
                 and getattr(self, "_pa_abort_requested", False)
@@ -1278,6 +1399,16 @@ class RmeCompatibilityPlugin(
             self._clear_transport_recovery("printer startup banner observed")
             self._defer(self._send_command, "@RME MACHINE QUERY")
         record = parse_line(line)
+        if record and record.get("record") in ("event", "prompt"):
+            with self._state_lock:
+                if self._state.get("supported"):
+                    text = str(record.get("message") or record.get("code") or "")
+                    fault = (record.get("type") == "error" or record.get("state") in ("paused", "failed")
+                             or record.get("state") == "waiting" and record.get("workflow") in
+                             EXTRUSION_FAULT_WORKFLOWS.union(("wastebin", "waste_bin", "mmu")))
+                    if fault and self._pause_reason.evidence(text, "Firmware workflow"):
+                        self._state["pause"] = self._pause_reason.snapshot()
+                        self._schedule_publish()
         if self._uploader:
             self._uploader.handle_response(line, record)
         if self._file_service:
@@ -1357,11 +1488,74 @@ class RmeCompatibilityPlugin(
         host; completion events merely synchronize OctoPrint's state.
         """
         name = str(kwargs.get("name") or action or "").strip().lower()
+        if name == "rme_retry":
+            # Emitted only after the printer's bed-clear confirmation. Keep
+            # receive callbacks nonblocking and coalesce repeated presses.
+            with self._state_lock:
+                if not self._state.get("supported") or self._retry_running:
+                    return
+                self._retry_running = True
+                generation = self._connection_generation
+                file_identity = self._retry_file
+            self._defer(self._restart_confirmed_print, generation, file_identity)
+            return
         completed = {"paused": "pause", "resumed": "resume"}.get(name)
         if completed:
             with self._state_lock:
                 if self._state.get("supported"):
                     self._firmware_completed_controls.add(completed)
+
+    def _selected_retry_file(self):
+        try:
+            file_info = (self._printer.get_current_data().get("job") or {}).get("file") or {}
+        except (AttributeError, TypeError):
+            return None
+        if file_info.get("origin") != "local" or not file_info.get("path"):
+            return None
+        return tuple(file_info.get(key) for key in ("origin", "path", "size", "date"))
+
+    def _restart_confirmed_print(self, generation, file_identity):
+        """Restart the same completed streamed job, never resume/reselect one."""
+        try:
+            with self._state_lock:
+                if (generation != self._connection_generation
+                        or not self._state.get("connected")
+                        or not self._state.get("supported")
+                        or not self._retry_ready or file_identity is None
+                        or file_identity != self._retry_file):
+                    raise ValueError("No completed RME job is available to retry")
+                if self._state.get("lock", {}).get("locked"):
+                    raise ValueError("Unlock the printer before retrying")
+            if self._printer_transfer_active() or self._print_job_active():
+                raise ValueError("Wait until the printer and OctoPrint are idle")
+            if not self._printer.is_operational():
+                raise ValueError("Printer is not operational")
+            if self._selected_retry_file() != file_identity:
+                raise ValueError("Selected file changed; restart from OctoPrint")
+            with self._state_lock:
+                if generation != self._connection_generation or self._retry_file != file_identity:
+                    raise ValueError("Retry expired")
+                self._retry_ready = False
+            # Use OctoPrint's normal start path: mapping/preflight and all
+            # normal start G-code run again. Never resume an aborted stream.
+            self._printer.start_print()
+            self._retry_notice("Restart requested", False)
+        except Exception as exc:
+            if generation == self._connection_generation:
+                self._retry_notice(str(exc), True)
+        finally:
+            with self._state_lock:
+                self._retry_running = False
+
+    def _retry_notice(self, message, error):
+        if hasattr(self, "_plugin_manager"):
+            self._plugin_manager.send_plugin_message(self._identifier, {
+                "retry_notice": {"message": message, "error": error},
+            })
+        if error:
+            self._logger.warning("RME reprint refused: %s", message)
+            if self._state.get("connected"):
+                self._send_command("M117 RME retry unavailable - check OctoPrint")
 
     def atcommand_sending_hook(
         self, comm_instance, phase, command, parameters, *args, **kwargs
@@ -1378,6 +1572,17 @@ class RmeCompatibilityPlugin(
             return
         parameters = str(parameters or "").strip()
         tags = set(kwargs.get("tags") or ())
+        if parameters.upper() == "SNAPSHOT":
+            # Host-only barrier, never forward to firmware. Place after M400
+            # and before the final bed-lowering move in sliced end G-code.
+            finishing = getattr(self._printer, "get_state_id", lambda: None)() == "FINISHING"
+            if (self._state.get("supported") and (self._printer.is_printing() or finishing)
+                    and {"source:file", "source:job"}.intersection(tags)):
+                try:
+                    self._completion_snapshot.capture(self._plugin_manager, self._printer, self._logger)
+                except Exception:
+                    self._logger.warning("RME completion snapshot unavailable; continuing end G-code", exc_info=True)
+            return
         plugin_origin = "plugin:rme_compatibility" in tags
         operator_origin = not plugin_origin and bool(
             {"source:terminal", "source:api"}.intersection(tags)
@@ -1527,6 +1732,7 @@ class RmeCompatibilityPlugin(
         loop starts, including when another plugin calls ``start_print``.
         """
         if script_type == "gcode" and script_name == "beforePrintStarted":
+            self._completion_snapshot.reset()
             if self._printer_transfer_active():
                 self._stop_print_started_during_transfer()
                 return None
@@ -1536,6 +1742,8 @@ class RmeCompatibilityPlugin(
                 self._print_job_gcode_sent = False
                 self._skip_cancel_script = False
             self._prepare_toolmap_prompt(record_preflight=True)
+            self._prepare_mesh_area()
+            self._prepare_completion_move()
         elif script_type == "gcode" and script_name == "afterPrintCancelled":
             with self._state_lock:
                 if self._preflight_gate_started and not self._print_job_gcode_sent:
@@ -1559,7 +1767,46 @@ class RmeCompatibilityPlugin(
             return (None,)
         if not supported:
             return None
+        if (phase == "queuing" and {"source:api", "source:terminal"}.intersection(tags)
+                and not {"source:file", "source:job", "rme:priority_control"}.intersection(tags)):
+            with self._state_lock:
+                live = live_control_command(cmd, self._state)
+            if live:
+                self._send_priority_services([live], "control")
+                return (None,)
+        # Only explicit operator/API chamber changes bypass a heater wait.
+        # File G-code stays FIFO; older firmware keeps the normal M141 path.
+        if (phase == "queuing" and {"source:api", "source:terminal"}.intersection(tags)
+                and not {"source:file", "source:job"}.intersection(tags)
+                and self._state.get("machine", {}).get("live_chamber") == 1):
+            chamber_target = re.fullmatch(r"\s*M141\s+S(\d{1,3})(?:\.0+)?\s*(?:;[^\r\n]*)?", str(cmd or ""), re.I)
+            if chamber_target and int(chamber_target.group(1)) <= 255:
+                self._send_priority_services(
+                    ["@RME TEMPERATURE SET chamber=%d" % int(chamber_target.group(1))],
+                    "temperature",
+                )
+                return (None,)
+        if phase == "queuing" and "source:file" in tags:
+            with self._state_lock:
+                target = self._completion_move
+                if (target and "filepos:%d" % target[0] in tags
+                        and normalize_end_move(cmd) == target[1]):
+                    self._completion_move = None
+                    return [("M400", None, set(tags)), ("@RME SNAPSHOT", None, set(tags)), (cmd, cmd_type, set(tags))]
+        if (phase == "queuing" and {"source:job", "source:file"}.intersection(tags)
+                and is_adaptive_probe(cmd)):
+            with self._state_lock:
+                area_command = self._mesh_area_command
+                mesh_supported = self._state.get("machine", {}).get("mesh_area") == 1
+            if area_command and mesh_supported:
+                return [(area_command, None, {"plugin:rme_compatibility"}), (cmd, cmd_type)]
         if "rme:priority_control" in tags:
+            # Recheck at the queue boundary: startup may have begun since the
+            # periodic worker sampled state. Never precede OctoPrint's M110.
+            if "trigger:rme.progress" in tags and not self._host_progress_ready():
+                with self._state_lock:
+                    self._progress_pending_until = 0.0
+                return (None,)
             return self._force_send_rme_control(comm_instance, cmd, gcode)
 
         # Some progress/display plugins mirror this Marlin status onto the
@@ -1637,7 +1884,8 @@ class RmeCompatibilityPlugin(
                 self._schedule_publish()
             else:
                 self._set_active_tool(logical_tool)
-        if supported and re.match(r"^\s*M976(?:\s|$)", str(cmd or ""), re.IGNORECASE):
+        if (supported and re.match(r"^\s*M976(?:\s|$)", str(cmd or ""), re.IGNORECASE)
+                and not re.search(r"(?:^|\s)(?:W(?:\d|\s|$)|I(?=\s|$))", str(cmd or "").split(";", 1)[0], re.IGNORECASE)):
             self._start_pressure_advance_workflow(batch=bool(re.search(
                 r"(?:^|\s)[AK](?:\s|\d|$)", str(cmd).split(";", 1)[0], re.IGNORECASE
             )))
@@ -1649,6 +1897,13 @@ class RmeCompatibilityPlugin(
     def _handle_record(self, record):
         """Fold one parsed firmware record into the authoritative UI state."""
         kind = record["record"]
+        if kind == "firmware_running":
+            with self._state_lock:
+                if self._state.get("connected") and self._state.get("supported"):
+                    self._state["running_firmware"] = dict(record)
+                    self._release_check_after = 0
+            self._schedule_publish()
+            return
         if kind.startswith("upload_") or kind.startswith("file_"):
             return
         if kind == "machine":
@@ -1751,6 +2006,16 @@ class RmeCompatibilityPlugin(
                 if lease and not previous_lease:
                     follow_up.append("@RME DIALOG QUERY")
                     follow_up.append("refresh_configuration:all")
+                    follow_up.append("reconcile_firmware_stage")
+                elif (
+                    lease and printer_state == "IDLE"
+                    and firmware_status in ("ready", "staged", "reconnected")
+                    and time.monotonic() - getattr(self, "_last_firmware_stage_check", 0) >= 30
+                ):
+                    # Boot cleanup may finish after the initial reconnect
+                    # snapshot. Refresh truth; never infer deletion from the
+                    # installed version or merely hide a surviving candidate.
+                    self._last_firmware_stage_check = time.monotonic()
                     follow_up.append("reconcile_firmware_stage")
             elif kind == "event":
                 now = int(time.time())
@@ -1896,7 +2161,7 @@ class RmeCompatibilityPlugin(
                     follow_up.append("query_dialog_priority")
                     if record.get("workflow") in STUCK_ACTION_WORKFLOWS:
                         follow_up.append("@RME STUCK QUERY")
-                if workflow_is_terminal(record):
+                if workflow_is_terminal(record) and not _retain_extrusion_fault(previous_workflow, record):
                     if (self._state.get("prompt") or {}).get("kind") == "firmware":
                         self._state["prompt"] = None
             elif kind == "change":
@@ -1973,10 +2238,12 @@ class RmeCompatibilityPlugin(
             elif kind == "tune":
                 # Replace one bounded snapshot, never append it to event history.
                 capacity = min(8, int(self._state["machine"].get("tool_capacity", 0)))
-                keys = ("speed", "stealth", "light", "lcd", "screen_print", "chamber_print", "status_print") + tuple("F%d" % i for i in range(capacity))
+                keys = ("speed", "stealth", "auto_pa", "printing", "light", "lcd", "screen_print", "chamber_print", "status_print") + tuple("F%d" % i for i in range(capacity))
                 self._state["tune"] = {key: record[key] for key in keys if key in record}
                 self._state["tune"]["updated"] = time.time()
                 self._tune_query_pending = False
+            elif kind == "host_progress":
+                self._progress_pending_until = 0.0
             elif kind == "toolmap":
                 self._toolmap_supported = True
                 self._toolmap_probe_sent = False
@@ -2153,11 +2420,26 @@ class RmeCompatibilityPlugin(
                 # seven-character alias identifies a published spool.
                 provider_match = next(
                     (
-                        item for item in self._state["spoolmanager"].get("published", [])
+                        item for item in (self._state["spoolmanager"].get("assigned_profiles", [])
+                                          + self._state["spoolmanager"].get("published", []))
                         if item.get("alias") == loadout.get("profile")
                     ),
                     None,
                 )
+                if provider_match is None:
+                    # Older persisted state has only the seven menu presets.
+                    # Resolve an exact, unique alias from cached inventory too;
+                    # never infer the loaded spool from material or selection.
+                    profile = loadout.get("profile", "")
+                    candidates = []
+                    if re.fullmatch(r"(?:[A-Z0-9]{1,3}-[0-9A-Z]{3}|S[0-9A-Z]{6})", profile):
+                        for item in self._state["spoolmanager"].get("inventory", []):
+                            alias = spool_alias(item["material"], item["database_id"])
+                            collision_alias = spool_alias(item["material"], item["database_id"], {alias})
+                            if profile in (alias, collision_alias):
+                                candidates.append(dict(item, alias=profile))
+                    if len(candidates) == 1:
+                        provider_match = candidates[0]
                 if provider_match:
                     # Some 6.8.1-RME builds echo the seven-character custom
                     # profile into both S and P even though FILAMENT SET was
@@ -2395,7 +2677,20 @@ class RmeCompatibilityPlugin(
 
     def _arm_firmware_reconnect(self):
         """Scope automatic reconnect to one explicit plugin flash request."""
+        # connect() without arguments falls back to OctoPrint's saved default,
+        # which may be 115200 even when this working connection used 1000000.
+        # Preserve the selected rate, not the USB device path (it can change
+        # on re-enumeration). Do not change an ordinary/manual connection.
+        reconnect_options = {}
+        try:
+            connection = self._printer.get_current_connection()
+            baudrate = connection[2]
+            if isinstance(baudrate, int) and not isinstance(baudrate, bool) and baudrate > 0:
+                reconnect_options["baudrate"] = baudrate
+        except (AttributeError, IndexError, TypeError):
+            pass
         with self._firmware_reconnect_lock:
+            self._firmware_reconnect_options = reconnect_options
             if self._firmware_reconnect_timer:
                 self._firmware_reconnect_timer.cancel()
                 self._firmware_reconnect_timer = None
@@ -2534,7 +2829,7 @@ class RmeCompatibilityPlugin(
         if callable(connect):
             try:
                 self._logger.info("Trying to reconnect after firmware update restart")
-                connect()
+                connect(**getattr(self, "_firmware_reconnect_options", {}))
                 connect_started = True
                 with self._firmware_reconnect_lock:
                     if self._firmware_reconnect_armed:
@@ -2552,6 +2847,30 @@ class RmeCompatibilityPlugin(
             else FIRMWARE_RECONNECT_INTERVAL_SECONDS
         )
         return True
+
+    def _stop_transfer_for_recovery(self):
+        """Stop local writers without guessing whether the receiver is in raw mode."""
+        self._require_print_idle("Transfer recovery")
+        self._firmware_file_cancel.set()
+        if self._uploader:
+            self._uploader.cancel()
+        if self._file_service:
+            self._file_service.cancel()
+        with self._state_lock:
+            self._state["firmware"].update(
+                status="error", recovery_required=True, flash_after_stage=False,
+                error="Transfer stopped. Power-cycle the printer, then confirm the reboot or reconnect.",
+            )
+            partial = self._state["storage"].get("partial")
+            if partial:
+                partial.update(status="interrupted", recovery_active=False)
+        # Close the descriptor before releasing any waiter. Never enqueue an
+        # ASCII ABORT/M112 into an unknown raw receiver. Durable sources and
+        # printer partials remain intact for a later Resume or Discard.
+        self._disconnect_for_transport_recovery()
+        if self._file_service:
+            self._file_service.reset("Transfer stopped for printer reboot")
+        self._persist_and_publish()
 
     def _clear_transport_recovery(self, evidence):
         """Unlock RME traffic only after observed or user-confirmed reboot."""
@@ -2966,7 +3285,7 @@ class RmeCompatibilityPlugin(
             r"^PA_CALIBRATION\s+batch\s+accepted(?:\s|$)", line, re.IGNORECASE
         )
         terminal = re.match(
-            r"^PA_CALIBRATION\s+(?:batch\s+complete|aborted)(?:\s|$)",
+            r"^PA_CALIBRATION\s+(?:batch\s+(?:complete|cached)|skipped|aborted)(?:\s|[;]|$)",
             line,
             re.IGNORECASE,
         ) or re.match(r"^Error:\s*M976(?:\s|$)", line, re.IGNORECASE)
@@ -2974,7 +3293,12 @@ class RmeCompatibilityPlugin(
             r"^PA_CALIBRATION\s+(?:cached\s+result=|anchor\s+slot\s+cleared=|tool=\d+\s+slot=\d+\s+(?:result|fallback)=)",
             line, re.IGNORECASE,
         )
-        if not accepted and not terminal and not single_result:
+        temperature_point = re.match(
+            r"^PA_CALIBRATION\s+temperature_point\s+tool=(\d+)\s+slot=(\d+)"
+            r"\s+temperature=(\d+)\s+point=(\d+)\s+points=(\d+)(?:\s|$)",
+            line, re.IGNORECASE,
+        )
+        if not accepted and not terminal and not single_result and not temperature_point:
             return
         changed = False
         with self._state_lock:
@@ -2989,7 +3313,18 @@ class RmeCompatibilityPlugin(
             if single_result and not self._auto_pa_batch:
                 terminal = True
             workflow = self._state.get("workflow") or {}
-            if accepted and workflow.get("workflow") == "pressure_advance":
+            if temperature_point and workflow.get("workflow") == "pressure_advance":
+                tool, slot, temperature, point, points = map(int, temperature_point.groups())
+                if 0 <= tool < 8 and 0 <= slot < 8 and 170 <= temperature <= 300 and 1 <= point <= points <= 8:
+                    workflow = dict(workflow)
+                    workflow.update(
+                        message="Auto PA: Tool %d, %d°C (temperature %d/%d)" % (
+                            tool + 1, temperature, point, points),
+                        received_at=int(time.time()),
+                    )
+                    self._state["workflow"] = workflow
+                    changed = True
+            elif accepted and workflow.get("workflow") == "pressure_advance":
                 workflow = dict(workflow)
                 workflow.update(
                     progress=max(2, int(workflow.get("progress", 0) or 0)),
@@ -3110,7 +3445,15 @@ class RmeCompatibilityPlugin(
             )
             if supported and connected and not transfer_busy and not recovery_required:
                 try:
-                    self._query_tune()
+                    if not self._print_job_active() and self._state["storage"].get("supported"):
+                        if self._state["storage"].get("caps", {}).get("firmware_running") == 1 and not self._state["running_firmware"] and time.monotonic() > self._running_query_sent + 30:
+                            self._running_query_sent = time.monotonic()
+                            self._send_command("@RME FIRMWARE RUNNING")
+                        identity_ready = self._state["storage"].get("caps", {}).get("firmware_running") != 1 or bool(self._state["running_firmware"])
+                        if identity_ready and self._settings.get_boolean(["firmware_auto_check"]) and time.monotonic() >= self._release_check_after:
+                            self._start_release_task()
+                    self._sync_host_progress()
+                    self._query_tune(periodic=True)
                     if time.monotonic() < next_keepalive:
                         continue
                     next_keepalive = time.monotonic() + 10
@@ -3129,11 +3472,63 @@ class RmeCompatibilityPlugin(
                 if self._stats_supported is None:
                     self._defer(self._probe_stats)
 
-    def _query_tune(self):
+    def _host_progress_ready(self):
+        # is_printing() includes Starting on some OctoPrint paths. Require the
+        # stable state so a forced progress frame cannot steal reset line N0.
+        try:
+            return str(self._printer.get_state_id() or "").upper() in {"PRINTING", "PAUSED"}
+        except Exception:
+            return False
+
+    def _sync_host_progress(self):
+        with self._state_lock:
+            if self._state["machine"].get("host_progress") != 1 or not self._state["session"].get("active"):
+                return
+            if time.monotonic() < self._progress_pending_until:
+                return
+        if not self._host_progress_ready():
+            return
+        command = progress_command(self._printer.get_current_data() or {}, self._printer.is_paused())
+        if command is None:
+            return
+        with self._state_lock:
+            now = time.monotonic()
+            previous = self._progress_last_command
+            pause_changed = previous is not None and previous.rsplit("paused=", 1)[-1] != command.rsplit("paused=", 1)[-1]
+            # No need to stream identical estimates every two seconds. Keep
+            # the firmware's 60s lease alive with a 20s heartbeat, and bound
+            # changed estimates to 5s. Pause transitions remain immediate.
+            interval = 20 if command == previous else 5
+            if previous is not None and not pause_changed and now - self._progress_last_sent < interval:
+                return
+            # At most one outstanding frame; recover a lost reply after 10s.
+            self._progress_pending_until = now + 10
+            self._progress_last_command = command
+            self._progress_last_sent = now
+        try:
+            self._send_priority_service(command, "progress")
+        except Exception:
+            with self._state_lock:
+                self._progress_pending_until = 0.0
+                self._progress_last_command = None
+            raise
+
+    def _query_tune(self, periodic=False):
         with self._state_lock:
             if self._state["machine"].get("tune") != 1 or self._tune_query_pending:
                 return
+        if periodic:
+            # Do not add configuration polling to startup/reset/recovery.
+            state = str(self._printer.get_state_id() or "").upper()
+            if state not in {"OPERATIONAL", "PRINTING", "PAUSED"}:
+                return
+        with self._state_lock:
+            if periodic and time.monotonic() < self._tune_poll_after:
+                return
+            if self._state["machine"].get("tune") != 1 or self._tune_query_pending:
+                return
             self._tune_query_pending = True
+            self._tune_poll_after = time.monotonic() + 10
         try:
             self._send_command("@RME TUNE QUERY")
         except Exception:
@@ -3164,7 +3559,13 @@ class RmeCompatibilityPlugin(
             command = "M221 T%d P1 S%d" % (int(tool), value)
         elif kind == "stealth" and value in (0, 1):
             command = "M9150" if value else "M9140"
+        elif kind == "auto_pa" and value in (0, 1, 2):
+            if self._state.get("tune", {}).get("auto_pa") not in (0, 1, 2):
+                raise ValueError("Firmware does not support Auto PA mode")
+            command = "M976 W%d" % value
         elif kind == "light" and value in (0, 1, 2):
+            if self._print_job_active() or self._state.get("tune", {}).get("printing") == 1:
+                value = int(value > 0)
             command = "@RME LIGHT MODE value=%d" % value
         elif kind == "lcd" and value in (0, 1):
             if self._state.get("tune", {}).get("lcd", -1) < 0:
@@ -3178,13 +3579,24 @@ class RmeCompatibilityPlugin(
             command = "@RME LIGHT TEMP %s=%d" % (kind, value)
         else:
             raise ValueError("Invalid print override")
-        # One deliberate change per second; never enqueue every slider movement.
+        # Discrete lighting clicks must not be rejected by the motion-tune throttle.
+        if kind in ("light", "lcd", "screen", "chamber", "status"):
+            if self._transport_recovery_required() or not self._printer.is_operational():
+                raise RuntimeError("Printer lighting transport is unavailable")
+            self._send_priority_services([command, "@RME TUNE QUERY"], "lighting")
+            return
+        # One deliberate motion tuning change per second.
         with self._state_lock:
             now = time.monotonic()
             if now - self._tune_last_mutation < 1:
                 raise ValueError("Wait a moment before changing another override")
             self._tune_last_mutation = now
-        self._send_command(command)
+        with self._state_lock:
+            live = live_control_command(command, self._state)
+        if live:
+            self._send_priority_services([live, "@RME TUNE QUERY"], "control")
+        else:
+            self._send_command(command)
 
     def _print_job_active(self):
         """Return whether OctoPrint's job state owns the serial queue."""
@@ -3294,7 +3706,7 @@ class RmeCompatibilityPlugin(
             raise ValueError("Slicer material metadata is unavailable; cannot verify a new mapping")
         validate(requirements, loaded, mapping, enabled)
 
-    def _apply_toolmap(self, mapping, enabled, release_hold=False):
+    def _apply_toolmap(self, mapping, enabled, release_hold=False, fallbacks=None):
         machine = self._state.get("machine", {})
         count = int(machine.get("logical_tools", 0))
         normalized = {int(key): int(value) for key, value in mapping.items()}
@@ -3305,6 +3717,14 @@ class RmeCompatibilityPlugin(
             raise ValueError("A mapping for every discovered logical tool is required")
         commands = toolmap_commands(normalized, enabled)
         self._validate_material_mapping(normalized, enabled)
+        with self._state_lock:
+            prompt = copy.deepcopy(self._state.get("prompt") or {})
+            loaded = copy.deepcopy(self._state.get("loaded_filaments") or [])
+        if release_hold and prompt.get("spooljoin_review"):
+            if fallbacks is None:
+                raise ValueError("Confirm per-print fallback selections, even when none are needed")
+            commands += fallback_commands(prompt.get("requirements") or [], loaded,
+                                          normalized, enabled, fallbacks, count)
         # NFV's logical slicer slots must be checked against the selected
         # physical tool before its first-command validation gate is released.
         self._configure_validator_mapping(normalized if enabled else {})
@@ -3318,6 +3738,51 @@ class RmeCompatibilityPlugin(
     def _handle_print_started(self, payload):
         """Backstop older connectors and enrich the pre-start prompt payload."""
         self._prepare_toolmap_prompt(payload, reuse_preflight=True)
+
+    def _prepare_completion_move(self):
+        with self._state_lock:
+            self._completion_move = None
+            supported = self._state.get("supported", False)
+        if not supported:
+            return
+        try:
+            info = self._plugin_manager.plugins.get("octopod")
+            if not info or not info.enabled:
+                return
+            file_info = ((self._printer.get_current_data() or {}).get("job") or {}).get("file") or {}
+            path = file_info.get("path") or file_info.get("name")
+            if file_info.get("origin") != "local" or not str(path).lower().endswith((".gcode", ".gco")):
+                return
+            target = analyze_end_move(self._file_manager.path_on_disk("local", path))
+            with self._state_lock:
+                self._completion_move = target
+            if target:
+                self._completion_snapshot.arm(self._plugin_manager, self._printer, self._logger)
+            self._logger.info("RME automatic completion snapshot: %s", target or "no unambiguous final bed move")
+        except (OSError, UnicodeError, KeyError, TypeError, ValueError, AttributeError):
+            self._logger.debug("RME automatic completion snapshot analysis unavailable", exc_info=True)
+
+    def _prepare_mesh_area(self):
+        # Analyze once at preflight, not in the serial send/receive hooks.
+        with self._state_lock:
+            self._mesh_area_command = None
+            machine = dict(self._state.get("machine", {}))
+            supported = self._state.get("supported", False)
+        if not supported or machine.get("mesh_area") != 1:
+            return
+        try:
+            file_info = ((self._printer.get_current_data() or {}).get("job") or {}).get("file") or {}
+            path = file_info.get("path") or file_info.get("name")
+            if file_info.get("origin") != "local" or not str(path).lower().endswith((".gcode", ".gco")):
+                return
+            command = analyze_mesh_area(
+                self._file_manager.path_on_disk("local", path),
+                float(machine["x_max"]), float(machine["y_max"]))
+            with self._state_lock:
+                self._mesh_area_command = command
+            self._logger.info("RME adaptive mesh: %s", command or "using slicer bounds (geometry not safely analyzable)")
+        except (OSError, UnicodeError, KeyError, TypeError, ValueError, AttributeError):
+            self._logger.debug("RME mesh analysis unavailable; keeping slicer bounds", exc_info=True)
 
     def _selected_job_has_executable_gcode(self):
         """Return false only when the selected text job is provably inert.
@@ -3412,7 +3877,8 @@ class RmeCompatibilityPlugin(
         mapping = {int(key): int(value) for key, value in configured.items()}
         if set(mapping.keys()) != set(range(count)):
             mapping = {index: index for index in range(count)}
-        if self._settings.get_boolean(["prompt_toolmap_on_print"]):
+        spooljoin_review = self._state.get("spooljoin", {}).get("supported") is True
+        if self._settings.get_boolean(["prompt_toolmap_on_print"]) or spooljoin_review:
             with self._state_lock:
                 existing = self._state.get("prompt") or {}
                 already_held = self._toolmap_hold_active and existing.get("kind") == "toolmap"
@@ -3431,6 +3897,7 @@ class RmeCompatibilityPlugin(
             )))
             now = int(time.time())
             requirements = []
+            file_info = {}
             try:
                 file_info = (self._printer.get_current_data().get("job") or {}).get("file") or {}
                 path = file_info.get("path") or file_info.get("name")
@@ -3440,9 +3907,13 @@ class RmeCompatibilityPlugin(
             except (OSError, AttributeError, TypeError, ValueError):
                 self._logger.info("Slicer material/color metadata unavailable for mapping")
             with self._state_lock:
+                skip_mapping = recent_mapping_valid(file_info, now, requirements,
+                    self._state.get("loaded_filaments") or [], mapping, bool(current_toolmap.get("enabled")))
                 self._toolmap_hold_active = True
                 self._state["prompt"] = {
                     "kind": "toolmap",
+                    "spooljoin_review": spooljoin_review,
+                    "skip_mapping": skip_mapping and spooljoin_review,
                     "requirements": requirements,
                     "recommendation": recommend(requirements, self._state.get("loaded_filaments") or [], count),
                     "message": "Choose the physical tool for each logical tool before printing",
@@ -3452,8 +3923,8 @@ class RmeCompatibilityPlugin(
                     "filename": (payload or {}).get("name"),
                     "updated": now,
                     "timeout_seconds": timeout,
-                    "deadline": now + timeout if timeout else None,
-                    "timer_paused": False,
+                    "deadline": now + timeout if timeout and not spooljoin_review else None,
+                    "timer_paused": spooljoin_review,
                     "remaining_seconds": timeout if timeout else None,
                 }
             self._start_toolmap_timeout()
@@ -3521,7 +3992,7 @@ class RmeCompatibilityPlugin(
         """Permanently pause this prompt's expiry after the first interaction."""
         with self._state_lock:
             prompt = self._state.get("prompt") or {}
-            if prompt.get("kind") != "toolmap" or prompt.get("timer_paused"):
+            if prompt.get("kind") != "toolmap" or prompt.get("timer_paused") or prompt.get("spooljoin_review"):
                 return
             deadline = prompt.get("deadline")
             if deadline is not None:
@@ -3567,7 +4038,7 @@ class RmeCompatibilityPlugin(
         """Keep the firmware's current mapping and continue an untouched job."""
         with self._state_lock:
             prompt = self._state.get("prompt") or {}
-            if prompt.get("kind") != "toolmap" or prompt.get("timer_paused"):
+            if prompt.get("kind") != "toolmap" or prompt.get("timer_paused") or prompt.get("spooljoin_review"):
                 return
             current = copy.deepcopy(self._state.get("toolmap") or {})
         mapping = current.get("mapping") if current.get("enabled") else {}
@@ -3860,6 +4331,22 @@ class RmeCompatibilityPlugin(
             "Deferring filament-provider synchronization until print is idle"
         )
 
+    def _refresh_spool_inventory(self):
+        """Refresh UI data without waiting for firmware writes or an idle print."""
+        provider, provider_name = self._active_spool_provider()
+        try:
+            records = provider.inventory(include_unavailable=True)
+        except TypeError:
+            records = provider.inventory()
+        inventory = [self._public_spool_record(item) for item in records]
+        selected = [dict(self._public_spool_record(item), tool=tool)
+                    for tool, item in enumerate(provider.selected()) if item is not None]
+        with self._state_lock:
+            self._state["spoolmanager"].update(
+                provider=provider_name, available=True, inventory=inventory, selected=selected,
+            )
+        self._persist_and_publish()
+
     def _sync_spoolmanager(self, force=False, push_to_firmware=True):
         """Reconcile the active inventory provider with eight firmware presets.
 
@@ -4012,6 +4499,16 @@ class RmeCompatibilityPlugin(
                 record.update(slot=slot, alias=alias)
                 published.append(record)
             published.sort(key=lambda item: item["slot"])
+            # Seven menu presets plus NEW cannot represent eight distinct
+            # loaded spools. Extra selections use Buddy's per-tool ad-hoc
+            # storage instead of silently dropping the eighth assignment.
+            assigned_profiles = list(published)
+            for database_id in sorted(selected_ids - set(ordered_ids)):
+                record = copy.deepcopy(records[database_id])
+                alias = spool_alias(record["material"], database_id, used_aliases)
+                used_aliases.add(alias)
+                record.update(slot=None, alias=alias)
+                assigned_profiles.append(record)
 
             firmware_signature = (
                 tuple(
@@ -4022,7 +4519,7 @@ class RmeCompatibilityPlugin(
                         int(item.get("nozzle_temperature", 0)),
                         int(item.get("bed_temperature", 0)),
                     )
-                    for item in published
+                    for item in assigned_profiles
                 ),
                 tuple(
                     (int(item.get("tool", 0)), item.get("database_id"))
@@ -4046,6 +4543,7 @@ class RmeCompatibilityPlugin(
                     "status": "synchronizing" if can_send else "ready; printer disconnected",
                     "inventory": inventory,
                     "published": published,
+                    "assigned_profiles": assigned_profiles,
                     "selected": selected,
                     "pending_new": pending,
                     "pending_new_queue": pending_queue,
@@ -4059,7 +4557,7 @@ class RmeCompatibilityPlugin(
                 self._defer_spool_sync_until_idle(force, push_to_firmware)
                 should_push = False
             profile_commands, manufacturer_by_spool = self._provider_profile_commands(
-                published, provider_name
+                assigned_profiles, provider_name
             )
             metadata_changed = (
                 force or self._provider_firmware_signature != firmware_signature
@@ -4111,7 +4609,7 @@ class RmeCompatibilityPlugin(
                 # Reassert selected tool assignments after reconnects and after
                 # inventory edits; publishing a preset alone does not mark it as
                 # physically loaded in Buddy's M865 metadata.
-                slot_by_id = {item["database_id"]: item for item in published}
+                slot_by_id = {item["database_id"]: item for item in assigned_profiles}
                 assignments = []
                 selected_tools = {int(item["tool"]) for item in selected}
                 tool_count = max(logical_tools, max(selected_tools, default=-1) + 1)
@@ -4137,17 +4635,24 @@ class RmeCompatibilityPlugin(
                         # M865 load makes this batch usable on older 6.5.7,
                         # 6.6.3, and early 6.8.1 RME builds as well.
                         base = self._firmware_filament_base(item.get("material"))
-                        assignments.append(self._with_transaction(
-                            "@RME FILAMENT ASSIGN tool=%d profile=%s material=%s"
-                            % (selected_item["tool"], item["alias"], base),
-                            suppress_refresh=True,
-                        ))
-                        assignments.append(
-                            'M865 U%d L%d O"%s"'
-                            % (
-                                item["slot"], selected_item["tool"], item["color"],
+                        if item["slot"] is None:
+                            nozzle = max(0, min(500, int(item["nozzle_temperature"])))
+                            bed = max(0, min(500, int(item["bed_temperature"])))
+                            assignments.append(
+                                'M865 X R N"%s" J"%s" T%d P%d B%d G%d L%d O"%s"'
+                                % (item["alias"], base, nozzle, max(0, nozzle - 40), bed,
+                                   int(base == "FLEX"), selected_item["tool"], item["color"])
                             )
-                        )
+                        else:
+                            assignments.append(self._with_transaction(
+                                "@RME FILAMENT ASSIGN tool=%d profile=%s material=%s"
+                                % (selected_item["tool"], item["alias"], base),
+                                suppress_refresh=True,
+                            ))
+                            assignments.append(
+                                'M865 U%d L%d O"%s"'
+                                % (item["slot"], selected_item["tool"], item["color"])
+                            )
                         manufacturer = manufacturer_by_spool.get(
                             item["database_id"], "none"
                         )
@@ -4385,11 +4890,14 @@ class RmeCompatibilityPlugin(
     def _sync_filaments_from_printer(self):
         """Make firmware M865 assignments authoritative for one reconciliation."""
         with self._state_lock:
-            self._state["spoolmanager"]["pending_provider_sync"] = None
             can_send = self._state["connected"] and self._state["supported"]
+            if not can_send:
+                raise RuntimeError("RME printer is not connected")
+            self._state["spoolmanager"]["pending_provider_sync"] = None
+            machine = self._state.get("machine", {})
+            count = int(machine.get("logical_tools") or machine.get("hotends") or 1)
+            self._printer_selection_read = set(range(count))
             self._state["spoolmanager"]["status"] = "reading selections from printer"
-        if not can_send:
-            raise RuntimeError("RME printer is not connected")
         self._logger.info(
             "Machine-to-provider filament synchronization requested; querying M865 loadout"
         )
@@ -4619,6 +5127,33 @@ class RmeCompatibilityPlugin(
         self._persist_and_publish()
 
     def _accept_firmware_spool(self, record):
+        with self._state_lock:
+            pending = self._printer_selection_read
+        try:
+            self._apply_firmware_spool(record)
+        except Exception:
+            with self._state_lock:
+                if pending is not None and self._printer_selection_read is pending:
+                    self._printer_selection_read = None
+                    self._state["spoolmanager"]["status"] = "printer selection sync failed"
+            self._persist_and_publish()
+            raise
+        with self._state_lock:
+            if pending is None or self._printer_selection_read is not pending:
+                return
+            pending.discard(int(record["tool"]))
+            if pending:
+                return
+            self._printer_selection_read = None
+            spool_state = self._state["spoolmanager"]
+            if spool_state.get("status") in ("reading selections from printer", "synchronizing"):
+                spool_state["status"] = (
+                    "spool details required" if spool_state.get("pending_new")
+                    else "synchronized"
+                )
+        self._persist_and_publish()
+
+    def _apply_firmware_spool(self, record):
         """Apply an LCD-side material choice to the active provider.
 
         A known short alias selects an existing spool. ``NEW`` or a normal
@@ -4630,7 +5165,8 @@ class RmeCompatibilityPlugin(
         tool = int(record["tool"])
         provider, provider_name = self._active_spool_provider()
         with self._state_lock:
-            published = copy.deepcopy(self._state["spoolmanager"].get("published", []))
+            published = copy.deepcopy(self._state["spoolmanager"].get("assigned_profiles", [])
+                                      + self._state["spoolmanager"].get("published", []))
             selected = copy.deepcopy(self._state["spoolmanager"].get("selected", []))
         match = next((item for item in published if item["alias"] == profile), None)
         # The printer retains aliases even when their spools are no longer in
@@ -4675,9 +5211,10 @@ class RmeCompatibilityPlugin(
                 self._sync_spoolmanager(True, False)
             else:
                 expected_vendor = self._gcode_text(match.get("vendor"), 23)
-                expected_color_name = self._gcode_text(
-                    match.get("color_name") or match.get("display_name"), 15
-                )
+                # Loaded colors are RGB only. Firmware derives their labels
+                # from a shared palette (built-ins win over custom names).
+                # A per-spool label/display name cannot round-trip here, and
+                # treating it as identity causes M865 Q -> full sync loops.
                 mismatch = (
                     str(record.get("color", "")).lower()
                     != str(match.get("color", "")).lower()
@@ -4685,11 +5222,6 @@ class RmeCompatibilityPlugin(
                         record.get("vendor") not in (None, "", "None")
                         and str(record.get("vendor", "")).casefold()
                         != expected_vendor.casefold()
-                    )
-                    or (
-                        record.get("color_name") not in (None, "", "None", "Custom")
-                        and str(record.get("color_name", "")).casefold()
-                        != expected_color_name.casefold()
                     )
                 )
                 if mismatch:
@@ -5117,6 +5649,8 @@ class RmeCompatibilityPlugin(
         opens Settings while printing. Mutations and transfers retain the
         strict exception path.
         """
+        if self._transport_recovery_required():
+            raise FileServiceError("Printer reboot required before resuming or discarding an upload")
         with self._state_lock:
             connected = self._state["connected"] and self._state["supported"]
         if not connected or not self._file_service:
@@ -5493,6 +6027,73 @@ class RmeCompatibilityPlugin(
 
     # -- Firmware files stored on the Pi ----------------------------------
 
+    def _start_release_task(self, asset_id=None, variant_override=None):
+        """One bounded GitHub worker, never network I/O on the serial thread."""
+        with self._state_lock:
+            if not self._state["connected"] or not self._state["supported"]:
+                raise ValueError("Connect an RME printer first")
+            if self._release_lock.locked():
+                if asset_id is None:
+                    return
+                raise ValueError("A GitHub firmware operation is already running")
+            self._release_check_after = time.monotonic() + 6 * 3600
+            if self._print_job_active():
+                raise ValueError("Firmware downloads/checks are deferred until the printer is idle")
+            running = dict(self._state["running_firmware"])
+            configured = (self._settings.get(["firmware_variant"]) or "") if variant_override is None else variant_override
+            if not isinstance(configured, str) or (configured and configured not in set(github_firmware.MODELS.values()) | {"mini-en-" + x for x in ("cs", "de", "es", "fr", "it", "ja", "pl", "uk")}):
+                raise ValueError("Choose a supported exact printer variant")
+            detected = github_firmware.variant_for(running.get("model"))
+            variant = configured or detected
+            if detected and configured and configured != detected and not (detected == "mini" and configured.startswith("mini-en-")):
+                raise ValueError("Selected firmware variant does not match the connected printer")
+            if not variant:
+                self._state["firmware_releases"].update(status="unknown", error="Choose an exact firmware variant in settings; this firmware cannot identify itself yet.")
+                self._publish()
+                return
+            generation = self._connection_generation
+            asset = None
+            if asset_id is not None:
+                asset = next((dict(a) for a in self._state["firmware_releases"]["assets"] if a["id"] == asset_id and a["variant"] == variant), None)
+                if not asset:
+                    raise ValueError("Refresh the release list before downloading")
+            if not self._release_lock.acquire(False):
+                raise ValueError("A GitHub firmware operation is already running")
+            self._state["firmware_releases"].update(status="downloading" if asset else "checking", error=None, progress=0, filename=None)
+        self._publish()
+
+        def work():
+            try:
+                if asset:
+                    last = [0.0]
+                    def progress(offset, size):
+                        if self._stop.is_set():
+                            raise ValueError("Plugin shutting down")
+                        if time.monotonic() - last[0] >= 0.5:
+                            last[0] = time.monotonic()
+                            with self._state_lock:
+                                if generation == self._connection_generation:
+                                    self._state["firmware_releases"]["progress"] = int(offset * 100 / size)
+                            self._publish()
+                    filename = github_firmware.download(asset, self._firmware_directory, progress)
+                    changes = dict(status="downloaded", filename=filename, progress=100)
+                else:
+                    token = self._settings.global_get(["plugins", "softwareupdate", "credentials", "github"])
+                    assets = github_firmware.catalog(variant, running, token=token)
+                    changes = dict(status="ready", assets=assets, checked=int(time.time()), variant=variant)
+                with self._state_lock:
+                    if generation == self._connection_generation:
+                        self._state["firmware_releases"].update(changes)
+            except Exception as exc:
+                self._logger.warning("RME GitHub firmware operation failed: %s", exc)
+                with self._state_lock:
+                    if generation == self._connection_generation:
+                        self._state["firmware_releases"].update(status="error", error=str(exc))
+            finally:
+                self._release_lock.release()
+                self._publish()
+        threading.Thread(target=work, name="rme-github-firmware", daemon=True).start()
+
     def _firmware_path(self, filename):
         safe = secure_filename(str(filename))
         if safe != filename or not safe.lower().endswith(".bbf"):
@@ -5552,7 +6153,9 @@ class RmeCompatibilityPlugin(
             raise UploadError("The connected printer did not complete the RME handshake")
         if not str(path).lower().endswith(".bbf") or not os.path.isfile(path):
             raise UploadError("Firmware file was not found on the Pi")
+        self._validate_firmware_path(path)
         metadata = firmware_metadata(path)
+        self._firmware_verified_source = (path, metadata["sha256"])
         with self._firmware_action_lock:
             if self._manifest_store and self._manifest_store.get():
                 raise UploadError(
@@ -5609,6 +6212,16 @@ class RmeCompatibilityPlugin(
                 daemon=True,
             )
             self._firmware_file_thread.start()
+
+    def _validate_firmware_path(self, path):
+        with self._state_lock:
+            running = self._state.get("running_firmware") or {}
+            detected = github_firmware.variant_for(running.get("model"))
+            configured = self._settings.get(["firmware_variant"]) or ""
+        if detected and configured and configured != detected and not (
+                detected == "mini" and configured.startswith("mini-en-")):
+            raise UploadError("Configured firmware variant does not match the connected printer")
+        return validate_firmware_image(path, detected or configured)
 
     def _run_file_firmware_upload(self, path, metadata):
         """Stage and verify ``FWUPD.BBF`` through the current FILE service."""
@@ -5750,6 +6363,7 @@ class RmeCompatibilityPlugin(
         if self._file_service is None:
             return False
         status = self._file_service.firmware_status()
+        self._last_firmware_stage_check = time.monotonic()
         with self._state_lock:
             staged = self._apply_authoritative_firmware_locked(status)
         self._persist_and_publish()
@@ -5778,6 +6392,10 @@ class RmeCompatibilityPlugin(
     def _firmware_state_changed(self, **changes):
         status = changes.get("status")
         with self._state_lock:
+            if self._state["firmware"].get("recovery_required"):
+                # A canceled worker may finish after emergency recovery was
+                # requested. Its cleanup cannot unlock an uncertain receiver.
+                changes.pop("recovery_required", None)
             self._state["firmware"].update(changes)
             recovery_required = bool(
                 self._state["firmware"].get("recovery_required")
@@ -5791,12 +6409,12 @@ class RmeCompatibilityPlugin(
             else:
                 error_to_clear = None
         now = time.monotonic()
-        if status != "uploading" or now - self._last_fw_publish >= 0.25:
+        if status != "uploading" or now - self._last_fw_publish >= 0.5:
             self._last_fw_publish = now
             self._persist_and_publish()
-        if status == "ready" and flash_after_stage:
+        if status == "ready" and flash_after_stage and not recovery_required:
             self._defer(self._flash_after_verified_stage)
-        elif status == "ready" or (status == "error" and not recovery_required):
+        elif status in ("ready", "error") and not recovery_required:
             self._defer(self._restore_session_after_upload)
         if error_to_clear and not recovery_required:
             timer = threading.Timer(
@@ -5835,7 +6453,10 @@ class RmeCompatibilityPlugin(
             staged = self._state["firmware"].get("status") == "ready"
             self._state["firmware"]["flash_after_stage"] = False
         if requested and staged:
-            self._flash_firmware()
+            try:
+                self._flash_firmware()
+            except UploadError as exc:
+                self._firmware_state_changed(status="error", error=str(exc), flash_after_stage=False)
 
     def _restore_session_after_upload(self):
         # The event lease normally expires during a long M998 transfer because
@@ -5852,11 +6473,25 @@ class RmeCompatibilityPlugin(
         if should_open:
             self._open_session()
 
-    def _flash_firmware(self):
-        self._require_print_idle("Firmware flashing")
+    def _validate_staged_firmware(self):
         with self._state_lock:
             if self._state["firmware"].get("status") not in ("ready", "staged"):
                 raise UploadError("Upload and verify firmware on the printer before flashing")
+            staged_sha = self._state["firmware"].get("sha256")
+            filename = self._state["firmware"].get("filename")
+        verified = self._firmware_verified_source
+        path = verified[0] if verified and verified[1] == staged_sha else (
+            self._firmware_path(filename) if filename else None
+        )
+        if not path or not staged_sha or not os.path.isfile(path):
+            raise UploadError("Restage a compatible BBF before flashing; staged image identity is unavailable")
+        self._validate_firmware_path(path)
+        if firmware_metadata(path)["sha256"] != staged_sha:
+            raise UploadError("Local BBF no longer matches the verified printer candidate; restage it")
+
+    def _flash_firmware(self):
+        self._require_print_idle("Firmware flashing")
+        self._validate_staged_firmware()
         self._arm_firmware_reconnect()
         try:
             self._file_service.mutate("FLASH", "FWUPD.RME")
@@ -5897,16 +6532,36 @@ class RmeCompatibilityPlugin(
 
     def _delete_firmware(self, filename):
         """Remove one explicitly selected BBF from the plugin's Pi storage."""
+        self._delete_firmware_copies([filename])
+
+    def _delete_firmware_copies(self, filenames):
+        """Delete only the browser-confirmed snapshot of local BBF copies."""
         self._require_print_idle("Firmware actions")
-        if (self._uploader and self._uploader.busy) or (
-            self._firmware_file_thread and self._firmware_file_thread.is_alive()
+        if not isinstance(filenames, list) or not filenames or not all(
+            isinstance(name, str) for name in filenames
         ):
-            raise UploadError("Cannot delete firmware during a transfer")
-        path = self._firmware_path(filename)
-        if not os.path.isfile(path):
-            flask.abort(404)
-        os.unlink(path)
-        self._logger.info("Deleted staged Pi firmware file %s", filename)
+            raise ValueError("Select firmware filenames to delete")
+        with self._firmware_action_lock:
+            if (self._uploader and self._uploader.busy) or (
+                self._firmware_file_thread and self._firmware_file_thread.is_alive()
+            ) or self._state["firmware"].get("status") in (
+                "queued", "starting", "uploading", "verifying", "canceling",
+                "flash_queued", "flashing", "restarting",
+            ):
+                raise UploadError("Cannot delete firmware during a transfer")
+            if not self._release_lock.acquire(False):
+                raise UploadError("Cannot delete firmware during a release operation")
+            try:
+                # Validate every target before removing anything. Never recurse,
+                # expand wildcards, or delete files added after confirmation.
+                paths = [self._firmware_path(name) for name in dict.fromkeys(filenames)]
+                if any(not os.path.isfile(path) or os.path.islink(path) for path in paths):
+                    raise ValueError("Firmware selection changed; refresh before deleting")
+                for path in paths:
+                    os.unlink(path)
+                    self._logger.info("Deleted Pi firmware copy %s", os.path.basename(path))
+            finally:
+                self._release_lock.release()
 
     # -- State publication --------------------------------------------------
 
@@ -5934,6 +6589,10 @@ class RmeCompatibilityPlugin(
     def _public_state(self):
         with self._state_lock:
             result = copy.deepcopy(self._state)
+            self._snapshot_revision += 1
+            result["_snapshot"] = {
+                "epoch": self._snapshot_epoch, "revision": self._snapshot_revision,
+            }
         # The built-in database is implementation state, not a second live
         # provider. Keep it private so an external provider cannot appear to be
         # running alongside SpoolManager or Spoolman in API/UI snapshots.

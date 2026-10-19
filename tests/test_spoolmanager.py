@@ -1,5 +1,6 @@
 import unittest
 import threading
+import types
 from unittest import mock
 
 from octoprint_rme_compatibility.spoolmanager import (
@@ -80,6 +81,32 @@ class _PluginManager(object):
 
 
 class SpoolManagerTests(unittest.TestCase):
+    def test_native_creation_preserves_editor_fields_and_returns_exact_id(self):
+        implementation = _Implementation([_Model(1)])
+        implementation._updateSpoolModelFromJSONData = lambda model, values: model.__dict__.update(values)
+        def save(model):
+            model.databaseId = 42
+            implementation._databaseManager.models.append(model)
+            return 42
+        implementation._databaseManager.saveSpool = save
+        bridge = SpoolManagerBridge(_PluginManager(implementation))
+        module = types.ModuleType("octoprint_SpoolManager.models.SpoolModel")
+        module.SpoolModel = lambda: _Model(None)
+        values = {"databaseId": None, "displayName": "Same name as another spool",
+                  "material": "PLA", "noteHtml": "<b>Notes</b>", "cost": 25.5,
+                  "isTemplate": False, "usedWeight": 12}
+        with mock.patch.dict("sys.modules", {module.__name__: module}):
+            created = bridge.create_native(values)
+        self.assertEqual(42, created["database_id"])
+        model = implementation._databaseManager.loadSpool(42)
+        self.assertEqual("<b>Notes</b>", model.noteHtml)
+        self.assertEqual(25.5, model.cost)
+        self.assertEqual(12, model.usedWeight)
+        with self.assertRaises(ValueError):
+            bridge.create_native(dict(values, databaseId=1))
+        with self.assertRaises(ValueError):
+            bridge.create_native(dict(values, isTemplate=True))
+
     def test_normalizes_colors_and_builds_firmware_safe_aliases(self):
         self.assertEqual(normalize_color("#abc"), "#aabbcc")
         self.assertEqual(normalize_color("invalid"), "#808080")

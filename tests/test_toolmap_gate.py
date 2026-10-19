@@ -1,4 +1,5 @@
 import ast
+from bbf_fixture import bbf
 import hashlib
 import importlib.machinery
 import logging
@@ -169,6 +170,39 @@ class _Comm(object):
 
 
 class ToolmapGateTests(unittest.TestCase):
+    def test_mesh_preflight_analyzes_selected_local_file(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("mesh-test")
+        plugin._state.update(supported=True)
+        plugin._state["machine"].update(mesh_area=1, x_max=250, y_max=205.5)
+        plugin._printer = types.SimpleNamespace(get_current_data=lambda: {
+            "job": {"file": {"origin": "local", "path": "part.gcode"}}})
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".gcode") as f:
+            f.write("G90\nM83\nG0 X10 Y20\nG1 X30 Y40 E1\n")
+            f.flush()
+            plugin._file_manager = types.SimpleNamespace(path_on_disk=lambda origin, path: f.name)
+            plugin._prepare_mesh_area()
+        self.assertEqual(plugin._mesh_area_command,
+                         "@RME MESH SET x=9.00 y=19.00 width=22.00 height=22.00")
+
+    def test_mesh_bounds_inserted_before_file_probe_only(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._state.update(supported=True)
+        plugin._state["machine"]["mesh_area"] = 1
+        plugin._mesh_area_command = "@RME MESH SET x=10 y=20 width=30 height=40"
+        result = plugin.gcode_queuing_hook(None, "queuing", "G29 P1", None, "G29", tags={"source:file"})
+        self.assertEqual(result[0][0], plugin._mesh_area_command)
+        self.assertEqual(result[1], ("G29 P1", None))
+        self.assertIsNone(plugin.gcode_queuing_hook(None, "queuing", "G29 P1", None, "G29", tags={"source:terminal"}))
+        plugin._state["machine"]["mesh_area"] = 0
+        self.assertIsNone(plugin.gcode_queuing_hook(None, "queuing", "G29 P1", None, "G29", tags={"source:file"}))
+
+    def test_mesh_preflight_clears_previous_job_on_unsupported_firmware(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._mesh_area_command = "old bounds"
+        plugin._prepare_mesh_area()
+        self.assertIsNone(plugin._mesh_area_command)
+
     def test_park_without_workflow_events_requests_live_tool_state(self):
         plugin = RmeCompatibilityPlugin()
         plugin._schedule_publish = lambda: None
@@ -507,10 +541,11 @@ class ToolmapGateTests(unittest.TestCase):
             navbar = template_file.read()
 
         self.assertIn("self.hasToolmapPrompt() ||", javascript)
-        self.assertIn('title: "Tool mapping required"', javascript)
+        self.assertNotIn('title: "Tool mapping required"', javascript)
+        self.assertIn("self.showToolMapping();", javascript)
         self.assertIn("self.updateToolmapNotice(prompt)", javascript)
-        self.assertIn("Use current mapping", navbar)
-        self.assertIn("click: showRmeTab", navbar)
+        self.assertNotIn("Use current mapping", navbar)
+        self.assertIn("click: showToolMapping", navbar)
 
     def test_pausing_state_defers_provider_writes_until_job_is_idle(self):
         plugin = RmeCompatibilityPlugin()
@@ -771,6 +806,66 @@ class ToolmapGateTests(unittest.TestCase):
         provider, name = plugin._resolve_spool_provider()
         self.assertIs(internal, provider)
         self.assertEqual("internal", name)
+
+    def test_inventory_refresh_does_not_wait_for_firmware_or_idle_print(self):
+        record = {"database_id": 99, "material": "PLA", "_private": "hidden"}
+        provider = types.SimpleNamespace(
+            inventory=lambda **kwargs: [dict(record)], selected=lambda: [None, dict(record)],
+        )
+        plugin = RmeCompatibilityPlugin()
+        plugin._active_spool_provider = lambda: (provider, "spoolmanager")
+        plugin._pending_provider_profile_sync = {"expected": {}}
+        plugin._print_job_active = lambda: True
+        published = []
+        plugin._persist_and_publish = lambda: published.append(True)
+        plugin._refresh_spool_inventory()
+        self.assertEqual([{"database_id": 99, "material": "PLA"}], plugin._state["spoolmanager"]["inventory"])
+        self.assertEqual(1, plugin._state["spoolmanager"]["selected"][0]["tool"])
+        self.assertEqual([True], published)
+        self.assertIsNotNone(plugin._pending_provider_profile_sync)
+
+    def test_eight_distinct_spools_do_not_drop_the_last_tool(self):
+        records = [{"database_id": index + 1, "display_name": "Spool %d" % index,
+                    "vendor": "", "material": "PLA", "color_name": "Blue", "color": "#0073ff",
+                    "nozzle_temperature": 215, "bed_temperature": 60,
+                    "remaining_weight": 600, "is_active": True, "is_template": False}
+                   for index in range(8)]
+        provider = types.SimpleNamespace(available=lambda: True,
+                                        inventory=lambda **kwargs: records, selected=lambda: records)
+        plugin = RmeCompatibilityPlugin()
+        plugin._settings = _Settings()
+        plugin._active_spool_provider = lambda: (provider, "spoolmanager")
+        plugin._printer = _Printer()
+        plugin._logger = logging.getLogger("eight-spool-test")
+        plugin._state.update(connected=True, supported=True,
+                             machine={"logical_tools": 8, "tool_capacity": 8})
+        plugin._sync_spoolmanager(True)
+        pending = plugin._pending_provider_profile_sync
+        self.assertEqual(7, len(plugin._state["spoolmanager"]["published"]))
+        self.assertEqual(8, len(plugin._state["spoolmanager"]["selected"]))
+        assignments = pending["assignments"]
+        for tool in range(7):
+            self.assertTrue(any("M865 U%d L%d" % (tool, tool) in command for command in assignments))
+        self.assertIn('M865 X R N"PLA-008" J"PLA" T215 P175 B60 G0 L7 O"#0073ff"', assignments)
+        self.assertTrue(assignments[-1] == "M865 Q")
+        plugin._defer = lambda callback, *args: None
+        plugin._handle_record({"record": "loaded_filament", "tool": 7,
+                               "material": "PLA-008", "profile": "PLA-008",
+                               "material_family_reported": True,
+                               "color_name": "Blue", "color": "#0073ff"})
+        loaded = next(item for item in plugin._state["loaded_filaments"] if item["tool"] == 7)
+        self.assertEqual("PLA", loaded["material"])
+        self.assertEqual("PLA", loaded["firmware_material"])
+        self.assertEqual(8, loaded["database_id"])
+        # A b126 state restored after upgrading has no assigned_profiles.
+        plugin._state["spoolmanager"].pop("assigned_profiles")
+        plugin._handle_record({"record": "loaded_filament", "tool": 7,
+                               "material": "PLA-008", "profile": "PLA-008",
+                               "material_family_reported": True,
+                               "color_name": "Blue", "color": "#0073ff"})
+        loaded = next(item for item in plugin._state["loaded_filaments"] if item["tool"] == 7)
+        self.assertEqual("PLA", loaded["material"])
+        self.assertEqual(8, loaded["database_id"])
 
     def test_external_provider_preserves_unselected_firmware_material(self):
         record = {
@@ -1192,6 +1287,7 @@ class ToolmapGateTests(unittest.TestCase):
         plugin = RmeCompatibilityPlugin()
         plugin._printer = _Printer()
         plugin._logger = logging.getLogger("rme-one-click-flash-test")
+        plugin._validate_staged_firmware = lambda: None  # Transport ordering is tested here.
         plugin._uploader = types.SimpleNamespace(busy=False)
         plugin._file_service = types.SimpleNamespace(
             mutate=lambda action, path: mutations.append((action, path))
@@ -1241,14 +1337,14 @@ class ToolmapGateTests(unittest.TestCase):
                     "state": "ready",
                     "path": "FWUPD.RME",
                     "size": os.path.getsize(self.upload[0]),
-                    "sha256": hashlib.sha256(b"signed-rme-bbf").hexdigest(),
+                    "sha256": hashlib.sha256(bbf()).hexdigest(),
                 }
 
         with tempfile.TemporaryDirectory() as firmware_directory:
             filename = "coreone-rme.bbf"
             path = os.path.join(firmware_directory, filename)
             with open(path, "wb") as firmware_file:
-                firmware_file.write(b"signed-rme-bbf")
+                firmware_file.write(bbf())
 
             plugin = RmeCompatibilityPlugin()
             plugin._printer = _Printer()
@@ -1260,6 +1356,8 @@ class ToolmapGateTests(unittest.TestCase):
             plugin._persist_and_publish = lambda: None
             plugin._defer = lambda callback, *args: None
             plugin._state.update(connected=True, supported=True)
+            plugin._settings = _Settings()
+            plugin._state["running_firmware"]["model"] = "COREONE"
             plugin._state["storage"].update(
                 supported=True, caps={"write": 1, "flash": 1}
             )
@@ -1437,7 +1535,8 @@ class ToolmapGateTests(unittest.TestCase):
             supported=True, caps={"write": 1, "flash": 1}
         )
 
-        plugin._flash_firmware()
+        with patch.object(plugin, "_validate_staged_firmware"):
+            plugin._flash_firmware()
 
         self.assertEqual([("FLASH", "FWUPD.RME")], plugin._file_service.mutations)
         self.assertEqual([], plugin._printer.command_batches)
@@ -1458,7 +1557,8 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._state.update(connected=True, supported=True)
         plugin._state["firmware"]["status"] = "ready"
 
-        plugin._flash_firmware()
+        with patch.object(plugin, "_validate_staged_firmware"):
+            plugin._flash_firmware()
         self.assertTrue(plugin._firmware_reconnect_pending())
         plugin._handle_record(parse_line("RME_FIRMWARE_RESTART reconnect=1"))
 
@@ -1595,6 +1695,34 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual("idle", persisted["status"])
         self.assertIsNone(persisted["error"])
 
+    def test_emergency_transfer_stop_disconnects_and_keeps_recovery_data(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._printer = _Printer()
+        plugin._logger = logging.getLogger("recovery-stop-test")
+        plugin._persist_and_publish = lambda: None
+        canceled = []
+        plugin._file_service = types.SimpleNamespace(
+            cancel=lambda: canceled.append("cancel"), reset=lambda reason: canceled.append(reason),
+        )
+        partial = {"remote_path": "FWUPD.BBF", "source_available": True, "status": "transferring", "recovery_active": True}
+        plugin._state["storage"]["partial"] = partial
+        plugin._state["firmware"].update(status="canceling", flash_after_stage=True)
+        plugin._stop_transfer_for_recovery()
+        self.assertEqual(1, plugin._printer.disconnect_calls)
+        self.assertEqual([], plugin._printer.command_batches)
+        self.assertEqual("cancel", canceled[0])
+        self.assertTrue(plugin._firmware_file_cancel.is_set())
+        self.assertTrue(plugin._state["firmware"]["recovery_required"])
+        self.assertFalse(plugin._state["firmware"]["flash_after_stage"])
+        self.assertEqual("interrupted", partial["status"])
+        self.assertTrue(partial["source_available"])
+        self.assertFalse(partial["recovery_active"])
+        with self.assertRaisesRegex(Exception, "Printer reboot required"):
+            plugin._require_storage()
+        plugin._defer = lambda *args: None
+        plugin._firmware_state_changed(status="error", error="cancelled", recovery_required=False)
+        self.assertTrue(plugin._state["firmware"]["recovery_required"], "late worker cleanup must not unlock raw mode")
+
     def test_uncertain_binary_transport_unlocks_after_line_mode_reconnect(self):
         plugin = RmeCompatibilityPlugin()
         plugin._printer = _Printer()
@@ -1655,7 +1783,8 @@ class ToolmapGateTests(unittest.TestCase):
         ) as template_file:
             settings_template = template_file.read()
         shared_firmware = "rme_compatibility_firmware_controls.jinja2"
-        self.assertIn('{% include "' + shared_firmware + '" %}', settings_template)
+        self.assertNotIn('{% include "' + shared_firmware + '" %}', settings_template)
+        self.assertIn("showRmeSection('firmware')", settings_template)
         with open("octoprint_rme_compatibility/templates/" + shared_firmware) as template_file:
             settings_template += template_file.read()
         self.assertIn("Plugin status", settings_template)
@@ -1677,7 +1806,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("Unstage from printer", settings_template)
         self.assertIn("Saved lighting", settings_template)
         self.assertIn("Printer lock", settings_template)
-        self.assertIn("Printer USB storage", settings_template)
+        self.assertIn("Files and firmware", settings_template)
         self.assertNotIn("stats_poll_interval", settings_template)
         self.assertNotIn("Poll supported firmware every", settings_template)
         self.assertNotIn("spoolmanager_sync_interval", settings_template)
@@ -1729,12 +1858,13 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn("Select spool…", javascript)
         self.assertIn("self.mappingSelectionLabel", javascript)
         self.assertIn("self.chooseMappingSpool", javascript)
-        self.assertIn("foreach: availableSpools", javascript)
+        self.assertIn("foreach: visibleSpools", javascript)
+        self.assertIn("Search all matching spools", javascript)
         self.assertIn("var internalAlias", javascript)
         self.assertNotIn("if (filament.display_name) details.push(filament.display_name)", javascript)
         self.assertIn("installSpoolManagerPanel", javascript)
-        self.assertIn("ensureRmeSpoolMappingDialog", javascript)
-        self.assertIn("rme-spool-mapping-dialog", javascript)
+        self.assertIn("ensureRmeSpoolMappingPanel", javascript)
+        self.assertIn("rme-spool-mapping-panel", javascript)
         self.assertIn("Loaded on printer", javascript)
         self.assertIn("text: mappingProviderName", javascript)
         self.assertIn("Printer loadout mapping", javascript)
@@ -1748,7 +1878,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn('self.command("apply_spool_selections"', javascript)
         spoolmanager_panel = javascript[
             javascript.index("function installSpoolManagerPanel()"):
-            javascript.index("function ensureRmeSpoolMappingDialog()")
+            javascript.index("function ensureRmeSpoolMappingPanel()")
         ]
         self.assertNotIn("<select", spoolmanager_panel)
         self.assertIn("Select spool…", spoolmanager_panel)
@@ -1768,6 +1898,10 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertIn('self.command("storage_download"', javascript)
         self.assertIn("storage/downloads/", javascript)
         self.assertIn("installFileManagerBridge", javascript)
+        with open("octoprint_rme_compatibility/templates/rme_compatibility_storage_controls.jinja2") as template_file:
+            storage_template = template_file.read()
+        settings_template += storage_template
+        self.assertIn("rme_compatibility_storage_controls.jinja2", main_tab)
         self.assertIn("Download to Pi", settings_template)
         self.assertIn("Download to device", settings_template)
         self.assertIn('class="rme-storage-actions"', settings_template)
@@ -1789,7 +1923,7 @@ class ToolmapGateTests(unittest.TestCase):
         ) as template_file:
             tab_template = template_file.read()
         self.assertIn("RME printer statistics", tab_template)
-        self.assertNotIn("Firmware update", tab_template)
+        self.assertIn("Firmware updates", tab_template)
         self.assertNotIn("RME printer controls", tab_template)
         self.assertIn('"plugin/rme_compatibility/firmware"', javascript)
         with open(
@@ -1823,7 +1957,7 @@ class ToolmapGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as source_directory, tempfile.TemporaryDirectory() as firmware_directory:
             source = os.path.join(source_directory, "octoprint-upload.tmp")
             with open(source, "wb") as firmware_file:
-                firmware_file.write(b"signed-bbf-test")
+                firmware_file.write(bbf())
             flask.request.files = {}
             flask.request.values = {
                 "file.path": source,
@@ -1835,12 +1969,13 @@ class ToolmapGateTests(unittest.TestCase):
             plugin._logger = logging.getLogger("rme-upload-test")
             plugin._firmware_directory = firmware_directory
             plugin._public_state = lambda: {"supported": True}
+            plugin._state["running_firmware"]["model"] = "COREONE"
 
             response = plugin.upload_firmware()
 
             self.assertEqual("coreone_6.5.7-RME.bbf", response["file"]["name"])
             with open(os.path.join(firmware_directory, response["file"]["name"]), "rb") as stored:
-                self.assertEqual(b"signed-bbf-test", stored.read())
+                self.assertEqual(bbf(), stored.read())
 
     def test_standard_octoprint_file_can_start_guarded_firmware_workflow(self):
         with tempfile.TemporaryDirectory() as local_directory:
@@ -2740,6 +2875,71 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual([(True, False)], syncs)
         self.assertIsNone(plugin._state["spoolmanager"]["pending_new"])
 
+    def test_printer_selection_read_completes_for_unchanged_and_empty_slots(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-selection-read-test")
+        plugin._active_spool_provider = lambda: (object(), "spoolmanager")
+        plugin._persist_and_publish = lambda: None
+        commands = []
+        plugin._send_command = commands.append
+        plugin._state.update(connected=True, supported=True)
+        plugin._state["machine"] = {"logical_tools": 8, "hotends": 8}
+        spool = dict(alias="TPU-00L", database_id=21, tool=4,
+                     color="#000000", vendor="SUNLU")
+        plugin._state["spoolmanager"].update(published=[spool], selected=[spool])
+        plugin._sync_filaments_from_printer()
+        for tool in (4, 0, 1, 2, 3, 5, 6, 6):
+            plugin._accept_firmware_spool(dict(
+                tool=tool, material="FLEX" if tool == 4 else "---",
+                profile="TPU-00L" if tool == 4 else "---",
+                color="#000000", vendor="SUNLU"))
+            self.assertEqual("reading selections from printer",
+                             plugin._state["spoolmanager"]["status"])
+        plugin._accept_firmware_spool(dict(tool=7, material="---"))
+        self.assertEqual("synchronized", plugin._state["spoolmanager"]["status"])
+        self.assertIsNone(plugin._printer_selection_read)
+        self.assertEqual(["M865 Q"], commands)
+
+    def test_disconnected_selection_read_does_not_leave_busy_status(self):
+        plugin = RmeCompatibilityPlugin()
+        before = plugin._state["spoolmanager"]["status"]
+        with self.assertRaises(RuntimeError):
+            plugin._sync_filaments_from_printer()
+        self.assertEqual(before, plugin._state["spoolmanager"]["status"])
+        self.assertIsNone(plugin._printer_selection_read)
+
+    def test_matching_rgb_with_palette_label_does_not_resync(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-color-echo-test")
+        plugin._active_spool_provider = lambda: (object(), "spoolmanager")
+        syncs = []
+        plugin._sync_spoolmanager = lambda *args: syncs.append(args)
+        for name in ("Jet Black", "", "Other spool black"):
+            spool = dict(alias="TPU-00L", database_id=21, tool=4,
+                         color="#000000", color_name=name,
+                         display_name="SUNLU TPU", vendor="SUNLU")
+            plugin._state["spoolmanager"].update(published=[spool], selected=[spool])
+            for _ in range(20):
+                plugin._accept_firmware_spool(dict(
+                    tool=4, material="FLEX", profile="TPU-00L",
+                    color="#000000", color_name="Black", vendor="Sunlu"))
+        self.assertEqual([], syncs)
+
+    def test_real_rgb_or_vendor_mismatch_still_corrects_printer(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("rme-real-metadata-test")
+        plugin._active_spool_provider = lambda: (object(), "spoolmanager")
+        syncs = []
+        plugin._sync_spoolmanager = lambda *args: syncs.append(args)
+        spool = dict(alias="PLA-005", database_id=5, tool=6,
+                     color="#ffffff", color_name="White", vendor="Hatchbox")
+        plugin._state["spoolmanager"].update(published=[spool], selected=[spool])
+        for color, vendor in (("#000000", "Hatchbox"), ("#ffffff", "SUNLU")):
+            plugin._accept_firmware_spool(dict(
+                tool=6, material="PLA", profile="PLA-005",
+                color=color, color_name="White", vendor=vendor))
+        self.assertEqual([(True, True), (True, True)], syncs)
+
     def test_machine_import_resolves_alias_outside_published_slots(self):
         class Provider(object):
             def inventory(self, include_unavailable=False):
@@ -3205,7 +3405,8 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._begin_firmware_reconnect = lambda *args, **kwargs: reconnects.append(True)
 
         try:
-            plugin._flash_firmware()
+            with patch.object(plugin, "_validate_staged_firmware"):
+                plugin._flash_firmware()
             self.assertEqual("restarting", plugin._state["firmware"]["status"])
             self.assertTrue(plugin._state["firmware"]["reconnect_expected"])
             self.assertEqual([True], reconnects)
@@ -3496,7 +3697,7 @@ class ToolmapGateTests(unittest.TestCase):
         self.assertEqual("filament_unload", plugin._state["workflow"]["workflow"])
         self.assertIsNone(plugin._state["prompt"])
 
-    def test_runout_uses_dialog_only_and_print_end_clears_fault(self):
+    def test_runout_queries_recovery_actions_and_print_end_clears_fault(self):
         from octoprint.events import Events
 
         plugin = RmeCompatibilityPlugin()
@@ -3512,10 +3713,35 @@ class ToolmapGateTests(unittest.TestCase):
             "workflow": "filament_runout", "state": "waiting",
             "code": "runout", "message": "Loadcell detected filament runout",
         })
-        self.assertEqual(["@RME DIALOG QUERY"], commands)
-        plugin._state["prompt"] = {"kind": "firmware", "actions": ["Continue"]}
+        self.assertEqual(["@RME DIALOG QUERY", "@RME STUCK QUERY"], commands)
+        plugin._handle_record({
+            "record": "event", "seq": 2, "type": "workflow",
+            "workflow": "tool_change", "state": "open",
+            "message": "Tool change in progress",
+        })
+        self.assertEqual("filament_runout", plugin._state["workflow"]["workflow"])
+        plugin._handle_record({
+            "record": "prompt", "actions": ["Continue", "Unload", "Abort"],
+        })
+        self.assertEqual("filament_runout", plugin._state["prompt"]["workflow"])
+        self.assertIn("Loadcell", plugin._state["prompt"]["message"])
+        self.assertEqual(["Continue", "Unload", "Abort"], plugin._state["prompt"]["actions"])
+        plugin._handle_record({
+            "record": "event", "seq": 3, "type": "workflow",
+            "workflow": "tool_change", "state": "closed", "progress": 100,
+            "message": "Tool change complete",
+        })
+        self.assertEqual("filament_runout", plugin._state["workflow"]["workflow"])
+        self.assertEqual(["Continue", "Unload", "Abort"], plugin._state["prompt"]["actions"])
 
         plugin._defer = lambda callback, *args: None
+        plugin._handle_record({
+            "record": "event", "seq": 4, "type": "workflow",
+            "workflow": "filament_runout", "state": "closed",
+            "message": "Extrusion recovery ended",
+        })
+        self.assertIsNone(plugin._state["prompt"])
+        plugin._state["prompt"] = {"kind": "firmware", "actions": ["Continue"]}
         plugin.on_event(Events.PRINT_CANCELLED, {})
         self.assertIsNone(plugin._state["workflow"])
         self.assertIsNone(plugin._state["prompt"])
@@ -3581,6 +3807,20 @@ class ToolmapGateTests(unittest.TestCase):
             "M976 A 0:0:PLA:215,0:2:PETG:255 ; calibrate",
             None, "M976", tags={"source:job"},
         ))
+
+    def test_pa_inspection_does_not_open_or_replace_calibration_workflow(self):
+        for command in ("M976 I", "M976 I T0", "M976 L0 I S240 ; inspect cache"):
+            plugin = RmeCompatibilityPlugin()
+            plugin._schedule_publish = lambda: None
+            plugin._state.update(connected=True, supported=True)
+            plugin.gcode_sent_hook(None, "sent", command, None, "M976")
+            self.assertFalse(plugin._auto_pa_active)
+            self.assertIsNone(plugin._state["workflow"])
+            plugin._start_pressure_advance_workflow(batch=True)
+            original = dict(plugin._state["workflow"])
+            plugin.gcode_sent_hook(None, "sent", command, None, "M976")
+            self.assertTrue(plugin._auto_pa_active)
+            self.assertEqual(original, plugin._state["workflow"])
 
     def test_sent_m976_creates_parent_workflow_until_batch_completes(self):
         plugin = RmeCompatibilityPlugin()
@@ -3808,6 +4048,7 @@ class ToolmapGateTests(unittest.TestCase):
         from octoprint.events import Events
 
         plugin = RmeCompatibilityPlugin()
+        plugin._logger = logging.getLogger("test")
         plugin._printer = _Printer()
         plugin._defer = lambda callback, *args: callback(*args)
         plugin._state.update(connected=True, supported=True)

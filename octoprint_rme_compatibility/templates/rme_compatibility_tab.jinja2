@@ -1,33 +1,49 @@
 <div class="rme-panel">
+    <nav class="rme-firmware-action-row" aria-label="RME workspace">
+        <button class="btn" data-bind="click: showLiveControls">Live controls</button>
+        <button class="btn" data-bind="click: function () { showRmeSection('filaments'); }">Filaments and spools</button>
+        <button class="btn" data-bind="click: function () { showRmeSection('storage'); }">Printer files</button>
+        <button class="btn" data-bind="click: function () { showRmeSection('firmware'); }">Firmware updates</button>
+    </nav>
+    {% include "rme_compatibility_transfer_recovery.jinja2" %}
     <section id="rme-print-controls" class="rme-card" data-bind="visible: tuneAvailable">
         <h4>RME print controls</h4>
         <p>Live printer state. Changes apply during printing without changing saved light profiles.</p>
         <div data-bind="visible: tuneLight() >= 0">
             <label for="rme-light-mode">Chamber light: <strong data-bind="text: ['Off', 'On', 'Locked'][tuneLight()]"></strong></label>
             <input id="rme-light-mode" type="range" min="0" max="2" step="1" aria-label="Chamber light: Off, On, Locked"
-                data-bind="rmeLightState: tuneLight, event: {change: changeTuneLight}, enable: tuneEnabled">
-            <div class="rme-light-positions"><span>Off</span><span>On (timed)</span><span>Locked on</span></div>
+                data-bind="attr: {max: chamberLightPrinterBusy() ? 1 : 2, 'aria-label': chamberLightPrinterBusy() ? 'Chamber light: Off, On' : 'Chamber light: Off, On, Locked'}, rmeLightState: tuneLight, event: {change: changeTuneLight}, enable: tuneLightingEnabled">
+            <div class="rme-light-positions"><span>Off</span><span data-bind="text: chamberLightPrinterBusy() ? 'On' : 'On (timed)'"></span><span data-bind="visible: !chamberLightPrinterBusy()">Locked on</span></div>
         </div>
         <div data-bind="visible: tuneLcd() >= 0">
             <label>LCD: <strong data-bind="text: tuneLcd() > 0 ? 'On' : 'Off'"></strong></label>
+            <small data-bind="visible: pendingLcd() && tick() < pendingLcd().until">Sending — waiting for printer confirmation.</small>
             <input type="range" min="0" max="1" step="1" aria-label="LCD Off or On"
-                data-bind="rmeLightState: tuneLcd, event: {change: changeTuneLcd}, enable: tuneEnabled">
+                data-bind="rmeLightState: tuneLcd, event: {change: changeTuneLcd}, enable: tuneLightingEnabled">
             <small>Independent of chamber lights. Local activity or opening the door wakes the LCD.</small>
         </div>
-        <details data-bind="visible: chamberLightPrinterBusy"><summary>Current-print brightness</summary>
+        <div data-bind="visible: chamberLightPrinterBusy"><h5>Current-print brightness</h5>
             <p>Temporary overrides only; saved profiles are unchanged.</p>
             <div data-bind="foreach: printBrightnessRows">
                 <div data-bind="visible: $root.tune()[kind + '_print'] >= 0">
                     <label><span data-bind="text: label"></span>: <span data-bind="text: $root.tune()[kind + '_print']"></span>%</label>
-                    <input type="range" min="0" max="100" step="1" data-bind="value: draft, enable: $root.tuneEnabled, attr: {'aria-label': label + ' print brightness'}">
-                    <button class="btn" data-bind="click: $root.applyPrintBrightness, enable: $root.tuneEnabled">Apply</button>
+                    <input type="range" min="0" max="100" step="1" data-bind="value: draft, enable: $root.tuneLightingEnabled, attr: {'aria-label': label + ' print brightness'}">
+                    <button class="btn" data-bind="click: $root.applyPrintBrightness, enable: $root.tuneLightingEnabled">Apply</button>
                 </div>
             </div>
-        </details>
+        </div>
         <label>Speed (%) — printer: <span data-bind="text: tune().speed"></span>%</label>
         <input type="number" min="10" max="300" class="input-small" data-bind="value: tuneSpeed, enable: tuneEnabled">
         <button class="btn" data-bind="click: applyTuneSpeed, enable: tuneEnabled">Apply speed</button>
         <button class="btn" data-bind="click: toggleTuneStealth, enable: tuneEnabled, text: Number(tune().stealth) ? 'Stealth: On' : 'Stealth: Off', attr: {'aria-pressed': !!Number(tune().stealth)}"></button>
+        <label data-bind="visible: tune().auto_pa !== undefined">Auto PA
+          <select data-bind="enable: tuneEnabled, value: tune().auto_pa, event: {change: changeAutoPa}">
+            <option value="0">Off — skip calibration</option>
+            <option value="1">Auto — use valid cache</option>
+            <option value="2">On — always calibrate</option>
+          </select>
+        </label>
+        <small data-bind="visible: tune().auto_pa !== undefined">Saved on the printer. Applies to the next calibration command; does not interrupt a calibration already running.</small>
         <div data-bind="foreach: tuneFlows">
             <label><span data-bind="text: label"></span> flow — printer: <span data-bind="text: actual"></span>%</label>
             <input type="number" min="50" max="150" class="input-small" data-bind="value: draft, enable: $root.tuneEnabled">
@@ -46,6 +62,7 @@
         </span>
     </div>
 
+    <p class="alert alert-warning" role="status" data-bind="visible: pauseReasonText, text: pauseReasonText"></p>
     <div class="rme-card" data-bind="visible: workflowVisible">
         <h4><span data-bind="text: workflowTitle"></span> <small data-bind="text: workflowState"></small></h4>
         <div class="progress progress-striped" data-bind="css: {active: workflowIndeterminate}">
@@ -94,13 +111,13 @@
     <div class="rme-card rme-prompt" data-bind="visible: pendingProviderSync">
         <h4>Filament provider changed</h4>
         <p data-bind="text: pendingProviderSync() && pendingProviderSync().message"></p>
-        <button class="btn btn-primary" data-bind="click: showFilamentMapping">Review all tool mappings</button>
+        <button class="btn btn-primary" data-bind="click: showFilamentMapping">Review filament / spool sync</button>
         <button class="btn" data-bind="click: cancelProviderSync">Keep printer selections</button>
         <p class="help-block">This prompt persists across refreshes. Keeping the printer selections reads them back into the active provider.</p>
     </div>
 
     <div class="rme-card">
-        <h4>Filament and tool state</h4>
+        <h4 id="rme-tab-filaments">Filament and tool state</h4>
         <p><span class="label" data-bind="css: {'label-success': spoolmanager().available, 'label-warning': !spoolmanager().available}, text: spoolmanagerStatus"></span></p>
         <p class="alert alert-info" data-bind="visible: externalSpoolProvider, text: spoolOwnershipText"></p>
         <ul data-bind="visible: internalSpoolProvider, foreach: publishedSpools">
@@ -120,15 +137,16 @@
         <p><small>All tools can be staged together; graphical mapping offers same-material spools only.</small></p>
     </div>
 
-    <div id="rme-tab-firmware" class="rme-card form-horizontal">
-        {% include "rme_compatibility_firmware_controls.jinja2" %}
-    </div>
-
-    <div class="rme-card rme-prompt" data-bind="visible: hasToolmapPrompt, event: {focusin: touchToolmap, mousedown: touchToolmap, keydown: touchToolmap}">
-        <h4>Tool mapping before print</h4>
+    <div id="rme-spool-mapping-host"></div>
+    <p data-bind="visible: hasToolmapPrompt"><button class="btn btn-primary" data-bind="click: showToolMapping">Review print tool mapping…</button></p>
+    <div id="rme-tool-mapping" class="modal hide fade" tabindex="-1" role="dialog" aria-labelledby="rme-tool-mapping-title" data-bind="event: {mousedown: touchToolmap, keydown: touchToolmap}">
+        <div class="modal-header"><button type="button" class="close" data-dismiss="modal" aria-label="Close">&times;</button><h3 id="rme-tool-mapping-title">Tools and fallback spools for this print</h3></div>
+        <div class="modal-body">
         <p data-bind="text: promptMessage"></p>
         <p><small data-bind="text: toolmapTimeoutText"></small></p>
-        <button class="btn" data-bind="click: useRecommendedMapping, enable: prompt().recommendation">Use suggested mapping</button>
+        <p data-bind="visible: !mappingExpanded()">Recent upload with valid material/color selections. Review fallback spools below.</p>
+        <button class="btn" data-bind="visible: !mappingExpanded(), click: function() { mappingExpanded(true); }">Review or change primary tools</button>
+        <button class="btn" data-bind="visible: mappingExpanded, click: useRecommendedMapping, enable: prompt().recommendation">Use suggested mapping</button>
         <p class="help-block">Suggestions match material first, then minimize total RGB color difference without assigning a tool twice. Review before continuing.</p>
         <p class="text-warning" data-bind="visible: !graphicalMappingRows().length">Slicer material metadata unavailable. No verified suggestion can be made; default mapping still requires the normal filament validation.</p>
         <div class="rme-routing-cards" data-bind="foreach: graphicalMappingRows">
@@ -137,19 +155,43 @@
                     <strong data-bind="text: 'Slicer T' + logical"></strong> <span data-bind="text: $root.mappingRequirement($data).material"></span>
                     <span class="rme-route-arrow" aria-label="maps to">→</span><strong data-bind="text: 'Physical T' + physical()"></strong>
                 </div>
-                <div class="rme-route-choices" data-bind="foreach: $root.mappingChoices($data)">
+                <div class="rme-route-choices" data-bind="visible: $root.mappingExpanded, foreach: $root.mappingChoices($data)">
                     <button type="button" class="btn rme-tool-choice" data-bind="enable: compatible, css: {selected: $parent.physical() === tool}, attr: {'aria-pressed': $parent.physical() === tool}, click: function() {$root.chooseMappingTool($parent, $data);}">
                         <span class="rme-spool-swatch" data-bind="style: {backgroundColor: color}"></span><span data-bind="text: label"></span>
                         <small data-bind="visible: suggested">Suggested</small>
                     </button>
                 </div>
+                <div data-bind="visible: $root.prompt().spooljoin_review">
+                    <h5>Fallback spools — used in the order selected</h5>
+                    <p data-bind="visible: !$root.fallbacksFor($data).length">No fallback selected.</p>
+                    <div data-bind="foreach: $root.fallbacksFor($data)">
+                        <button class="btn" data-bind="text: ($index() + 1) + '. ' + $root.mappingToolLabel($data) + ' ×', click: function() {$root.removeFallback($parent, $data);}"></button>
+                    </div>
+                    <p>Available matching materials, closest color first. Click to append; click a selected spool to remove.</p>
+                    <div data-bind="foreach: $root.fallbackChoices($data)">
+                        <button class="btn" data-bind="click: function() {$root.appendFallback($parent, tool);}"><span class="rme-spool-swatch" data-bind="style: {backgroundColor: color}"></span><span data-bind="text: label"></span><small data-bind="visible: $index() === 0"> Suggested</small></button>
+                    </div>
+                </div>
             </section>
         </div>
-        <label class="checkbox"><input type="checkbox" data-bind="checked: mappingEnabled"> Enable remapping</label>
-        <button class="btn btn-primary" data-bind="click: applyToolmap, enable: materialMappingValid">Apply mapping and continue print</button>
-        <button class="btn" data-bind="click: resetToolmap">Use default mapping and continue</button>
-        <p class="help-block">No print-file G-code is sent until this mapping is confirmed. Validation runs afterward against the remapped physical tools.</p>
+        <label class="checkbox" data-bind="visible: mappingExpanded"><input type="checkbox" data-bind="checked: mappingEnabled, event: {change: function() {fallbackSelections({});}}"> Enable remapping</label>
+        <p class="help-block">Fallback review requires confirmation, including when no fallbacks are selected. Choices apply only to this print. Validation runs before releasing the job.</p>
+        </div><div class="modal-footer">
+        <button class="btn btn-primary" data-bind="click: applyToolmap, enable: materialMappingValid">Apply tools and fallbacks — continue print</button>
+        <button class="btn" data-bind="click: showFilamentMapping">Review spool mapping</button>
+        <button class="btn" data-bind="visible: !prompt().spooljoin_review, click: resetToolmap">Use default mapping and continue</button>
+        </div>
     </div>
+
+    <div id="rme-tab-firmware" class="rme-card form-horizontal">
+        {% include "rme_compatibility_firmware_controls.jinja2" %}
+    </div>
+    <section id="rme-tab-storage" class="rme-card form-horizontal">
+        <h4><button type="button" class="btn" data-bind="click: function () { settingsStorageExpanded(!settingsStorageExpanded()); }, attr: {'aria-expanded': settingsStorageExpanded}">Printer files — show/hide</button></h4>
+        <!-- ko if: settingsStorageExpanded -->
+        {% include "rme_compatibility_storage_controls.jinja2" %}
+        <!-- /ko -->
+    </section>
 
     <div class="rme-card" data-bind="visible: hasMachine() && spooljoin().supported !== false">
         <h4>SpoolJoin — automatic fallback</h4>

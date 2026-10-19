@@ -1,0 +1,68 @@
+<p>Browse and manage the firmware-exported <code>/usb</code> volume. RME confines every operation to this user-visible storage root.</p>
+    <div class="control-group">
+        <label class="control-label">Current directory</label>
+        <div class="controls">
+            <code data-bind="text: storage().path || '/'"></code>
+            <span class="label" data-bind="css: {'label-success': storage().supported, 'label-warning': !storage().supported}, text: storageStatus"></span>
+            <button type="button" class="btn btn-mini" data-bind="click: refreshStorage, enable: state().supported">Refresh</button>
+            <button type="button" class="btn btn-mini" data-bind="click: storageParent, visible: storageParentVisible">Up</button>
+            <button type="button" class="btn btn-mini" data-bind="click: storageMkdir, enable: storage().supported">New folder…</button>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">Upload</label>
+        <div class="controls">
+            <input type="file" data-bind="event: {change: chooseStorageUpload}">
+            <button type="button" class="btn" data-bind="click: uploadStorage, enable: pendingStorageUpload">Upload to current directory</button>
+            <p class="help-block">Uploads negotiate the fastest safe RME FILE mode, pipeline bulk chunks when supported, verify SHA-256, and atomically rename the <code>.rme-part</code> file.</p>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">Lost-manifest cleanup</label>
+        <div class="controls">
+            <input type="text" placeholder="jobs/original-name.bgcode" data-bind="value: partialCleanupPath, enable: !partialTransfer()">
+            <button type="button" class="btn" data-bind="click: cleanupNamedPartial, enable: partialCleanupPath() && !partialTransfer()">Clean exact partial…</button>
+            <p class="help-block">If the host manifest was lost, enter the original final USB path. The plugin probes and removes only its derived <code>.rme-part</code> and <code>.rme-meta</code> siblings. It never scans hidden files, parses metadata, or deletes <code>.rme-old</code>.</p>
+        </div>
+    </div>
+    <table class="table table-condensed rme-storage-table" data-bind="visible: storage().supported">
+        <thead><tr><th>Name</th><th>Type/size</th><th>Actions</th></tr></thead>
+        <tbody data-bind="foreach: storageEntries"><tr>
+            <td>
+                <a href="#" data-bind="visible: type === 'dir', text: name, click: $parent.storageOpen"></a>
+                <span data-bind="visible: type !== 'dir', text: name"></span>
+            </td>
+            <td data-bind="text: $parent.storageFileSize($data)"></td>
+            <td><div class="rme-storage-actions">
+                <div class="rme-action-group">
+                    <button type="button" class="btn btn-mini" data-bind="visible: type === 'file', click: $parent.storageDownloadToPi">Download to Pi</button>
+                    <button type="button" class="btn btn-mini" data-bind="visible: type === 'file', click: $parent.storageDownloadToDevice">Download to device</button>
+                    <button type="button" class="btn btn-mini" data-bind="visible: $parent.storageCanPrint($data), click: $parent.storagePrint">Print…</button>
+                    <button type="button" class="btn btn-mini btn-danger" data-bind="visible: $parent.storageCanFlash($data), click: $parent.storageFlash">Flash…</button>
+                </div>
+                <div class="rme-action-group rme-action-group-secondary">
+                    <button type="button" class="btn btn-mini" data-bind="click: $parent.storageRename">Rename…</button>
+                    <button type="button" class="btn btn-mini" data-bind="click: $parent.storageMove">Move…</button>
+                    <button type="button" class="btn btn-mini btn-danger" data-bind="click: $parent.storageDelete">Delete…</button>
+                </div>
+            </div></td>
+        </tr></tbody>
+    </table>
+    <div data-bind="visible: storageDownloadJob().id">
+        <div class="progress progress-striped" data-bind="css: {active: storageDownloadActive}">
+            <div class="bar" data-bind="style: {width: storageDownloadWidth}"></div>
+        </div>
+        <p class="help-block" data-bind="text: storageDownloadSummary, css: {'text-error': storageDownloadJob().status === 'error'}"></p>
+    </div>
+    <div data-bind="visible: storageDownloads().length">
+        <h5>Files stored on this Pi</h5>
+        <table class="table table-condensed">
+            <tbody data-bind="foreach: storageDownloads"><tr>
+                <td data-bind="text: name"></td>
+                <td data-bind="text: $parent.storageFileSize({type: 'file', size: size})"></td>
+                <td><button type="button" class="btn btn-mini" data-bind="click: $parent.downloadCachedStorageFile">Download to device</button></td>
+            </tr></tbody>
+        </table>
+    </div>
+    <p class="help-block" data-bind="visible: storage().supported && !storageEntries().length">This directory is empty.</p>
+    <hr>

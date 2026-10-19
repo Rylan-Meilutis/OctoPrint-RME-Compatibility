@@ -1,0 +1,17 @@
+<section id="rme-tab-recovery" class="rme-card alert alert-warning" data-bind="visible: transferRecoveryVisible" aria-live="polite">
+    <h4>Transfer and recovery</h4>
+    <p data-bind="text: firmwareStatus"></p>
+    <p class="text-error" data-bind="text: firmwareError"></p>
+    <button type="button" class="btn" data-bind="click: cancelFirmware, visible: firmwareBusy">Cancel transfer — keep partial</button>
+    <button type="button" class="btn btn-warning" data-bind="click: recoverTransfer, visible: !transportRecoveryRequired()">Stop and disconnect…</button>
+    <div data-bind="visible: transportRecoveryRequired">
+        <p>Power-cycle the printer before reconnecting. No RME commands will be sent while the receiver mode is uncertain.</p>
+        <button type="button" class="btn btn-warning" data-bind="click: confirmPrinterReboot">I rebooted the printer</button>
+    </div>
+    <div data-bind="visible: partialTransfer">
+        <p data-bind="text: partialTransferSummary"></p>
+        <button type="button" class="btn btn-primary" data-bind="click: resumePartialTransfer, enable: canRecoverPartial() && partialTransfer() && partialTransfer().source_available">Resume upload</button>
+        <button type="button" class="btn" data-bind="click: discardPartialTransfer, enable: canRecoverPartial">Discard printer partial…</button>
+        <small>Cancel preserves recovery data. Resume and Discard become available after reconnecting; Discard deletes the private partial data.</small>
+    </div>
+</section>

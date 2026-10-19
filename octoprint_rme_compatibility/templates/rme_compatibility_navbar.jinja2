@@ -10,6 +10,11 @@
 </a>
 <ul class="dropdown-menu pull-right">
     <li class="nav-header" data-bind="text: navbarModeText"></li>
+    <li class="rme-navbar-actions" data-bind="visible: transferRecoveryVisible">
+        <strong>Transfer needs attention</strong>
+        <button class="btn btn-mini" data-bind="click: function () { showRmeSection('recovery'); }">Open recovery</button>
+        <button class="btn btn-mini btn-warning" data-bind="click: recoverTransfer, visible: !transportRecoveryRequired()">Stop and disconnect…</button>
+    </li>
     <li>
         <a href="javascript:void(0)" class="rme-navbar-summary">
             <span class="rme-color-dot" data-bind="style: {backgroundColor: activeToolColor}"></span>
@@ -25,12 +30,11 @@
         </div>
         <small data-bind="text: navbarTransfer().summary"></small>
     </li>
+    <li class="rme-navbar-actions" data-bind="visible: hasToolmapPrompt">
+        <button class="btn btn-mini btn-primary" data-bind="click: showToolMapping">Review tool mapping</button>
+    </li>
     <li class="rme-navbar-actions" data-bind="visible: navbarMmuActionable">
         <strong data-bind="text: promptMessage"></strong>
-        <div data-bind="visible: hasToolmapPrompt">
-            <button class="btn btn-mini btn-primary" data-bind="click: showRmeTab">Review mapping</button>
-            <button class="btn btn-mini" data-bind="click: resetToolmap">Use current mapping</button>
-        </div>
         <div data-bind="foreach: indxSlots">
           <button class="btn" data-bind="text: label, click: $root.selectIndxSlot"></button>
         </div>

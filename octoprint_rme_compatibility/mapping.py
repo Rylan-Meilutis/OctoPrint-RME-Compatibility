@@ -103,3 +103,48 @@ def validate(requirements, loaded, mapping, enabled):
         if not compatible(req["material"], row.get("firmware_material") or row.get("material")):
             raise ValueError("T%d requires %s; physical T%d has no matching loaded material" %
                              (logical, req["material"], physical))
+
+
+def fallback_choices(requirement, loaded, excluded):
+    """Same-material backups, closest known color first; never auto-select."""
+    return [int(row["tool"]) for row in sorted(
+        (row for row in loaded if int(row["tool"]) not in excluded and
+         compatible(requirement["material"], row.get("firmware_material") or row.get("material"))),
+        key=lambda row: (color_distance(requirement.get("color"), row.get("color")), int(row["tool"])))]
+
+
+def fallback_commands(requirements, loaded, mapping, enabled, selections, count):
+    if not isinstance(selections, dict) or set(selections) - {str(r["logical"]) for r in requirements}:
+        raise ValueError("Invalid per-print fallback selection")
+    occupied = {int(mapping.get(r["logical"], mapping.get(str(r["logical"]), r["logical"])))
+                if enabled else int(r["logical"]) for r in requirements}
+    commands = ["@RME SPOOLJOIN RESET"]
+    for req in requirements:
+        previous = int(mapping.get(req["logical"], mapping.get(str(req["logical"]), req["logical"]))) if enabled else int(req["logical"])
+        chain = selections.get(str(req["logical"]), [])
+        if not isinstance(chain, list) or len(chain) > count:
+            raise ValueError("Invalid fallback chain")
+        for tool in chain:
+            if type(tool) is not int or not 0 <= tool < count or tool not in fallback_choices(req, loaded, occupied):
+                raise ValueError("Fallback tools must be loaded, material-compatible and not shared between chains or primary tools")
+            commands.append("@RME SPOOLJOIN ADD from=%d to=%d" % (previous, tool))
+            occupied.add(tool)
+            previous = tool
+    return commands + ["@RME SPOOLJOIN QUERY"]
+
+
+def recent_mapping_valid(file_info, now, requirements, loaded, mapping, enabled):
+    try:
+        if file_info.get("origin") != "local" or not 0 <= now - float(file_info["date"]) < 86400 or not requirements:
+            return False
+        validate(requirements, loaded, mapping, enabled)
+        by_tool = {int(row["tool"]): row for row in loaded}
+        selected = []
+        for req in requirements:
+            tool = int(mapping.get(req["logical"], mapping.get(str(req["logical"]), req["logical"]))) if enabled else int(req["logical"])
+            selected.append(tool)
+            if req.get("color") and color_distance(req["color"], by_tool[tool].get("color")) != 0:
+                return False
+        return len(selected) == len(set(selected))
+    except (KeyError, ValueError, TypeError):
+        return False
