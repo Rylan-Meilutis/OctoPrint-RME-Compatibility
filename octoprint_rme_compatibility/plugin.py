@@ -565,6 +565,7 @@ class RmeCompatibilityPlugin(
             "stage_octoprint_firmware": ["path"],
             "stage_and_flash_octoprint_firmware": ["path"],
             "unstage_firmware": [],
+            "refresh_firmware_status": [],
             "cancel_firmware": [],
             "recover_transfer": [],
             "flash_firmware": [],
@@ -837,6 +838,10 @@ class RmeCompatibilityPlugin(
                     self._defer(self._send_command, "@RME MACHINE QUERY")
         elif command == "delete_firmware":
             self._delete_firmware(data["filename"])
+        elif command == "refresh_firmware_status":
+            self._require_print_idle("Firmware status refresh")
+            self._require_storage()
+            self._reconcile_firmware_stage()
         elif command == "delete_firmware_copies":
             self._delete_firmware_copies(data["filenames"])
         elif command == "sync_spoolmanager":
@@ -2000,6 +2005,16 @@ class RmeCompatibilityPlugin(
                     follow_up.append("@RME DIALOG QUERY")
                     follow_up.append("refresh_configuration:all")
                     follow_up.append("reconcile_firmware_stage")
+                elif (
+                    lease and printer_state == "IDLE"
+                    and firmware_status in ("ready", "staged", "reconnected")
+                    and time.monotonic() - getattr(self, "_last_firmware_stage_check", 0) >= 30
+                ):
+                    # Boot cleanup may finish after the initial reconnect
+                    # snapshot. Refresh truth; never infer deletion from the
+                    # installed version or merely hide a surviving candidate.
+                    self._last_firmware_stage_check = time.monotonic()
+                    follow_up.append("reconcile_firmware_stage")
             elif kind == "event":
                 now = int(time.time())
                 record["workflow"] = classify_workflow(record)
@@ -2660,7 +2675,20 @@ class RmeCompatibilityPlugin(
 
     def _arm_firmware_reconnect(self):
         """Scope automatic reconnect to one explicit plugin flash request."""
+        # connect() without arguments falls back to OctoPrint's saved default,
+        # which may be 115200 even when this working connection used 1000000.
+        # Preserve the selected rate, not the USB device path (it can change
+        # on re-enumeration). Do not change an ordinary/manual connection.
+        reconnect_options = {}
+        try:
+            connection = self._printer.get_current_connection()
+            baudrate = connection[2]
+            if isinstance(baudrate, int) and not isinstance(baudrate, bool) and baudrate > 0:
+                reconnect_options["baudrate"] = baudrate
+        except (AttributeError, IndexError, TypeError):
+            pass
         with self._firmware_reconnect_lock:
+            self._firmware_reconnect_options = reconnect_options
             if self._firmware_reconnect_timer:
                 self._firmware_reconnect_timer.cancel()
                 self._firmware_reconnect_timer = None
@@ -2799,7 +2827,7 @@ class RmeCompatibilityPlugin(
         if callable(connect):
             try:
                 self._logger.info("Trying to reconnect after firmware update restart")
-                connect()
+                connect(**getattr(self, "_firmware_reconnect_options", {}))
                 connect_started = True
                 with self._firmware_reconnect_lock:
                     if self._firmware_reconnect_armed:
@@ -6333,6 +6361,7 @@ class RmeCompatibilityPlugin(
         if self._file_service is None:
             return False
         status = self._file_service.firmware_status()
+        self._last_firmware_stage_check = time.monotonic()
         with self._state_lock:
             staged = self._apply_authoritative_firmware_locked(status)
         self._persist_and_publish()

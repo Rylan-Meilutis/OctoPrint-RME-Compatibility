@@ -1495,6 +1495,9 @@ $(function () {
                 self.command("unstage_firmware");
             }
         };
+        self.refreshFirmwareStatus = function () {
+            self.command("refresh_firmware_status");
+        };
         self.confirmPrinterReboot = function () {
             if (window.confirm("Confirm that the printer itself was power-cycled or rebooted? RME communication will be unlocked.")) {
                 self.command("confirm_printer_reboot");

@@ -61,7 +61,16 @@ firmware, or recurse through OctoPrint's general Files storage. Firmware copies
 can be downloaded again; deletion is blocked during printing and transfers.
 
 Hardware checks remain required: running identity after success/rejection of
-a flash, reconnect to a different printer, and end-to-end UI download/stage/
+a flash. Use **Refresh printer status** to explicitly query the protected
+candidate; a reported ready/staged/reconnected state is also rechecked while
+idle at most once per thirty seconds. A candidate still present on the printer
+is not hidden just because the running application matches it.
+
+Explicit update reconnects retain the active connection's selected baud rate,
+while allowing OctoPrint to rediscover the USB port. They do not change normal
+manual connection policy. USB CDC line coding is not a UART throughput limit.
+
+Other hardware checks include reconnecting to a different printer and end-to-end UI download/stage/
 flash with the installed OctoPrint version. Network failures and missing
 metadata are recoverable UI errors, not reasons to interrupt a print.
 

@@ -51,6 +51,8 @@ const {jQueryFactory} = require('jquery/factory');
     vm.state({firmware_files: []});
     vm.deleteAllFirmwareCopies();
     assert.equal(commands.length, beforeDelete + 1);
+    vm.refreshFirmwareStatus();
+    assert.equal(commands.at(-1)[0], 'refresh_firmware_status');
     dom.window.close();
     console.log('Firmware release UI tests passed');
 })().catch(error => { console.error(error); process.exit(1); });

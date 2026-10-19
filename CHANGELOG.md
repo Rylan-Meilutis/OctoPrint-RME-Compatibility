@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.0b133 — 2026-10-19
+
+- Refresh staged-firmware truth while idle after reconnect, rate-limited to
+  thirty seconds while a candidate remains reported, and add a manual
+  “Refresh printer status” button. Never infer successful cleanup from the
+  running version or hide a candidate that the printer still reports.
+- Preserve the active connection's selected baud rate across an explicit
+  firmware-update reconnect instead of silently using OctoPrint's saved
+  default. USB port discovery remains automatic after re-enumeration.
+- Companion INDX/XL firmware retries lost sensor verification replies and
+  bounds required-sensor bootstrap recovery. It does not bypass hash matching
+  or sensor readiness. Companion firmware also retries transient USB cleanup
+  failures instead of abandoning cleanup after the first check.
+
 ## 0.1.0b132 — 2026-10-18
 
 - Add a confirmed “Delete all Pi copies” action for the firmware BBF list.
