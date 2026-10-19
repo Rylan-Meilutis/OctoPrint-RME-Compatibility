@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0b134 — 2026-10-19
+
+- Order public snapshots across HTTP command replies and WebSocket updates.
+  A late queued snapshot can no longer rewind completed downloads to 0% or
+  discard a newer completion waiting for the next browser animation frame.
+  Snapshot ordering resets correctly after an OctoPrint process restart.
+- Show GitHub-to-Pi firmware download progress in the RME transfer indicator;
+  downloaded/error states do not leave it active.
+- Retain b133's firmware-status refresh and selected-baud reconnect fixes.
+
 ## 0.1.0b133 — 2026-10-19
 
 - Refresh staged-firmware truth while idle after reconnect, rate-limited to

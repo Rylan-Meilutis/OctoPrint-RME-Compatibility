@@ -120,6 +120,8 @@ class RmeCompatibilityPlugin(
     def __init__(self):
         """Initialize only process-local state; OctoPrint injects services later."""
         self._state_lock = threading.RLock()
+        self._snapshot_epoch = uuid.uuid4().hex
+        self._snapshot_revision = 0
         self._state = self._empty_state()
         self._store = None
         self._manifest_store = None
@@ -6587,6 +6589,10 @@ class RmeCompatibilityPlugin(
     def _public_state(self):
         with self._state_lock:
             result = copy.deepcopy(self._state)
+            self._snapshot_revision += 1
+            result["_snapshot"] = {
+                "epoch": self._snapshot_epoch, "revision": self._snapshot_revision,
+            }
         # The built-in database is implementation state, not a second live
         # provider. Keep it private so an external provider cannot appear to be
         # running alongside SpoolManager or Spoolman in API/UI snapshots.

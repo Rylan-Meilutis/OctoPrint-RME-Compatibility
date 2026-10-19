@@ -715,6 +715,7 @@ $(function () {
         self.navbarTransfer = ko.pureComputed(function () {
             var state = self.state();
             var firmware = state.firmware || {};
+            var release = state.firmware_releases || {};
             var storage = state.storage || {};
             var partial = storage.partial || null;
             var download = storage.download || {};
@@ -749,6 +750,14 @@ $(function () {
                     summary: firmwareLabel + (progress !== null ? " · " + Math.round(progress) + "%" : ""),
                     detail: firmware.filename || firmwareLabel,
                     progress: progress
+                };
+            }
+            if (release.status === "downloading") {
+                progress = numericProgress(release.progress);
+                return {
+                    active: true, icon: "fa-download", title: "Firmware download",
+                    summary: "GitHub → Pi" + (progress !== null ? " · " + Math.round(progress) + "%" : ""),
+                    detail: release.filename || "Downloading release firmware", progress: progress
                 };
             }
             if (partial && partial.status !== "deferred") {
@@ -1198,7 +1207,15 @@ $(function () {
         };
         self.acceptState = function (value) {
             if (!value) return;
-            // An explicit command response supersedes any older queued frame.
+            function newer(candidate, reference) {
+                var a = candidate && candidate._snapshot, b = reference && reference._snapshot;
+                return a && b && a.epoch === b.epoch && Number(a.revision) > Number(b.revision);
+            }
+            // HTTP command replies and WebSocket frames race. A late queued
+            // snapshot must not rewind a completed transfer to 0%, nor may
+            // it discard a newer completion frame waiting for animationFrame.
+            if (newer(self.pendingStateSnapshot, value)) value = self.pendingStateSnapshot;
+            if (newer(self.state(), value)) return;
             self.pendingStateSnapshot = null;
             // JSON snapshots create new objects even for unchanged files/spools.
             // Preserve their identities so KO does not destroy/rebind whole lists
@@ -1970,6 +1987,12 @@ $(function () {
                 return;
             }
             if (plugin === "rme_compatibility") {
+                var incomingStamp = data && data._snapshot;
+                var pendingStamp = self.pendingStateSnapshot && self.pendingStateSnapshot._snapshot;
+                var currentStamp = self.state()._snapshot;
+                if (incomingStamp && [pendingStamp, currentStamp].some(function (stamp) {
+                    return stamp && stamp.epoch === incomingStamp.epoch && Number(stamp.revision) > Number(incomingStamp.revision);
+                })) return;
                 self.pendingStateSnapshot = data;
                 if (!self.stateFrameScheduled) {
                     self.stateFrameScheduled = true;
