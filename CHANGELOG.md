@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0b136 — 2026-10-19
+
+- Add 1,000,000 baud to OctoPrint's connection choices and order AUTO probes
+  fastest first, preserving configured blocklists and handshake fallback.
+- After an RME session is confirmed, migrate the saved connection baud to AUTO
+  once for the next connection. Never disconnect or change an active link;
+  later explicit fixed-rate preferences remain respected. Firmware-update
+  reconnects also use AUTO when that is the saved preference.
+- Support both legacy OctoPrint serial settings and the newer serial connector.
+  The policy can be disabled in RME settings. USB CDC's selected baud is not a
+  measured throughput guarantee.
+
 ## 0.1.0b135 — 2026-10-19
 
 - Recover missed printer-side pause notifications from precise firmware pause

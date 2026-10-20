@@ -27,6 +27,7 @@ from werkzeug.utils import secure_filename
 
 from .file_service import FileServiceError, RmeFileService
 from . import github_firmware
+from . import baud_policy
 from .protocol import (
     MAX_FIRMWARE_SIZE,
     classify_workflow,
@@ -298,6 +299,40 @@ class RmeCompatibilityPlugin(
 
     # -- OctoPrint lifecycle -------------------------------------------------
 
+    def on_startup(self, host, port):
+        # Before OctoPrint's automatic connection starts, including its UI list.
+        self._baud_policy_active = True
+        if not baud_policy.install(
+            lambda: self._baud_policy_active and self._settings.get_boolean(["auto_highest_baud"])
+        ):
+            self._logger.warning("RME could not register high-speed AUTO baud candidates")
+
+    def _configure_auto_baud(self):
+        """Migrate the saved low-speed default once, only after RME confirms it.
+
+        This affects the NEXT connection, not the running print/connection.
+        Subsequent explicitly saved fixed rates are left alone.
+        """
+        if (not self._settings.get_boolean(["auto_highest_baud"])
+                or self._settings.get_boolean(["baud_auto_migrated"])):
+            return
+        try:
+            modern = self._settings.global_get(["printerConnection", "preferred", "connector"])
+            if modern == "serial":
+                params = dict(self._settings.global_get(
+                    ["printerConnection", "preferred", "parameters"]) or {})
+                params["baudrate"] = 0
+                self._settings.global_set(["printerConnection", "preferred", "parameters"], params)
+            elif modern:
+                return  # Do not change a network/non-serial connector.
+            else:
+                self._settings.global_set(["serial", "baudrate"], 0)
+            self._settings.set_boolean(["baud_auto_migrated"], True)
+            self._settings.save()
+            self._logger.info("RME next connection set to fastest-first AUTO baud with fallback; current link unchanged")
+        except (AttributeError, TypeError, ValueError):
+            self._logger.warning("RME could not save AUTO baud preference", exc_info=True)
+
     def on_after_startup(self):
         """Restore durable UI state and start non-serial background workers."""
         data_folder = self.get_plugin_data_folder()
@@ -404,6 +439,7 @@ class RmeCompatibilityPlugin(
         self._logger.info("RME Compatibility initialized")
 
     def on_shutdown(self):
+        self._baud_policy_active = False
         self._completion_snapshot.reset()
         # A disabled/reloaded plugin must never strand OctoPrint's counted job
         # hold. In-flight prints remain under OctoPrint's normal control.
@@ -440,6 +476,8 @@ class RmeCompatibilityPlugin(
 
     def get_settings_defaults(self):
         return {
+            "auto_highest_baud": True,
+            "baud_auto_migrated": False,
             "auto_open_session": True,
             "firmware_auto_check": True,
             "firmware_variant": "",
@@ -1958,6 +1996,8 @@ class RmeCompatibilityPlugin(
                         self._toolmap_probe_sent = True
                         follow_up.append("@RME TOOLMAP QUERY")
             elif kind == "session":
+                if record.get("preferred_baud"):
+                    self._defer(self._configure_auto_baud)
                 previous_lease = bool(self._state["session"].get("active"))
                 self._state["session"].update({
                     key: value for key, value in record.items() if key != "record"
@@ -2702,6 +2742,22 @@ class RmeCompatibilityPlugin(
             if isinstance(baudrate, int) and not isinstance(baudrate, bool) and baudrate > 0:
                 reconnect_options["baudrate"] = baudrate
         except (AttributeError, IndexError, TypeError):
+            pass
+        # If this RME installation now uses AUTO, run the same high-to-low
+        # handshake on update reconnect instead of pinning a previous fallback.
+        try:
+            if self._settings.get_boolean(["auto_highest_baud"]):
+                modern = self._settings.global_get(["printerConnection", "preferred", "connector"])
+                if modern == "serial":
+                    saved = (self._settings.global_get(
+                        ["printerConnection", "preferred", "parameters"]) or {}).get("baudrate")
+                elif not modern:
+                    saved = self._settings.global_get(["serial", "baudrate"])
+                else:
+                    saved = None
+                if saved == 0:
+                    reconnect_options["baudrate"] = 0
+        except (AttributeError, TypeError):
             pass
         with self._firmware_reconnect_lock:
             self._firmware_reconnect_options = reconnect_options

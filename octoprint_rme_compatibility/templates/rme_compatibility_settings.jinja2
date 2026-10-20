@@ -51,6 +51,8 @@
         <label class="control-label">Protocol session</label>
         <div class="controls">
             <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.auto_open_session"> Open automatically after connection</label>
+            <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.auto_highest_baud"> Try highest baud rate first in AUTO (1,000,000 baud, with lower-speed fallbacks)</label>
+            <p class="help-block">Adds high speeds to the connection choices. After RME is detected, the saved connection defaults to AUTO once; the current connection and active print are unchanged. Explicit fixed-rate selections still apply. Restart OctoPrint after installing this update.</p>
             <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.legacy_notifications"> Keep legacy action notifications alongside structured events</label>
             <button type="button" class="btn btn-mini" data-bind="click: openSession, enable: state().supported">Reconnect protocol now</button>
         </div>
