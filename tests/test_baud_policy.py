@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from test_toolmap_gate import RmeCompatibilityPlugin
+from octoprint_rme_compatibility import baud_policy
 from octoprint_rme_compatibility.baud_policy import install
 
 
@@ -93,6 +94,29 @@ class BaudPolicyTests(unittest.TestCase):
                 self.assertIs(wrapper, module.baudrateList)
                 self.assertEqual(115200, wrapper()[0])
                 self.assertEqual(original(), wrapper())
+
+    def test_legacy_host_without_exported_baud_constant(self):
+        module = self.module("octoprint.util.comm")
+        exec('''def baudrateList(candidates=None):
+    return [115200, 250000, 230400, 57600, 38400, 19200, 9600] if candidates is None else candidates
+''', module.__dict__)
+        del module.STANDARD_BAUDRATES
+        with patch.dict(sys.modules, {module.__name__: module}):
+            with patch("octoprint_rme_compatibility.baud_policy.importlib.import_module", return_value=module):
+                install(lambda: True)
+                self.assertEqual(1000000, module.baudrateList()[0])
+                self.assertIn(115200, module.baudrateList())
+
+    def test_policy_failure_leaves_host_settings_api_usable(self):
+        module = self.module("octoprint.util.comm")
+        original = module.baudrateList
+        with patch.dict(sys.modules, {module.__name__: module}):
+            with patch("octoprint_rme_compatibility.baud_policy.importlib.import_module", return_value=module):
+                install(lambda: True)
+                with patch.object(baud_policy, "ordered_candidates", side_effect=RuntimeError("injected adapter failure")) as policy:
+                    self.assertEqual(original(), module.baudrateList())
+                    self.assertEqual(original(), module.baudrateList())
+                    policy.assert_called_once()
 
     def plugin(self, modern=False):
         plugin = RmeCompatibilityPlugin()

@@ -9,7 +9,10 @@ def ordered_candidates(original, candidates=None):
     # Pass added rates THROUGH OctoPrint so its configured blocklist still wins.
     # A copy is essential: baudrateList mutates the supplied list in place.
     module = sys.modules.get(original.__module__)
-    base = list(candidates if candidates is not None else module.STANDARD_BAUDRATES)
+    # 1.11 keeps its default list inside baudrateList; only newer hosts export
+    # STANDARD_BAUDRATES. The settings API also calls this with no argument.
+    defaults = getattr(module, "STANDARD_BAUDRATES", (115200, 250000, 230400, 57600, 38400, 19200, 9600))
+    base = list(candidates if candidates is not None else defaults)
     base.extend(rate for rate in (1000000, 250000, 230400, 115200) if rate not in base)
     rates = original(base)
     # Some host versions remove only ONE occurrence of a blocked rate. An
@@ -50,15 +53,25 @@ def install(enabled):
         original = module.baudrateList
         if getattr(original, "_rme_baud_policy", False):
             original._rme_baud_policy["enabled"] = enabled
+            original._rme_baud_policy["failed"] = False
             continue
 
-        policy = {"enabled": enabled}
+        policy = {"enabled": enabled, "failed": False}
 
         @functools.wraps(original)
         def wrapped(candidates=None, _original=original, _policy=policy):
-            if not _policy["enabled"]():
+            if _policy["failed"]:
                 return _original(candidates)
-            return ordered_candidates(_original, candidates)
+            try:
+                if not _policy["enabled"]():
+                    return _original(candidates)
+                return ordered_candidates(_original, candidates)
+            except Exception:
+                # An optional speed preference must never take down the host's
+                # settings/connection API. Fall back to native behavior until
+                # restart rather than repeatedly failing every page load.
+                _policy["failed"] = True
+                return _original(candidates)
 
         wrapped._rme_baud_policy = policy
         # Cover already-imported aliases as well as the module used by AUTO.

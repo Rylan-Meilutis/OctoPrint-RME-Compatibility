@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0b137 — 2026-10-20
+
+- Fix the 0.1.0b136 startup/settings failure on OctoPrint 1.11: that host keeps
+  default baud rates inside its candidate function and exports no
+  `STANDARD_BAUDRATES` constant. Do not require the newer-host constant.
+- Fall back to OctoPrint's native candidate function if the optional high-speed
+  policy fails, keeping the settings and connection APIs usable.
+- Add regressions for the missing constant and injected adapter failures, plus
+  real-OctoPrint connection API tests. Verify `/api/settings` returns HTTP 200
+  on an isolated OctoPrint 1.11.8 server with the fixed plugin enabled.
+
 ## 0.1.0b136 — 2026-10-19
 
 - Add 1,000,000 baud to OctoPrint's connection choices and order AUTO probes
