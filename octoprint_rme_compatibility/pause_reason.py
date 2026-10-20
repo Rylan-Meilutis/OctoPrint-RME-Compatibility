@@ -55,7 +55,7 @@ class PauseReason:
         # treat ordinary load/unload/heating chatter as a pause cause.
         if re.search(r"\b(?:runout|movement|breakout) detection\s+(?:on|off)\b", line, re.I):
             return False
-        if re.search(r"runout|stuck filament|filament (?:jam|stuck)|waste.?bin.*(?:full|pause)|thermal runaway|heating failed", line, re.I):
+        if re.search(r"runout|stuck filament|filament (?:jam|stuck)|waste.?bin.*(?:full|pause)|thermal runaway|heating failed|spag(?:h)?etti detected", line, re.I):
             message = re.sub(r"^(?://\s*action:\s*notification\s*|echo:|Error:)", "", line, flags=re.I)
             return self.evidence(message, "Firmware serial")
         return False

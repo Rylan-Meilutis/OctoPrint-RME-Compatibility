@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.0b135 — 2026-10-19
+
+- Recover missed printer-side pause notifications from precise firmware pause
+  snapshots, including a host stuck waiting in Pausing. Keep Pausing distinct
+  from a completed pause and never bypass firmware recovery dialogs.
+- Send recovery queries and controls outside the blocked job FIFO without
+  consuming numbered job lines. Preserve the original pause reason.
+- Let RME firmware own pause/resume/cancel parking and extrusion. Suppress
+  competing host macros, including the post-cancel retract which caused the
+  reported INDX `E move without tool` crash.
+- Companion firmware retains queued job moves through pause/restoration,
+  keeps recovery reception live at full capacity, and safely rejects
+  tool-less extrusion G-code. Physical printer validation remains pending.
+
 ## 0.1.0b134 — 2026-10-19
 
 - Order public snapshots across HTTP command replies and WebSocket updates.

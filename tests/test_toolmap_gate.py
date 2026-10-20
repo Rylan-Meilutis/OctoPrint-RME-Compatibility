@@ -246,6 +246,7 @@ class ToolmapGateTests(unittest.TestCase):
                 commands.append(command)
                 plugin._state["session"]["active"] = True
             plugin._send_command = send
+            plugin._send_priority_service = lambda command, trigger: send(command)
             with patch("time.monotonic", side_effect=[0, 0, 11, 11]):
                 plugin._keepalive_loop()
             self.assertEqual(["@RME SESSION OPEN events=31 legacy=0",

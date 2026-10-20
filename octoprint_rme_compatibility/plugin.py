@@ -166,6 +166,7 @@ class RmeCompatibilityPlugin(
         self._priority_controls_sent = set()
         self._firmware_completed_controls = set()
         self._pause_reason = PauseReason()
+        self._rme_comm = None
         self._firmware_action_lock = threading.Lock()
         self._last_storage_publish = 0
         self._native_refresh_lock = threading.Lock()
@@ -1252,6 +1253,9 @@ class RmeCompatibilityPlugin(
                 self._firmware_completed_controls.clear()
             self._handle_print_started(payload)
         elif event == Events.PRINT_CANCELLING:
+            with self._state_lock:
+                if self._state.get("supported"):
+                    self._skip_cancel_script = True
             self._completion_snapshot.reset()
             self._completion_move = None
             # Cancellation preparation is queued as part of the job, so the
@@ -1326,6 +1330,8 @@ class RmeCompatibilityPlugin(
             self._defer(self._resume_background_queries)
 
     def gcode_received_hook(self, comm_instance, line, *args, **kwargs):
+        if comm_instance is not None:
+            self._rme_comm = comm_instance
         """Observe RME records without blocking or bypassing OctoPrint's queue."""
         normalized_line = str(line or "").strip()
         with self._state_lock:
@@ -1746,7 +1752,7 @@ class RmeCompatibilityPlugin(
             self._prepare_completion_move()
         elif script_type == "gcode" and script_name == "afterPrintCancelled":
             with self._state_lock:
-                if self._preflight_gate_started and not self._print_job_gcode_sent:
+                if self._state.get("supported") or (self._preflight_gate_started and not self._print_job_gcode_sent):
                     self._skip_cancel_script = True
         return None
 
@@ -1767,6 +1773,10 @@ class RmeCompatibilityPlugin(
             return (None,)
         if not supported:
             return None
+        if {"script:afterPrintPaused", "script:beforePrintResumed"}.intersection(tags):
+            # RME owns retract/park/reheat/unpark. Host macros must not move
+            # an empty toolhead or race restoration of the firmware resume pose.
+            return (None,)
         if (phase == "queuing" and {"source:api", "source:terminal"}.intersection(tags)
                 and not {"source:file", "source:job", "rme:priority_control"}.intersection(tags)):
             with self._state_lock:
@@ -1974,6 +1984,8 @@ class RmeCompatibilityPlugin(
                 # firmware handoff, no bootloader restart is in progress.
                 # Clear that stale handoff before it can cancel a new print.
                 printer_state = str(record.get("printer_state", "")).upper()
+                if lease and "pause_phase" in record:
+                    follow_up.append("reconcile_printer_pause")
                 firmware_status = self._state["firmware"].get("status")
                 workflow = self._state.get("workflow") or {}
                 if (
@@ -2572,6 +2584,8 @@ class RmeCompatibilityPlugin(
                     "@RME DIALOG QUERY",
                     "dialog_query",
                 )
+            elif item == "reconcile_printer_pause":
+                self._defer(self._reconcile_printer_pause, dict(record))
             elif item.startswith("refresh_configuration:"):
                 self._schedule_configuration_refresh(item.split(":", 1)[1])
             else:
@@ -3156,7 +3170,17 @@ class RmeCompatibilityPlugin(
             )
             return None
         used_up_clear = use_up_clear(gcode)
-        do_send(command, gcode=gcode)
+        raw_send = getattr(comm_instance, "_do_send_without_checksum", None)
+        send_lock = getattr(comm_instance, "_sendingLock", None)
+        recovery_frame = re.match(r"^\s*(?:@RME\s|M(?:108|112|410|524|601|602|604|876|1601)(?:\s|$))", command, re.I)
+        if recovery_frame and callable(raw_send) and send_lock is not None:
+            # Do not consume the streamed job's line number: when its FIFO is
+            # full, the next job line may be awaiting Resend. Recovery must
+            # still work without skipping or acknowledging that unsaved line.
+            with send_lock:
+                raw_send(command.encode(getattr(comm_instance, "_serial_encoding", "ascii"), errors="replace"))
+        else:
+            do_send(command, gcode=gcode)
         if not used_up_clear and callable(continue_sending):
             continue_sending()
         return (None,)
@@ -3414,7 +3438,69 @@ class RmeCompatibilityPlugin(
 
     def _open_session(self):
         legacy = 1 if self._settings.get_boolean(["legacy_notifications"]) else 0
-        self._send_command("@RME SESSION OPEN events=31 legacy=%d" % legacy)
+        self._send_session_command("@RME SESSION OPEN events=31 legacy=%d" % legacy)
+
+    def _send_session_command(self, command):
+        # Ordinary send queues may be waiting for an ok from paused firmware.
+        try:
+            active = self._printer.get_state_id() in ("PRINTING", "PAUSING", "PAUSED", "RESUMING")
+        except AttributeError:
+            active = False
+        if active:
+            self._send_priority_service(command, "session_recovery")
+        else:
+            self._send_command(command)
+
+    def _reconcile_printer_pause(self, record):
+        """Recover missed actions using a precise, current firmware snapshot.
+
+        Use OctoPrint's printer-completed pause path, not another M601. The
+        normal path waits for M400/M114 in the held job FIFO and can never
+        complete when firmware has already parked the tool.
+        """
+        with self._state_lock:
+            if not (self._state.get("supported") and self._state.get("connected")):
+                return
+            session = self._state["session"]
+            if not session.get("active"):
+                return
+            if any(session.get(key) != record.get(key) for key in ("printer_state", "pause_phase")):
+                return  # A newer snapshot superseded this deferred callback.
+        comm = self._rme_comm
+        if comm is None or not callable(getattr(comm, "setPause", None)):
+            return
+        host_state = self._printer.get_state_id()
+        phase = record.get("pause_phase")
+        if host_state not in ("PRINTING", "PAUSING", "PAUSED", "RESUMING"):
+            return  # Never resurrect a cancelled, finished, or disconnected job.
+        if phase in ("pausing", "paused"):
+            with self._state_lock:
+                if not self._pause_reason.active:
+                    self._pause_reason.pause()
+                self._state["pause"] = self._pause_reason.snapshot()
+                if phase == "paused":
+                    self._priority_controls_sent.discard("resume")
+            if phase == "pausing":
+                if host_state in ("PRINTING", "RESUMING"):
+                    comm.setPause(True)
+            elif host_state != "PAUSED":
+                with self._state_lock:
+                    self._firmware_completed_controls.add("pause")
+                if host_state == "PAUSING":
+                    comm._pause_preparation_done(check_timer=False, suppress_script=True)
+                else:
+                    comm.setPause(True, local_handling=False)
+                # Only the firmware's stable completion can bypass the queued
+                # finalization marker. Pausing is NOT permission to resume.
+                if comm.getState() == comm.STATE_PAUSING:
+                    comm._changeState(comm.STATE_PAUSED)
+            self._send_priority_service("@RME DIALOG QUERY", "pause_recovery")
+        elif phase == "none" and record.get("printer_state") == "PRINTING" and host_state in ("PAUSED", "RESUMING"):
+            with self._state_lock:
+                self._firmware_completed_controls.add("resume")
+                self._state["pause"] = self._pause_reason.resume()
+            comm.setPause(False, local_handling=False)
+        self._schedule_publish()
 
     @staticmethod
     def _valid_color(value):
@@ -3458,14 +3544,14 @@ class RmeCompatibilityPlugin(
                         continue
                     next_keepalive = time.monotonic() + 10
                     if active:
-                        self._send_command("@RME SESSION KEEPALIVE")
+                        self._send_session_command("@RME SESSION KEEPALIVE")
                     elif self._settings.get_boolean(["auto_open_session"]):
                         # QUERY and KEEPALIVE cannot reopen an expired lease.
                         # Recover during prints too; OPEN is a service frame,
                         # not a configuration batch or a motion command.
                         self._open_session()
                     else:
-                        self._send_command("@RME SESSION QUERY")
+                        self._send_session_command("@RME SESSION QUERY")
                 except Exception:
                     self._logger.debug("RME keepalive could not be queued", exc_info=True)
             if not transfer_busy and not recovery_required:
