@@ -62,3 +62,26 @@ class FirmwareReconnectBaudTests(unittest.TestCase):
         with patch("octoprint_rme_compatibility.plugin.time.monotonic", return_value=131):
             plugin._handle_record(dict(record))
             plugin._defer.assert_called_once_with(plugin._reconcile_firmware_stage)
+
+    def test_delayed_printer_cleanup_converges_without_hiding_real_candidate(self):
+        plugin = self.plugin()
+        plugin._print_job_active = lambda: False
+        plugin._persist_and_publish = lambda: None
+        plugin._schedule_publish = lambda: None
+        plugin._defer = Mock()
+        plugin._state["session"]["active"] = True
+        replies = iter([
+            {"candidate": 1, "armed": 0, "state": "ready", "path": "FWUPD.RME", "size": 100},
+            {"candidate": 0, "armed": 0, "state": "idle"},
+        ])
+        plugin._file_service = types.SimpleNamespace(firmware_status=lambda: next(replies))
+        with patch("octoprint_rme_compatibility.plugin.time.monotonic", return_value=100):
+            self.assertTrue(plugin._reconcile_firmware_stage())
+        self.assertTrue(plugin._state["firmware"]["candidate"])
+        with patch("octoprint_rme_compatibility.plugin.time.monotonic", return_value=131):
+            plugin._handle_record({"record": "session", "lease": 1, "printer_state": "IDLE"})
+            plugin._defer.assert_called_once_with(plugin._reconcile_firmware_stage)
+            self.assertFalse(plugin._reconcile_firmware_stage())
+        self.assertFalse(plugin._state["firmware"]["candidate"])
+        self.assertEqual("idle", plugin._state["firmware"]["status"])
+        plugin._printer.connect.assert_not_called()
