@@ -3,5 +3,6 @@ recursive-include octoprint_rme_compatibility/static *
 include README.md
 include CHANGELOG.md
 recursive-include docs *.md
+recursive-include tests *.py *.js
 include LICENSE
 global-exclude .DS_Store
