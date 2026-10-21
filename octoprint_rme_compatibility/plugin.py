@@ -54,6 +54,7 @@ from .mapping import read_requirements, recommend, validate, compatible, fallbac
 from .uploader import FirmwareUploader, UploadError, firmware_metadata
 from .live_controls import command as live_control_command
 from .firmware_image import validate as validate_firmware_image
+from .firmware_cleanup import FlashReceiptStore, cleanup_matches
 
 
 EXTRUSION_FAULT_WORKFLOWS = frozenset((
@@ -158,6 +159,8 @@ class RmeCompatibilityPlugin(
         self._completion_snapshot = CompletionSnapshot()
         self._completion_move = None
         self._firmware_verified_source = None
+        self._flash_receipt_store = None
+        self._firmware_printer_uuid = None
         self._toolmap_preflight_decision = None
         self._print_job_gcode_sent = False
         self._skip_cancel_script = False
@@ -363,6 +366,10 @@ class RmeCompatibilityPlugin(
             os.path.join(data_folder, "state.json"), self._persistent_snapshot, self._logger
         )
         persisted = self._store.load()
+        self._flash_receipt_store = FlashReceiptStore(
+            os.path.join(data_folder, "firmware-flash-receipt.json"), self._logger
+        )
+        self._flash_receipt_store.load()
         self._manifest_store = TransferManifestStore(
             os.path.join(data_folder, "transfer-manifest.json"), self._logger
         )
@@ -1237,6 +1244,7 @@ class RmeCompatibilityPlugin(
             self._schedule_post_connect_reconciliation(connection_generation, 0)
             self._defer(self._sync_spoolmanager, True)
         elif event in (Events.DISCONNECTING, Events.DISCONNECTED):
+            self._firmware_printer_uuid = None
             self._completion_snapshot.reset()
             self._completion_move = None
             self._retry_file = None
@@ -1375,6 +1383,9 @@ class RmeCompatibilityPlugin(
             self._rme_comm = comm_instance
         """Observe RME records without blocking or bypassing OctoPrint's queue."""
         normalized_line = str(line or "").strip()
+        if "FIRMWARE_NAME:" in normalized_line:
+            identity = re.search(r"(?:^|\s)UUID:([0-9a-fA-F-]{32,36})(?:\s|$)", normalized_line)
+            self._firmware_printer_uuid = identity.group(1).lower() if identity else None
         with self._state_lock:
             if self._state.get("supported") and self._pause_reason.observe(normalized_line):
                 self._state["pause"] = self._pause_reason.snapshot()
@@ -6347,6 +6358,8 @@ class RmeCompatibilityPlugin(
                 self._firmware_file_thread and self._firmware_file_thread.is_alive()
             ):
                 raise UploadError("A firmware transfer is already active")
+            if self._flash_receipt_store:
+                self._flash_receipt_store.clear()
             with self._state_lock:
                 self._state["firmware"]["error"] = None
             with self._state_lock:
@@ -6544,7 +6557,31 @@ class RmeCompatibilityPlugin(
         # storage initializer performs this reconciliation again once ready.
         if self._file_service is None:
             return False
-        status = self._file_service.firmware_status()
+        with self._firmware_action_lock:
+            status = self._file_service.firmware_status()
+            receipt = self._flash_receipt_store.get() if self._flash_receipt_store else None
+            with self._state_lock:
+                caps = dict(self._state["storage"].get("caps") or {})
+                connected = self._state["connected"] and self._state["supported"]
+                printer_uuid = self._firmware_printer_uuid
+                connection_generation = self._connection_generation
+            if (receipt and connected and not self._print_job_active()
+                    and caps.get("firmware_guarded_unstage") == 1
+                    and caps.get("firmware_running") == 1
+                    and status.get("candidate") == 1 and status.get("armed") == 0):
+                running = self._file_service.firmware_running()
+                if (self._connection_generation == connection_generation
+                        and self._firmware_printer_uuid == printer_uuid
+                        and cleanup_matches(receipt, status, running, printer_uuid)):
+                    # Firmware compares the complete candidate identity while
+                    # holding its transfer latch. Replacements fail closed.
+                    self._file_service.unstage_firmware(expected=receipt)
+                    status = self._file_service.firmware_status()
+                    if status.get("candidate") != 0:
+                        raise FileServiceError("Post-flash cleanup was not confirmed")
+                    self._logger.info("Removed verified installed firmware candidate after missing-marker handoff")
+            if receipt and status.get("candidate") == 0 and status.get("armed") == 0:
+                self._flash_receipt_store.clear()
         self._last_firmware_stage_check = time.monotonic()
         with self._state_lock:
             staged = self._apply_authoritative_firmware_locked(status)
@@ -6561,6 +6598,8 @@ class RmeCompatibilityPlugin(
             ):
                 raise UploadError("Cannot unstage firmware during a transfer")
             self._file_service.unstage_firmware()
+            if self._flash_receipt_store:
+                self._flash_receipt_store.clear()
             self._clear_staged_firmware_state()
             self._persist_and_publish()
             self._defer(self._refresh_storage_after_change, "/")
@@ -6667,13 +6706,33 @@ class RmeCompatibilityPlugin(
         )
         if not path or not staged_sha or not os.path.isfile(path):
             raise UploadError("Restage a compatible BBF before flashing; staged image identity is unavailable")
-        self._validate_firmware_path(path)
-        if firmware_metadata(path)["sha256"] != staged_sha:
+        identity = self._validate_firmware_path(path)
+        metadata = firmware_metadata(path)
+        if metadata["sha256"] != staged_sha:
             raise UploadError("Local BBF no longer matches the verified printer candidate; restage it")
+        return dict(identity, size=metadata["size"], sha256=staged_sha)
+
+    def _record_flash_receipt(self, identity):
+        if self._flash_receipt_store is None:
+            raise UploadError("Firmware handoff persistence is not ready")
+        with self._state_lock:
+            running = dict(self._state["running_firmware"])
+        receipt = dict(identity, schema=1, model=running.get("model"),
+                       printer_uuid=self._firmware_printer_uuid,
+                       previous_application_sha256=running.get("sha256"))
+        try:
+            self._flash_receipt_store.save(receipt)
+        except OSError as exc:
+            raise UploadError("Could not persist firmware handoff; flash was not started") from exc
 
     def _flash_firmware(self):
+        with self._firmware_action_lock:
+            return self._flash_firmware_locked()
+
+    def _flash_firmware_locked(self):
         self._require_print_idle("Firmware flashing")
-        self._validate_staged_firmware()
+        identity = self._validate_staged_firmware()
+        self._record_flash_receipt(identity)
         self._arm_firmware_reconnect()
         try:
             self._file_service.mutate("FLASH", "FWUPD.RME")

@@ -1289,6 +1289,7 @@ class ToolmapGateTests(unittest.TestCase):
         plugin._printer = _Printer()
         plugin._logger = logging.getLogger("rme-one-click-flash-test")
         plugin._validate_staged_firmware = lambda: None  # Transport ordering is tested here.
+        plugin._record_flash_receipt = lambda identity: None  # Covered by receipt fault tests.
         plugin._uploader = types.SimpleNamespace(busy=False)
         plugin._file_service = types.SimpleNamespace(
             mutate=lambda action, path: mutations.append((action, path))
@@ -1528,6 +1529,7 @@ class ToolmapGateTests(unittest.TestCase):
                 self.mutations.append((action, path))
 
         plugin = RmeCompatibilityPlugin()
+        plugin._record_flash_receipt = lambda identity: None
         plugin._printer = _Printer()
         plugin._file_service = FileService()
         plugin._persist_and_publish = lambda: None
@@ -1545,6 +1547,7 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_firmware_flash_uses_bounded_update_only_reconnect(self):
         plugin = RmeCompatibilityPlugin()
+        plugin._record_flash_receipt = lambda identity: None
         plugin._printer = _Printer()
         plugin._logger = logging.getLogger("rme-firmware-reconnect-test")
         plugin._file_service = types.SimpleNamespace(mutate=lambda action, path: None)
@@ -3393,6 +3396,7 @@ class ToolmapGateTests(unittest.TestCase):
 
     def test_flash_disconnect_enters_expected_reconnect_without_409(self):
         plugin = RmeCompatibilityPlugin()
+        plugin._record_flash_receipt = lambda identity: None
         plugin._logger = logging.getLogger("rme-flash-disconnect-test")
         plugin._printer = _Printer()
         plugin._file_service = types.SimpleNamespace(

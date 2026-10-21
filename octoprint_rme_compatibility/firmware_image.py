@@ -29,13 +29,16 @@ def validate(path, expected):
         if variant != expected_base or variant not in SUPPORTED.get(version, set()):
             raise UploadError("BBF %s/%s is not supported for connected %s" % (version, variant or "unknown machine", expected))
         checksum = hashlib.sha256(header[96:])
+        application_checksum = hashlib.sha256()
         remaining = length
         while remaining:
             block = source.read(min(65536, remaining))
             if not block:
                 raise UploadError("Truncated BBF application")
             checksum.update(block)
+            application_checksum.update(block)
             remaining -= len(block)
         if checksum.digest() != header[64:96]:
             raise UploadError("BBF embedded checksum mismatch")
-    return dict(version=version, variant=variant)
+    return dict(version=version, variant=variant, application_size=length,
+                application_sha256=application_checksum.hexdigest())

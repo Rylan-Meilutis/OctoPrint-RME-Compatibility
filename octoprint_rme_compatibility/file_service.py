@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import os
+import re
 import struct
 import threading
 import time
@@ -122,7 +123,7 @@ class RmeFileService(object):
         if not record or not (
             str(record.get("record", "")).startswith("file_")
             or record.get("record") in (
-                "firmware_status", "firmware_unstaged", "firmware_error",
+                "firmware_status", "firmware_running", "firmware_unstaged", "firmware_error",
             )
         ):
             return
@@ -1102,13 +1103,27 @@ class RmeFileService(object):
             )
         return self._terminal(records, "firmware_status")
 
-    def unstage_firmware(self):
-        """Idempotently remove the unarmed protected firmware candidate."""
+    def firmware_running(self):
+        """Obtain a fresh application identity, not the UI's cached version."""
         with self._operation_lock:
             self._cancel.clear()
             records = self._exchange_when_available(
-                "@RME FIRMWARE UNSTAGE", "firmware_unstaged"
+                "@RME FIRMWARE RUNNING", "firmware_running",
+                timeout=max(self.response_timeout, FIRMWARE_STATUS_TIMEOUT_SECONDS),
             )
+        return self._terminal(records, "firmware_running")
+
+    def unstage_firmware(self, expected=None):
+        """Idempotently remove the unarmed protected firmware candidate."""
+        with self._operation_lock:
+            self._cancel.clear()
+            command = "@RME FIRMWARE UNSTAGE"
+            if expected is not None:
+                size, digest = expected.get("size"), expected.get("sha256")
+                if type(size) is not int or size <= 0 or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                    raise FileServiceError("Invalid firmware cleanup identity")
+                command += " size=%d sha256=%s" % (size, digest)
+            records = self._exchange_when_available(command, "firmware_unstaged")
         return self._terminal(records, "firmware_unstaged")
 
     @staticmethod

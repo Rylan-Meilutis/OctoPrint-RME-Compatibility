@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.0b139 — 2026-10-21
+
+- Persist a separate, fsynced flash receipt before requesting a plugin update.
+  After reconnect, recover a leftover candidate even when both USB cleanup
+  markers are absent. Require the same printer UUID, a changed application
+  matching the exact target SHA/size, and the original candidate SHA/size.
+- Require the new firmware's guarded UNSTAGE capability: it compares candidate
+  identity under its storage latch before deleting the reserved update files.
+  Never hide a real candidate or delete a replacement based on stale UI data.
+- Receipt failure prevents flashing. Print activity, unsupported firmware,
+  malformed receipts, wrong printers, unchanged applications and failed cleanup
+  preserve the candidate; cleanup failures retain their receipt for retry.
+- Existing orphaned candidates created before receipts existed still require
+  one explicit Unstage action. Merely matching the installed version is not
+  safe authorization to delete an intentionally staged image.
+- Update to the accompanying October 21 in-place firmware assets for guarded
+  recovery. Same-version reinstalls with unchanged application bytes require
+  explicit Unstage if printer-side cleanup markers are lost.
+- Hardware USB/bootloader validation remains pending; host tests are not proof
+  that every drive persists handoff markers across reset.
+
 ## 0.1.0b138 — 2026-10-21
 
 - Add printer-synchronized material-aware chamber cooling and print/post-print
