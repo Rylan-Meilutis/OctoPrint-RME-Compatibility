@@ -144,6 +144,37 @@ class BaudPolicyTests(unittest.TestCase):
             self.assertEqual({"baudrate": 230400} if modern else 230400, plugin._settings.global_values[path])
             plugin._settings.save.assert_called_once()
 
+    def test_initialize_prepares_known_rme_before_startup_autoconnect(self):
+        for modern in (False, True):
+            plugin = self.plugin(modern)
+            plugin._settings.values["baud_auto_migrated"] = True
+            with patch.object(baud_policy, "install", return_value=True) as installer:
+                plugin.initialize()
+                installer.assert_called_once()
+                self.assertTrue(installer.call_args.args[0]())
+                path = (("printerConnection", "preferred", "parameters") if modern else ("serial", "baudrate"))
+                preferred = plugin._settings.global_values[path]
+                self.assertEqual(0, preferred["baudrate"] if modern else preferred)
+                # The later startup callback does not rewrite an operator's
+                # manual choice or touch the connection which already started.
+                plugin._settings.global_values[path] = {"baudrate": 230400} if modern else 230400
+                plugin.on_startup("localhost", 5000)
+                self.assertEqual({"baudrate": 230400} if modern else 230400,
+                                 plugin._settings.global_values[path])
+            plugin._printer.disconnect.assert_not_called()
+            plugin._printer.connect.assert_not_called()
+
+    def test_startup_does_not_override_unknown_opted_out_or_network_printer(self):
+        for known, enabled, connector in ((False, True, None), (True, False, None),
+                                           (True, True, "network")):
+            plugin = self.plugin()
+            plugin._settings.values.update(baud_auto_migrated=known, auto_highest_baud=enabled)
+            plugin._settings.global_values[("printerConnection", "preferred", "connector")] = connector
+            with patch.object(baud_policy, "install", return_value=True):
+                plugin.initialize()
+            self.assertEqual(115200, plugin._settings.global_values[("serial", "baudrate")])
+            plugin._settings.save.assert_not_called()
+
     def test_opt_out_and_nonserial_are_untouched(self):
         plugin = self.plugin()
         plugin._settings.values["auto_highest_baud"] = False

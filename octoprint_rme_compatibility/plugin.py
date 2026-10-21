@@ -303,22 +303,35 @@ class RmeCompatibilityPlugin(
 
     # -- OctoPrint lifecycle -------------------------------------------------
 
-    def on_startup(self, host, port):
-        # Before OctoPrint's automatic connection starts, including its UI list.
+    def initialize(self):
+        # OctoPrint starts serial autoconnect BEFORE StartupPlugin.on_startup.
+        # Implementation initialization runs earlier, with settings injected.
+        self._install_baud_policy()
+        self._configure_auto_baud(startup=True)
+
+    def _install_baud_policy(self):
         self._baud_policy_active = True
         if not baud_policy.install(
             lambda: self._baud_policy_active and self._settings.get_boolean(["auto_highest_baud"])
         ):
             self._logger.warning("RME could not register high-speed AUTO baud candidates")
 
-    def _configure_auto_baud(self):
+    def on_startup(self, host, port):
+        # Idempotent fallback for hosts which reload plugin implementations.
+        # Do not change saved rates here: autoconnect may already be running.
+        self._install_baud_policy()
+
+    def _configure_auto_baud(self, startup=False):
         """Migrate the saved low-speed default once, only after RME confirms it.
 
         This affects the NEXT connection, not the running print/connection.
-        Subsequent explicitly saved fixed rates are left alone.
+        On startup, a previously confirmed RME connection returns to AUTO when
+        fastest-first mode is enabled. Opting out preserves fixed preferences.
+        Explicit manual connections during this process remain untouched.
         """
+        known_rme = self._settings.get_boolean(["baud_auto_migrated"])
         if (not self._settings.get_boolean(["auto_highest_baud"])
-                or self._settings.get_boolean(["baud_auto_migrated"])):
+                or known_rme and not startup or startup and not known_rme):
             return
         try:
             modern = self._settings.global_get(["printerConnection", "preferred", "connector"])

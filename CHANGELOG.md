@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.0b140 — 2026-10-21
+
+- Install fastest-first AUTO baud handling during implementation initialization,
+  before OctoPrint starts startup autoconnect. The previous on_startup callback
+  ran after autoconnect and could leave the first connection at 115200.
+- For a previously confirmed RME printer with fastest-first enabled, restore
+  and persist AUTO before startup autoconnect so a saved 115200 preference does
+  not bypass detection. Probe 1,000,000 baud first unless blocklisted, then fall
+  back through available lower rates using OctoPrint's normal handshake.
+- Preserve opt-out and non-serial connections. Do not disconnect an active
+  connection or override an explicit manual connection during the running host.
+- Add startup-order regressions and execute the real OctoPrint 1.11.8 server
+  autoconnect method. Verify both its actual baud parameter and config.yaml
+  persistence, not just the dropdown or candidate-list helper.
+- No firmware update is required. USB CDC's selected baud is not a measured
+  throughput guarantee; physical connection testing remains pending.
+
 ## 0.1.0b139 — 2026-10-21
 
 - Persist a separate, fsynced flash receipt before requesting a plugin update.
