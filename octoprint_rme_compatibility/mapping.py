@@ -22,7 +22,7 @@ def color_distance(a, b):
     return sum((int(a[i:i + 2], 16) - int(b[i:i + 2], 16)) ** 2 for i in (1, 3, 5))
 
 
-def read_requirements(path, count):
+def read_requirements(path, count, include_unknown=False):
     """Read at most 2 MiB; support Orca/Prusa text G-code config comments."""
     count = min(8, max(0, int(count)))
     fields = {}
@@ -46,7 +46,7 @@ def read_requirements(path, count):
                 continue
         except ValueError:
             pass
-        if material(value):
+        if material(value) or include_unknown:
             result.append({"logical": tool, "material": value,
                            "color": colors[tool] if tool < len(colors) else None})
     return result

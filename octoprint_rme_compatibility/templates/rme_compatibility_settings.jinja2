@@ -1,5 +1,18 @@
 <form class="form-horizontal">
     <h3>RME saved defaults</h3>
+    <h4>Chamber cooling &amp; filtration</h4>
+    <p>Saved on the printer immediately. Material-aware cooling never enables disabled chamber fans. Any ABS/ASA/HIPS or other forbidden/unknown material in the job suppresses normal chamber cooling for the whole print. PLA/PETG/TPU may cool only when the fans are already enabled. Missing job metadata suppresses cooling. Filtration and emergency cooling remain active; DIY filters sharing chamber fans retain their required airflow.</p>
+    <!-- ko foreach: [{key: 'material_cooling', label: 'Material-aware chamber cooling'}, {key: 'print_filter', label: 'Filter during print'}, {key: 'post_filter', label: 'Filter after print'}] -->
+    <div class="control-group">
+        <label class="control-label" data-bind="text: label"></label>
+        <div class="controls">
+            <select data-bind="attr: {'data-chamber-setting': key}, enable: $parent.tuneEnabled() && $parent.tune()[key] !== undefined, value: $parent.tune()[key], valueAllowUnset: true, event: {change: $parent.changeChamberSetting}">
+                <option value="0">Off</option><option value="1">On</option>
+            </select>
+            <span data-bind="visible: $parent.tune()[key] === undefined">Requires compatible firmware</span>
+        </div>
+    </div>
+    <!-- /ko -->
     <p>Configure saved behavior here. Live print controls are in Control; filament mapping, files, firmware updates and transfer recovery are on the RME page.</p>
     <p><button type="button" class="btn" data-bind="click: showLiveControls">Open live controls</button>
        <button type="button" class="btn" data-bind="click: function () { showRmeSection('filaments'); }">Open RME workspace</button></p>

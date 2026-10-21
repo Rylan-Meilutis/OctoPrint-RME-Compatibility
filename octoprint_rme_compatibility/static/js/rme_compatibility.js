@@ -338,6 +338,11 @@ $(function () {
             self.command("set_print_override", {kind: "auto_pa", value: Number(event.target.value)});
             event.target.value = self.tune().auto_pa;
         };
+        self.changeChamberSetting = function (_, event) {
+            var kind = event.target.getAttribute("data-chamber-setting");
+            self.command("set_print_override", {kind: kind, value: Number(event.target.value)});
+            event.target.value = self.tune()[kind];
+        };
         self.changeTuneLight = function (_, event) {
             self.requestChamberLight(Number(event.target.value));
         };

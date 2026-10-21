@@ -1,4 +1,6 @@
 import types
+import tempfile
+from pathlib import Path
 import unittest
 
 from test_toolmap_gate import RmeCompatibilityPlugin
@@ -6,6 +8,68 @@ from octoprint_rme_compatibility.protocol import parse_line
 
 
 class PrintControlsTests(unittest.TestCase):
+    def test_streamed_chamber_manifest_inspects_all_used_materials(self):
+        for types_text, usage, expected in (
+            ("PLA;ABS", "100;100", 0),
+            ("PLA;ASA", "100;100", 0),
+            ("PLA;HIPS", "100;100", 0),
+            ("PLA;UNKNOWN", "100;100", 0),
+            ("PLA;", "100;100", 0),
+            ("PLA;PETG;TPU", "100;100;100", 1),
+            ("PLA;ABS", "100;0", 1),
+            ("", "", 0),
+        ):
+            with self.subTest(materials=types_text, usage=usage), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "job.gcode"
+                path.write_text("; filament_type = %s\n; filament_used_mm = %s\nG28\n" % (types_text, usage))
+                plugin = self.plugin()
+                plugin._state["supported"] = True
+                plugin._state["tune"]["material_cooling"] = 0
+                plugin._printer.get_current_data = lambda: {"job": {"file": {"origin": "local", "path": "job.gcode"}}}
+                plugin._file_manager = types.SimpleNamespace(path_on_disk=lambda *args: str(path))
+                plugin._prepare_chamber_job()
+                expected_command = "@RME CHAMBER JOB allow_cooling=%d" % expected
+                self.assertEqual(plugin._chamber_job_command, expected_command)
+                result = plugin.gcode_queuing_hook(None, "queuing", "M75", None, "M75", tags={"source:file"})
+                self.assertEqual(result, [("M75", None), (expected_command, None)])
+                self.assertIsNone(plugin.gcode_queuing_hook(None, "queuing", "G28", None, "G28", tags={"source:file"}))
+
+    def test_chamber_manifest_fifo_and_missing_capability(self):
+        plugin = self.plugin()
+        plugin._state["supported"] = True
+        plugin._chamber_job_command = "@RME CHAMBER JOB allow_cooling=0"
+        self.assertIsNone(plugin.gcode_queuing_hook(None, "queuing", "M117 hi", None, "M117", tags={"source:api"}))
+        result = plugin.gcode_queuing_hook(None, "queuing", "G28", None, "G28", tags={"source:file"})
+        self.assertEqual(result, [("M75", None), ("@RME CHAMBER JOB allow_cooling=0", None), ("G28", None)])
+        plugin._prepare_chamber_job()
+        self.assertIsNone(plugin._chamber_job_command)
+
+    def test_chamber_controls_require_support_and_reject_invalid_values(self):
+        for kind in ("material_cooling", "print_filter", "post_filter"):
+            plugin = self.plugin()
+            with self.assertRaises(ValueError):
+                plugin._set_print_override(dict(kind=kind, value=1))
+            self.assertEqual(self.commands, [])
+            plugin._state["tune"][kind] = 0
+            for value in (2, -1, "1\nM112", True):
+                with self.assertRaises(ValueError):
+                    plugin._set_print_override(dict(kind=kind, value=value))
+            for value in (0, 1):
+                plugin._set_print_override(dict(kind=kind, value=value))
+                self.assertEqual(self.commands[-2:], ["@RME CHAMBER SET %s=%d" % (kind, value), "@RME TUNE QUERY"])
+            self.commands.clear()
+
+    def test_chamber_snapshot_uses_printer_values_without_history_growth(self):
+        plugin = self.plugin()
+        plugin._schedule_publish = lambda: None
+        for value in (0, 1, 0):
+            plugin._handle_record(parse_line("RME_TUNE material_cooling=%d print_filter=1 post_filter=0" % value))
+            self.assertEqual(plugin._state["tune"]["material_cooling"], value)
+            self.assertEqual(plugin._state["tune"]["print_filter"], 1)
+            self.assertEqual(plugin._state["tune"]["post_filter"], 0)
+        plugin._handle_record(parse_line("RME_TUNE speed=100"))
+        self.assertNotIn("material_cooling", plugin._state["tune"])
+
     def test_temperature_plan_keeps_parent_workflow_through_all_points(self):
         plugin = self.plugin()
         plugin._schedule_publish = lambda: None

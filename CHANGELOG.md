@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.0b138 — 2026-10-21
+
+- Add printer-synchronized material-aware chamber cooling and print/post-print
+  filtration switches. Older firmware leaves unsupported controls disabled.
+- Inspect the complete streamed-job material list before printing. Unknown or
+  forbidden materials suppress normal chamber cooling for the whole job. Known
+  PLA/PETG/TPU may cool only when firmware fan controls already enable the fans.
+- Send job permission after the serial lifecycle reset, before sliced motion;
+  missing metadata fails closed. Independent filtration and emergency thermal
+  protection remain active. No new periodic polling or unbounded event history.
+- Browser regressions cover actual settings bindings, unsupported telemetry,
+  locks/disconnects; production-code firmware simulations cover disabled fans,
+  mixed materials, sticky restrictions, filtration routing and safety overrides.
+- Physical fan/hardware validation remains pending; do not treat host simulation
+  as proof against every possible printer fault.
+
 ## 0.1.0b137 — 2026-10-20
 
 - Fix the 0.1.0b136 startup/settings failure on OctoPrint 1.11: that host keeps

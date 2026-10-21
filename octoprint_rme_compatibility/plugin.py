@@ -154,6 +154,7 @@ class RmeCompatibilityPlugin(
         self._validator_mapping_signature = None
         self._preflight_gate_started = False
         self._mesh_area_command = None
+        self._chamber_job_command = None
         self._completion_snapshot = CompletionSnapshot()
         self._completion_move = None
         self._firmware_verified_source = None
@@ -1230,6 +1231,7 @@ class RmeCompatibilityPlugin(
                 self._transfer_conflict_cancel = False
                 self._preflight_gate_started = False
                 self._toolmap_preflight_decision = None
+                self._chamber_job_command = None
             self._publish()
             self._send_command("@RME MACHINE QUERY")
             self._schedule_post_connect_reconciliation(connection_generation, 0)
@@ -1345,6 +1347,7 @@ class RmeCompatibilityPlugin(
                 self._preflight_gate_started = False
                 self._toolmap_preflight_decision = None
                 workflow = self._state.get("workflow") or {}
+                self._chamber_job_command = None
                 if event == Events.PRINT_DONE:
                     machine = self._state.get("machine") or {}
                     if int(machine.get("logical_tools", 0) or 0) > 1:
@@ -1787,6 +1790,7 @@ class RmeCompatibilityPlugin(
                 self._skip_cancel_script = False
             self._prepare_toolmap_prompt(record_preflight=True)
             self._prepare_mesh_area()
+            self._prepare_chamber_job()
             self._prepare_completion_move()
         elif script_type == "gcode" and script_name == "afterPrintCancelled":
             with self._state_lock:
@@ -1811,6 +1815,17 @@ class RmeCompatibilityPlugin(
             return (None,)
         if not supported:
             return None
+        if phase == "queuing" and {"source:job", "source:file"}.intersection(tags):
+            with self._state_lock:
+                chamber_job = self._chamber_job_command
+                self._chamber_job_command = None
+            if chamber_job:
+                # Job metadata must follow the serial lifecycle reset, in FIFO,
+                # before any sliced motion/heating can enable chamber cooling.
+                prefix = [] if str(gcode or "").upper() == "M75" else [("M75", None)]
+                if not prefix:
+                    return [(cmd, cmd_type), (chamber_job, None)]
+                return prefix + [(chamber_job, None), (cmd, cmd_type)]
         if {"script:afterPrintPaused", "script:beforePrintResumed"}.intersection(tags):
             # RME owns retract/park/reheat/unpark. Host macros must not move
             # an empty toolhead or race restoration of the firmware resume pose.
@@ -2290,7 +2305,7 @@ class RmeCompatibilityPlugin(
             elif kind == "tune":
                 # Replace one bounded snapshot, never append it to event history.
                 capacity = min(8, int(self._state["machine"].get("tool_capacity", 0)))
-                keys = ("speed", "stealth", "auto_pa", "printing", "light", "lcd", "screen_print", "chamber_print", "status_print") + tuple("F%d" % i for i in range(capacity))
+                keys = ("speed", "stealth", "auto_pa", "printing", "light", "lcd", "screen_print", "chamber_print", "status_print", "material_cooling", "print_filter", "post_filter") + tuple("F%d" % i for i in range(capacity))
                 self._state["tune"] = {key: record[key] for key in keys if key in record}
                 self._state["tune"]["updated"] = time.time()
                 self._tune_query_pending = False
@@ -3705,6 +3720,10 @@ class RmeCompatibilityPlugin(
             if self._state.get("tune", {}).get("auto_pa") not in (0, 1, 2):
                 raise ValueError("Firmware does not support Auto PA mode")
             command = "M976 W%d" % value
+        elif kind in ("material_cooling", "print_filter", "post_filter") and value in (0, 1):
+            if self._state.get("tune", {}).get(kind) not in (0, 1):
+                raise ValueError("Firmware does not support this chamber setting")
+            command = "@RME CHAMBER SET %s=%d" % (kind, value)
         elif kind == "light" and value in (0, 1, 2):
             if self._print_job_active() or self._state.get("tune", {}).get("printing") == 1:
                 value = int(value > 0)
@@ -3722,7 +3741,7 @@ class RmeCompatibilityPlugin(
         else:
             raise ValueError("Invalid print override")
         # Discrete lighting clicks must not be rejected by the motion-tune throttle.
-        if kind in ("light", "lcd", "screen", "chamber", "status"):
+        if kind in ("light", "lcd", "screen", "chamber", "status", "material_cooling", "print_filter", "post_filter"):
             if self._transport_recovery_required() or not self._printer.is_operational():
                 raise RuntimeError("Printer lighting transport is unavailable")
             self._send_priority_services([command, "@RME TUNE QUERY"], "lighting")
@@ -3903,6 +3922,27 @@ class RmeCompatibilityPlugin(
             self._logger.info("RME automatic completion snapshot: %s", target or "no unambiguous final bed move")
         except (OSError, UnicodeError, KeyError, TypeError, ValueError, AttributeError):
             self._logger.debug("RME automatic completion snapshot analysis unavailable", exc_info=True)
+
+    def _prepare_chamber_job(self):
+        with self._state_lock:
+            self._chamber_job_command = None
+            supported = self._state.get("supported") and "material_cooling" in self._state.get("tune", {})
+        if not supported or not self._selected_job_has_executable_gcode():
+            return
+        permitted = False
+        try:
+            info = ((self._printer.get_current_data() or {}).get("job") or {}).get("file") or {}
+            path = info.get("path") or info.get("name")
+            if info.get("origin") == "local" and str(path).lower().endswith((".gcode", ".gco")):
+                requirements = read_requirements(self._file_manager.path_on_disk("local", path), 8, include_unknown=True)
+                permitted = bool(requirements) and all(
+                    str(row.get("material", "")).strip().upper() in {"PLA", "PETG", "PET", "FLEX", "TPU", "TPE"}
+                    for row in requirements
+                )
+        except (OSError, UnicodeError, KeyError, TypeError, ValueError, AttributeError):
+            self._logger.debug("Chamber job metadata unavailable; suppressing normal cooling", exc_info=True)
+        with self._state_lock:
+            self._chamber_job_command = "@RME CHAMBER JOB allow_cooling=%d" % int(permitted)
 
     def _prepare_mesh_area(self):
         # Analyze once at preflight, not in the serial send/receive hooks.
