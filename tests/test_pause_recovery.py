@@ -27,6 +27,22 @@ class Comm:
 
 
 class PauseRecovery(unittest.TestCase):
+    def test_collision_dialog_survives_missing_event_and_requires_explicit_response(self):
+        p = self.plugin()
+        self.snapshot(p, "paused", "ATTENTION")
+        p._handle_record(dict(record="dialog", workflow="collision", phase="inspection", state="waiting"))
+        p._handle_record(dict(record="prompt", actions=["Abort", "Continue"]))
+        self.assertEqual(p._rme_comm.state, "PAUSED")
+        self.assertEqual(p._state["prompt"]["workflow"], "collision")
+        self.assertEqual(p._state["prompt"]["actions"], ["Abort", "Continue"])
+        self.assertIn("part has moved", p._state["prompt"]["message"])
+        self.assertEqual(p._printer.forced_commands, [])
+        p._handle_record(dict(record="dialog", workflow="collision", phase="recovery", state="waiting"))
+        p._handle_record(dict(record="prompt", actions=["Retry", "Abort"]))
+        self.assertIn("homing", p._state["prompt"]["message"])
+        self.assertEqual(p._state["prompt"]["actions"], ["Retry", "Abort"])
+        self.assertEqual(p._printer.forced_commands, [])
+
     def plugin(self, state="PRINTING"):
         p = RmeCompatibilityPlugin()
         p._printer = _Printer()

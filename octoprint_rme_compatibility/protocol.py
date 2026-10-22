@@ -225,6 +225,8 @@ def parse_line(raw_line):
         result = parse_fields(line[len("RME_FIRMWARE ") :])
         result["record"] = "firmware_status"
         return result
+    if line.startswith("RME_REVIEW "):
+        return dict(parse_fields(line[len("RME_REVIEW "):]), record="review")
     if line.startswith("RME_DIALOG "):
         return dict(parse_fields(line[len("RME_DIALOG "):]), record="dialog")
     if line.startswith("RME_PROMPT "):

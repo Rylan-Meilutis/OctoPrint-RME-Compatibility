@@ -177,7 +177,7 @@
         <label class="checkbox" data-bind="visible: mappingExpanded"><input type="checkbox" data-bind="checked: mappingEnabled, event: {change: function() {fallbackSelections({});}}"> Enable remapping</label>
         <p class="help-block">Fallback review requires confirmation, including when no fallbacks are selected. Choices apply only to this print. Validation runs before releasing the job.</p>
         </div><div class="modal-footer">
-        <button class="btn btn-primary" data-bind="click: applyToolmap, enable: materialMappingValid">Apply tools and fallbacks — continue print</button>
+        <button class="btn btn-primary" data-bind="click: applyToolmap, enable: materialMappingValid() && (!prompt().review_id || prompt().native_state === 'editing')">Apply tools and fallbacks — continue print</button>
         <button class="btn" data-bind="click: showFilamentMapping">Review spool mapping</button>
         <button class="btn" data-bind="visible: !prompt().spooljoin_review, click: resetToolmap">Use default mapping and continue</button>
         </div>

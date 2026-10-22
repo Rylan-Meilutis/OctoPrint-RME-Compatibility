@@ -118,6 +118,9 @@ const {jQueryFactory} = require('jquery/factory');
     vm.updateToolmapNotice({kind: 'toolmap', updated: 1, filename: 'test.gcode', count: 1});
     assert.equal(notices.length, 0);
     assert.deepEqual(modalCalls.at(-1), ['rme-tool-mapping', 'show']);
+    const opened = modalCalls.length;
+    vm.updateToolmapNotice({kind: 'toolmap', updated: 1, filename: 'late-name.gcode', count: 1});
+    assert.equal(modalCalls.length, opened); // Late PrintStarted name does not reopen.
     vm.settings.settings = {plugins: {rme_compatibility: {prompt_toolmap_on_print: ko.observable(false)}}};
     vm.updateToolmapNotice({kind: 'toolmap', updated: 2, filename: 'test.gcode', count: 1});
     assert.deepEqual(modalCalls.at(-1), ['rme-tool-mapping', 'hide']);

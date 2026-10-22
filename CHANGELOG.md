@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.0b141 — 2026-10-21
+
+- Synchronize tool mapping and fallback/SpoolJoin review with capable printer
+  firmware. Confirming on either screen closes the other; the host validates
+  materials, fallback chains and the exact review revision before continuing.
+- Keep the same review open across nested filament dialogs and delayed job
+  events. Reject stale browser submissions and never auto-accept a shared review.
+- Retain host-only review on older firmware without the native review capability.
+- Reconstruct collision recovery prompts from firmware dialog status, including
+  reconnects, without bypassing the printer's inspection and recovery safeguards.
+- Validate with host and browser regression suites. Physical collision recovery
+  and printer LCD operation still require supervised hardware validation.
+
 ## 0.1.0b140 — 2026-10-21
 
 - Install fastest-first AUTO baud handling during implementation initialization,

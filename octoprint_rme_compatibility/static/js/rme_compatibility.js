@@ -1167,7 +1167,7 @@ $(function () {
         });
         self.updateToolmapNotice = function (prompt) {
             var key = prompt && prompt.kind === "toolmap" ?
-                [prompt.updated, prompt.filename, prompt.count].join(":") : "";
+                [prompt.job_id || prompt.updated, prompt.count].join(":") : "";
             if (key === self.toolmapNoticeKey) return;
             if (self.toolmapNotice && typeof self.toolmapNotice.remove === "function") {
                 self.toolmapNotice.remove();
@@ -1439,7 +1439,7 @@ $(function () {
                 new PNotify({title: "Invalid tool mapping", text: "Each physical tool can only be selected once.", type: "error"});
                 return;
             }
-            self.command("apply_toolmap", {mapping: mapping, enabled: self.mappingEnabled(), fallbacks: self.fallbackSelections()});
+            self.command("apply_toolmap", {mapping: mapping, enabled: self.mappingEnabled(), fallbacks: self.fallbackSelections(), review_id: self.prompt().review_id});
         };
         self.touchToolmap = function () {
             if (self.hasToolmapPrompt() && !self.prompt().timer_paused) self.command("touch_toolmap");
