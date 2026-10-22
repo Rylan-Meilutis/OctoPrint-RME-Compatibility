@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.0b144 — 2026-10-22
+
+- Gate startup at OctoPrint's tagged M110 boundary as well as the script hook.
+  Continuous Print can suppress beforePrintStarted entirely; delayed lifecycle
+  events must not allow motion before the LCD/web tool review opens.
+- Use a separate counted startup hold so the sending hook never waits for an
+  event worker holding the preparation lock. Transfer that hold only after
+  successful preparation verifies any required review owns its own hold or
+  has been approved. Failures remain held until cancellation cleanup.
+- Keep M75/chamber metadata behind the review, not ahead of the startup M110.
+  Preserve explicit control-file opt-outs and prevent late workers from
+  recreating reviews after cancellation.
+- Explain that an already-started serial job needs cancellation/restart if
+  firmware rejects its late review; do not retry or permit unsafe remapping.
+- Verified: 386 host tests, 15 browser suites and three real OctoPrint 1.11.8
+  checks, including real startup/queue/hold code with scripts suppressed.
+  The new regression fails against b143. Physical validation remains pending.
+- Accompanying stable firmware refresh fixes status-LED dim/bright flicker
+  during UI/configuration refresh; that firmware fix requires reflashing.
+
 ## 0.1.0b143 — 2026-10-22
 
 - Share one preflight review between PrintStarted and beforePrintStarted,

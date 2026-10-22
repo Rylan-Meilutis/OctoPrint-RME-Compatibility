@@ -162,6 +162,42 @@ class ContinuousPrintStartup(unittest.TestCase):
             self.assertTrue(p._toolmap_preflight_decision)
             self.assertEqual([True], p._printer.holds)
 
+    def test_boundary_failure_keeps_hold_until_cancellation_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            p = self.plugin(root)
+            self.select(p, root, 'real.gcode')
+            p._rme_comm._currentFile.getStartTime = lambda: 100.0
+            p._rme_comm.set_job_on_hold = p._printer.set_job_on_hold
+            deferred = []
+            p._defer = lambda callback, *args: deferred.append((callback, args))
+            p._prepare_print_start = Mock(side_effect=RuntimeError('setup failed'))
+            p._gate_print_start_boundary(p._rme_comm)
+            self.assertEqual([True], p._printer.holds)
+            deferred[0][0](*deferred[0][1])
+            self.assertEqual([True], p._printer.holds)
+            self.assertEqual(len(p._printer.cancel_calls), 1)
+            p._release_toolmap_hold()
+            self.assertEqual([True, False], p._printer.holds)
+            self.assertFalse(p._startup_boundary_holds)
+
+    def test_cancel_before_boundary_worker_cannot_recreate_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'real.gcode').write_text('G28\nT1\n')
+            p = self.plugin(root)
+            self.select(p, root, 'real.gcode')
+            p._rme_comm._currentFile.getStartTime = lambda: 100.0
+            p._rme_comm.set_job_on_hold = p._printer.set_job_on_hold
+            deferred = []
+            p._defer = lambda callback, *args: deferred.append((callback, args))
+            p._gate_print_start_boundary(p._rme_comm)
+            p.on_event('PrintCancelling', {'origin': 'local', 'path': 'real.gcode'})
+            deferred[0][0](*deferred[0][1])
+            self.assertEqual([True, False], p._printer.holds)
+            self.assertFalse(p._toolmap_hold_active)
+            self.assertIsNone(p._state['prompt'])
+
 
 if __name__ == "__main__":
     unittest.main()

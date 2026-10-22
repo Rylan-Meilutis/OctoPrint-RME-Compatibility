@@ -173,6 +173,18 @@ class ToolReview(unittest.TestCase):
     def test_protocol_snapshot_parse(self):
         self.assertEqual(parse_line("RME_REVIEW id=123 state=submitted revision=4000000000 enabled=1 mapping=0,255,255 joins=0:2")["revision"], 4000000000)
 
+    def test_busy_serial_print_explains_restart_instead_of_retrying_forever(self):
+        p = self.plugin()
+        p._toolmap_review_prompt = p._state['prompt']
+        p._state['session'].update(tool_review=1, printer_state='PRINTING')
+        p._print_job_gcode_sent = True
+        p._handle_record(dict(record='rme_error', message='workflow=tool_review code=printer_busy'))
+        self.assertEqual(p._state['prompt']['native_state'], 'blocked')
+        self.assertIn('Cancel and restart', p._state['prompt']['message'])
+        p._start_native_tool_review()
+        self.assertFalse(p._printer.command_batches)
+        self.assertTrue(p._toolmap_hold_active)
+
     def test_stale_reply_burst_cannot_flood_begin_or_retry_after_cancel(self):
         p = self.plugin()
         p._state["session"]["tool_review"] = 1
