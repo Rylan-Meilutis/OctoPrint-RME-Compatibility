@@ -173,6 +173,56 @@ class ToolReview(unittest.TestCase):
     def test_protocol_snapshot_parse(self):
         self.assertEqual(parse_line("RME_REVIEW id=123 state=submitted revision=4000000000 enabled=1 mapping=0,255,255 joins=0:2")["revision"], 4000000000)
 
+    def test_stale_reply_burst_cannot_flood_begin_or_retry_after_cancel(self):
+        p = self.plugin()
+        p._state["session"]["tool_review"] = 1
+        for _ in range(30):
+            p._handle_record(dict(record="review", id=122, state="complete"))
+        self.assertEqual(len(p._printer.command_batches), 1)
+        p._release_toolmap_hold()
+        batches_after_cancel = len(p._printer.command_batches)
+        for _ in range(30):
+            p._handle_record(dict(record="review", id=122, state="complete"))
+        p._start_native_tool_review()
+        self.assertEqual(len(p._printer.command_batches), batches_after_cancel)
+
+    def test_old_query_cannot_retry_a_begin_still_in_fifo(self):
+        p = self.plugin()
+        p._state["session"]["tool_review"] = 1
+        p._start_native_tool_review()
+        p._toolmap_review_last_begin = (123, 0)
+        p._handle_record(dict(record="review", id=122, state="complete"))
+        self.assertEqual(len(p._printer.command_batches), 1)
+        p._handle_record(dict(record="rme_error", message="workflow=tool_review code=printer_busy"))
+        p._handle_record(dict(record="review", id=122, state="complete"))
+        self.assertEqual(len(p._printer.command_batches), 2)
+
+    def test_wire_records_have_one_ordered_worker(self):
+        p = self.plugin()
+        deferred = []
+        p._defer = lambda callback, *args: deferred.append((callback, args))
+        self.submit(p)
+        p._handle_record(dict(record="review", id=123, state="complete", revision=19))
+        self.assertEqual(len(deferred), 1)
+        deferred[0][0](*deferred[0][1])
+        self.assertFalse(p._toolmap_hold_active)
+        self.assertFalse(p._toolmap_review_worker)
+
+    def test_optional_default_save_failure_cannot_strand_committed_review(self):
+        p = self.plugin()
+        self.submit(p)
+        p._settings.save = Mock(side_effect=OSError("disk full"))
+        p._handle_record(dict(record="review", id=123, state="complete", revision=19))
+        self.assertFalse(p._toolmap_hold_active)
+
+    def test_validator_exception_rejects_review_without_releasing_hold(self):
+        p = self.plugin()
+        p._configure_validator_mapping = Mock(side_effect=RuntimeError("validator unavailable"))
+        self.submit(p)
+        self.assertTrue(p._toolmap_hold_active)
+        self.assertEqual(p._printer.command_batches[-1], ["@RME REVIEW REJECT id=123"])
+        self.assertEqual(p._state["prompt"]["message"], "validator unavailable")
+
 
 if __name__ == "__main__":
     unittest.main()

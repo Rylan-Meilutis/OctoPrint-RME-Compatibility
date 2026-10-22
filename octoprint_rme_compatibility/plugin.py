@@ -153,12 +153,17 @@ class RmeCompatibilityPlugin(
         self._toolmap_review_completed = False
         self._toolmap_review_processing = None
         self._toolmap_review_prompt = None
+        self._toolmap_review_records = queue.Queue()
+        self._toolmap_review_worker = False
+        self._toolmap_review_last_begin = None
+        self._toolmap_review_begin_pending = None
         self._toolmap_timer_generation = 0
         self._validator_mapping_lock = threading.Lock()
         self._validator_mapping_implementation = None
         self._validator_mapping_signature = None
         self._preflight_gate_started = False
         self._preflight_file_info = None
+        self._preflight_start_token = None
         self._mesh_area_command = None
         self._chamber_job_command = None
         self._completion_snapshot = CompletionSnapshot()
@@ -1321,6 +1326,12 @@ class RmeCompatibilityPlugin(
             if event == Events.DISCONNECTED and self._firmware_reconnect_pending():
                 self._begin_firmware_reconnect()
         elif event == Events.PRINT_STARTED:
+            token = self._print_start_token(self._rme_comm)
+            with self._state_lock:
+                if (token is not None and token == self._preflight_start_token
+                        and not self._preflight_gate_started):
+                    # An already-finished start event must not recreate its gate.
+                    return
             with self._state_lock:
                 self._pause_reason.reset()
                 self._state["pause"] = self._pause_reason.snapshot()
@@ -1336,6 +1347,8 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 self._priority_controls_sent.clear()
                 self._firmware_completed_controls.clear()
+            if token is not None:
+                self._prepare_print_start(self._rme_comm)
             self._handle_print_started(payload)
         elif event == Events.PRINT_CANCELLING:
             with self._state_lock:
@@ -1829,11 +1842,39 @@ class RmeCompatibilityPlugin(
         loop starts, including when another plugin calls ``start_print``.
         """
         if script_type == "gcode" and script_name == "beforePrintStarted":
+            self._prepare_print_start(comm_instance)
+        elif script_type == "gcode" and script_name == "afterPrintCancelled":
+            with self._state_lock:
+                if self._state.get("supported") or (self._preflight_gate_started and not self._print_job_gcode_sent):
+                    self._skip_cancel_script = True
+        return None
+
+    def _print_start_token(self, comm_instance):
+        """Identify a start, including consecutive starts of the same file."""
+        current = getattr(comm_instance, "_currentFile", None)
+        try:
+            started = current.getStartTime()
+            if not isinstance(started, (int, float)) or not 0 < started < float("inf"):
+                return None
+            return (self._connection_generation, current.getFileLocation(),
+                    current.getFilename(), started)
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    def _prepare_print_start(self, comm_instance):
+        # OctoPrint emits PrintStarted BEFORE running beforePrintStarted. Either
+        # callback may arrive first; approval between them must not open a new
+        # review. A filename alone cannot identify repeated prints safely.
+        with self._toolmap_prepare_lock:
+            token = self._print_start_token(comm_instance)
+            if token is not None and token == self._preflight_start_token:
+                return
             self._completion_snapshot.reset()
             if self._printer_transfer_active():
                 self._stop_print_started_during_transfer()
-                return None
+                return
             with self._state_lock:
+                self._preflight_start_token = token
                 self._preflight_file_info = self._startup_file_info(comm_instance)
                 self._preflight_gate_started = True
                 self._toolmap_review_completed = False
@@ -1844,11 +1885,6 @@ class RmeCompatibilityPlugin(
             self._prepare_mesh_area()
             self._prepare_chamber_job()
             self._prepare_completion_move()
-        elif script_type == "gcode" and script_name == "afterPrintCancelled":
-            with self._state_lock:
-                if self._state.get("supported") or (self._preflight_gate_started and not self._print_job_gcode_sent):
-                    self._skip_cancel_script = True
-        return None
 
     def gcode_queuing_hook(self, comm_instance, phase, cmd, cmd_type, gcode,
                            subcode=None, tags=None, *args, **kwargs):
@@ -2013,7 +2049,12 @@ class RmeCompatibilityPlugin(
         """Fold one parsed firmware record into the authoritative UI state."""
         kind = record["record"]
         if kind == "review":
-            self._defer(self._handle_tool_review, record)
+            with self._state_lock:
+                self._toolmap_review_records.put(dict(record))
+                start_worker = not self._toolmap_review_worker
+                self._toolmap_review_worker = True
+            if start_worker:
+                self._defer(self._drain_tool_review_records)
             return
         if kind == "firmware_running":
             with self._state_lock:
@@ -2658,6 +2699,8 @@ class RmeCompatibilityPlugin(
                 self._defer(self._accept_firmware_spool, dict(record))
             elif kind == "rme_error":
                 message = record["message"].lower()
+                if "workflow=tool_review" in message:
+                    self._toolmap_review_begin_pending = None
                 if "workflow=tool_review" in message and "printer_busy" in message and self._toolmap_review_prompt:
                     self._toolmap_review_prompt["message"] = "Close the other printer dialog; mapping and fallback review will open automatically."
                 if "unsupported" in message and "spool_join" in message:
@@ -4267,6 +4310,7 @@ class RmeCompatibilityPlugin(
             prompt = self._state.get("prompt")
             review_id = (self._toolmap_review_prompt or prompt or {}).get("review_id")
             self._toolmap_review_prompt = None
+            self._toolmap_review_begin_pending = None
             was_toolmap = prompt and prompt.get("kind") == "toolmap"
             if was_toolmap:
                 self._state["prompt"] = None
@@ -4294,7 +4338,9 @@ class RmeCompatibilityPlugin(
     def _start_native_tool_review(self):
         """Feature-detected LCD review; legacy firmware retains the host gate."""
         with self._state_lock:
-            prompt = self._state.get("prompt") or {}
+            if not self._toolmap_hold_active:
+                return
+            prompt = self._toolmap_review_prompt or self._state.get("prompt") or {}
             requirements = prompt.get("requirements") or []
             if not self._state.get("session", {}).get("tool_review") or not requirements:
                 return
@@ -4303,6 +4349,17 @@ class RmeCompatibilityPlugin(
             if any(not re.fullmatch(r"[A-Za-z0-9_+.-]{1,7}", str(row.get("material", ""))) for row in requirements):
                 return
             review_id = prompt.get("review_id") or (uuid.uuid4().int & 0x7fffffff) or 1
+            now = time.monotonic()
+            last = self._toolmap_review_last_begin
+            # A QUERY can overtake normal FIFO commands. Its old completed ID
+            # is not an acknowledgement of a queued BEGIN. Keep one in flight
+            # until its own response/error, rather than building a backlog.
+            if self._toolmap_review_begin_pending == review_id:
+                return
+            if last and last[0] == review_id and now - last[1] < 5:
+                return
+            self._toolmap_review_last_begin = (review_id, now)
+            self._toolmap_review_begin_pending = review_id
             prompt["review_id"] = review_id
             prompt.setdefault("native_state", "pending")
             prompt["timer_paused"] = True
@@ -4314,7 +4371,26 @@ class RmeCompatibilityPlugin(
         commands += ["@RME REVIEW TOOL id=%d logical=%d material=%s" %
                      (review_id, row["logical"], row["material"]) for row in requirements]
         commands += ["@RME REVIEW SHOW id=%d" % review_id]
-        self._send_commands(commands)
+        try:
+            self._send_commands(commands)
+        except Exception:
+            with self._state_lock:
+                self._toolmap_review_begin_pending = None
+            raise
+
+    def _drain_tool_review_records(self):
+        """Keep wire order without doing validation on the receive thread."""
+        while True:
+            with self._state_lock:
+                try:
+                    record = self._toolmap_review_records.get_nowait()
+                except queue.Empty:
+                    self._toolmap_review_worker = False
+                    return
+            try:
+                self._handle_tool_review(record)
+            except Exception:
+                self._logger.exception("Could not process printer tool review")
 
     def _handle_tool_review(self, record):
         """Validate the same mapping and fallback snapshot for LCD and web."""
@@ -4327,6 +4403,7 @@ class RmeCompatibilityPlugin(
                     self._start_native_tool_review()
                 return
             review_id = prompt["review_id"]
+            self._toolmap_review_begin_pending = None
             state = record.get("state")
             current = self._toolmap_review_prompt or self._state.get("prompt") or {}
             current["native_state"] = state
@@ -4334,9 +4411,14 @@ class RmeCompatibilityPlugin(
                 # Only acknowledge a snapshot we actually validated.
                 if prompt.get("commit_revision") != record.get("revision"):
                     return
-                self._settings.set(["default_toolmap"], {str(k): v for k, v in prompt["mapping"].items()})
-                self._settings.set_boolean(["default_toolmap_enabled"], prompt["enabled"])
-                self._settings.save()
+                try:
+                    self._settings.set(["default_toolmap"], {str(k): v for k, v in prompt["mapping"].items()})
+                    self._settings.set_boolean(["default_toolmap_enabled"], prompt["enabled"])
+                    self._settings.save()
+                except Exception:
+                    # Live mapping is validated and committed; optional default
+                    # persistence must not strand an approved print.
+                    self._logger.exception("Could not save approved mapping defaults")
                 self._release_toolmap_hold(native_complete=True)
                 return
             if state == "cancelled":
@@ -4399,7 +4481,7 @@ class RmeCompatibilityPlugin(
                 current.update(mapping=mapping, enabled=enabled, commit_revision=record["revision"])
                 self._state["toolmap"] = {"mapping": mapping, "enabled": enabled}
             self._send_commands(["@RME REVIEW COMMIT id=%d revision=%d" % (review_id, record["revision"])])
-        except (ValueError, KeyError, TypeError) as error:
+        except Exception as error:
             self._logger.warning("Printer mapping/fallback review rejected: %s", error)
             with self._state_lock:
                 current = self._toolmap_review_prompt or self._state.get("prompt") or {}

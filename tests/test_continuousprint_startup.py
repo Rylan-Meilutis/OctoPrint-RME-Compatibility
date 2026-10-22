@@ -78,6 +78,48 @@ class ContinuousPrintStartup(unittest.TestCase):
             self.assertTrue(p._toolmap_preflight_decision)
             self.assertEqual([True], p._printer.holds)
 
+    def test_event_approval_before_script_does_not_create_second_review(self):
+        for event_first in (True, False):
+            with self.subTest(event_first=event_first), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "real.gcode").write_text("G28\nT1\n")
+                p = self.plugin(root)
+                self.select(p, root, "real.gcode")
+                p._rme_comm._currentFile.getStartTime = lambda: 100.0
+                event = lambda: p.on_event("PrintStarted", {"origin": "local", "path": "real.gcode"})
+                script = lambda: p.gcode_script_hook(p._rme_comm, "gcode", "beforePrintStarted")
+                first, second = (event, script) if event_first else (script, event)
+                first()
+                self.assertEqual([True], p._printer.holds)
+                p._release_toolmap_hold(native_complete=True)
+                second()
+                self.assertEqual([True, False], p._printer.holds)
+                self.assertIsNone(p._state["prompt"])
+                # The same filename started again is a genuinely new review.
+                p._rme_comm._currentFile.getStartTime = lambda: 101.0
+                first()
+                second()
+                self.assertEqual([True, False, True], p._printer.holds)
+                p._release_toolmap_hold(native_complete=True)
+                # A delayed event after terminal cleanup is not a new start.
+                p._preflight_gate_started = False
+                p._toolmap_review_completed = False
+                event()
+                self.assertEqual([True, False, True, False], p._printer.holds)
+                self.assertIsNone(p._state["prompt"])
+
+    def test_control_event_before_script_respects_exact_opt_out(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "control.gcode").write_text("@pause\n; skip_validation\n; skip-rme-toolmapping\n")
+            p = self.plugin(root)
+            self.select(p, root, "control.gcode")
+            p._rme_comm._currentFile.getStartTime = lambda: 100.0
+            p.on_event("PrintStarted", {"origin": "local", "path": "control.gcode"})
+            p.gcode_script_hook(p._rme_comm, "gcode", "beforePrintStarted")
+            self.assertEqual([], p._printer.holds)
+            self.assertIsNone(p._state["prompt"])
+
     def test_simultaneous_start_callbacks_acquire_only_one_review_hold(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

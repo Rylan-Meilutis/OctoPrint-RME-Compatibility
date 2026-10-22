@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.0b143 — 2026-10-22
+
+- Share one preflight review between PrintStarted and beforePrintStarted,
+  identified by the connector's actual file start time. Approval between the
+  callbacks cannot create a second review; repeated prints still get reviewed.
+- Process native review replies in wire order. Allow only one unacknowledged
+  BEGIN and bound retries, preventing stale priority queries from building a
+  review-command backlog. Stop creating reviews after the hold is released.
+- Keep printer/web approval on the validated revision commit gate. Reject
+  validator failures visibly, and do not strand a committed review if saving
+  optional mapping defaults fails.
+- Preserve Continuous Print control-file opt-outs and add regressions for
+  approval timing, cancellation, repeated files, ordered replies, and failures.
+- Verified with 383 host tests, 15 browser suites and real OctoPrint 1.11.8
+  connector checks. Supervised physical-printer validation remains pending.
+
 ## 0.1.0b142 — 2026-10-21
 
 - Inspect the connector's actual selected file at synchronous startup, rather

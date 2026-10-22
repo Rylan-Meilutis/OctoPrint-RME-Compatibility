@@ -10,6 +10,23 @@ from octoprint_rme_compatibility.plugin import RmeCompatibilityPlugin
 
 
 class RealControlStartup(unittest.TestCase):
+    def test_real_connector_start_token_changes_for_repeated_same_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'part.gcode'
+            path.write_text('G28\nT1\n')
+            selected = PrintingGcodeFileInformation(str(path))
+            comm = types.SimpleNamespace(_currentFile=selected)
+            plugin = RmeCompatibilityPlugin()
+            self.assertIsNone(plugin._print_start_token(comm))
+            selected.start()
+            first = plugin._print_start_token(comm)
+            self.assertIsNotNone(first)
+            self.assertEqual(first, plugin._print_start_token(comm))
+            selected.close()
+            selected.start()
+            self.assertNotEqual(first, plugin._print_start_token(comm))
+            selected.close()
+
     def test_real_selected_file_overrides_stale_ui_control_and_print_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             storage = LocalFileStorage(directory)
