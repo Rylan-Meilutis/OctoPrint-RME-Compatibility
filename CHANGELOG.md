@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.0b145 — 2026-10-22
+
+- Reset browser mapping drafts when the job/review identity changes, even
+  when both jobs use the same tool count. A previous incompatible mapping
+  must not leave the next print's web approval disabled.
+- Explain why approval is unavailable and keep native review readiness and
+  material validation mandatory. The matching printer submission/commit
+  gate is unchanged; no early printing or duplicate submission is allowed.
+- Add a real browser regression for an eight-tool ASA/TPU print, including
+  TPU/FLEX agreement, loading/editing/submitted states and new-job drafts.
+- Companion firmware resolves TPU/FLEX family aliases for compatibility
+  checks and shows actual loaded colors and material names instead of
+  internal profile codes on the printer mapping screen and footer.
+
 ## 0.1.0b144 — 2026-10-22
 
 - Gate startup at OctoPrint's tagged M110 boundary as well as the script hook.

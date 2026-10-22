@@ -264,6 +264,21 @@ $(function () {
                 return self.mappingChoices(row).some(function (choice) { return choice.tool === tool && choice.compatible; });
             });
         });
+        self.toolmapApprovalProblem = ko.pureComputed(function () {
+            var prompt = self.prompt();
+            if (prompt.kind !== "toolmap") return "No print tool review is pending.";
+            if (prompt.review_id && prompt.native_state !== "editing") {
+                return prompt.message || "Waiting for the printer tool review to open.";
+            }
+            if (!self.graphicalMappingRows().length) return "Slicer material metadata is unavailable; no material mapping can be verified.";
+            var invalid = self.graphicalMappingRows().filter(function (row) {
+                var tool = self.mappingEnabled() ? Number(row.physical()) : row.logical;
+                return !self.mappingChoices(row).some(function (choice) { return choice.tool === tool && choice.compatible; });
+            });
+            return invalid.length ? "Choose a matching loaded material for slicer T" + invalid[0].logical +
+                " (" + self.mappingRequirement(invalid[0]).material + ")." : "";
+        });
+        self.canApplyToolmap = ko.pureComputed(function () { return !self.toolmapApprovalProblem(); });
         self.spooljoinFrom = ko.observable(0);
         self.spooljoinTo = ko.observable(1);
         self.spooljoin = ko.pureComputed(function () { return self.state().spooljoin || {}; });
@@ -1325,7 +1340,11 @@ $(function () {
             var prompt = value.prompt || {};
             self.updateToolmapNotice(prompt);
             self.updateFirmwareRecoveryNotice(value.workflow, prompt);
-            if (prompt.kind === "toolmap" && (oldPrompt.kind !== "toolmap" || self.mappingRows().length !== prompt.count)) {
+            // Jobs normally have the same tool count. Do not carry disabled or
+            // mismatched drafts from an earlier review into a new print.
+            function reviewIdentity(p) { return p.job_id || p.review_id || p.updated; }
+            if (prompt.kind === "toolmap" && (oldPrompt.kind !== "toolmap" ||
+                    reviewIdentity(oldPrompt) !== reviewIdentity(prompt) || self.mappingRows().length !== Number(prompt.count))) {
                 var count = Number(prompt.count || 0);
                 var options = [];
                 var rows = [];
@@ -1448,7 +1467,7 @@ $(function () {
             $("#rme-tool-mapping").modal("show");
         };
         self.applyToolmap = function () {
-            if (!self.materialMappingValid()) return;
+            if (!self.canApplyToolmap()) return;
             var mapping = {};
             var used = {};
             var duplicate = false;
