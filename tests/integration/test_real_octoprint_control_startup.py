@@ -105,6 +105,18 @@ class RealControlStartup(unittest.TestCase):
                         p.on_event('PrintStarted', {'origin': 'local', 'path': path.name})
                         self.assertIs(prompt, p._state['prompt'])
                         self.assertEqual(c._job_on_hold.counter, 1)
+                        p._state['loaded_filaments'] = [{'tool': 0, 'material': 'ASA'}, {'tool': 1, 'material': 'ASA'}]
+                        p._configure_validator_mapping = Mock()
+                        review_id = prompt['review_id']
+                        p._handle_tool_review(dict(id=review_id, state='submitted', revision=7,
+                                                  mapping='0,1', enabled=0, joins='none'))
+                        self.assertTrue(c.job_on_hold)
+                        self.assertNotIn('M75', list(c._send_queue.queue))
+                        p._handle_tool_review(dict(id=review_id, state='complete', revision=7))
+                        self.assertFalse(c.job_on_hold)
+                        self.assertIn('M75', list(c._send_queue.queue))
+                        self.assertNotIn('G28 XY', list(c._send_queue.queue))
+                        p._settings.save.assert_not_called()
                 finally:
                     c._currentFile.close()
 

@@ -47,6 +47,7 @@ from .spoolmanager import (
 from .storage import StateStore, TransferManifestStore
 from .preview import read_preview
 from . import object_safety
+from .startup_analysis import BackgroundAnalysis
 from .progress import progress_command
 from .mesh_area import analyze as analyze_mesh_area, is_adaptive_probe
 from .completion_snapshot import CompletionSnapshot
@@ -152,6 +153,9 @@ class RmeCompatibilityPlugin(
         self._expected_spoolman_event_until = 0
         self._toolmap_hold_active = False
         self._toolmap_prepare_lock = threading.RLock()
+        self._toolmap_defaults_lock = threading.Lock()
+        self._toolmap_defaults_generation = 0
+        self._startup_analysis = BackgroundAnalysis()
         self._toolmap_review_completed = False
         self._toolmap_review_processing = None
         self._toolmap_review_prompt = None
@@ -1277,6 +1281,9 @@ class RmeCompatibilityPlugin(
 
     def on_event(self, event, payload):
         """Handle core lifecycle plus SpoolManager's documented event names."""
+        if event == "FileSelected":
+            self._defer(self._warm_startup_analysis, payload or {})
+            return
         if event in (Events.PRINT_STARTED, Events.PRINT_PAUSED, Events.PRINT_RESUMED,
                      Events.PRINT_CANCELLING, Events.PRINT_DONE, Events.PRINT_FAILED, Events.PRINT_CANCELLED):
             selected = self._startup_file_info(self._rme_comm)
@@ -4175,18 +4182,59 @@ class RmeCompatibilityPlugin(
         # physical tool before its first-command validation gate is released.
         self._configure_validator_mapping(normalized if enabled else {})
         self._send_commands(commands)
-        self._settings.set(["default_toolmap"], {str(k): v for k, v in normalized.items()})
-        self._settings.set_boolean(["default_toolmap_enabled"], enabled)
-        self._settings.save()
         if release_hold:
             if prompt.get("review_id"):
                 self._send_commands(["@RME REVIEW SUBMIT id=%d" % prompt["review_id"]])
             else:
+                self._start_approved_serial_job()
                 self._release_toolmap_hold()
+                self._save_toolmap_defaults_later(normalized, enabled)
+        else:
+            self._save_toolmap_defaults_later(normalized, enabled)
 
     def _handle_print_started(self, payload):
         """Backstop older connectors and enrich the pre-start prompt payload."""
         self._prepare_toolmap_prompt(payload, reuse_preflight=True)
+
+    def _start_approved_serial_job(self):
+        # Only after the matching firmware commit (or validated legacy review),
+        # and before releasing the host hold. M75 establishes the serial UI
+        # without picking a tool, heating, moving, or bypassing the review.
+        if self._preflight_gate_started and self._toolmap_hold_active:
+            self._send_commands(["M75"])
+
+    def _save_toolmap_defaults_later(self, mapping, enabled):
+        with self._state_lock:
+            self._toolmap_defaults_generation += 1
+            generation = self._toolmap_defaults_generation
+        values = {str(k): v for k, v in mapping.items()}
+        def save():
+            try:
+                with self._toolmap_defaults_lock:
+                    if generation != self._toolmap_defaults_generation:
+                        return
+                    self._settings.set(["default_toolmap"], values)
+                    self._settings.set_boolean(["default_toolmap_enabled"], enabled)
+                    self._settings.save()
+            except Exception:
+                self._logger.exception("Could not save approved mapping defaults")
+        self._defer(save)
+
+    def _warm_startup_analysis(self, file_info):
+        """File selection may warm optional results, but never holds a print."""
+        try:
+            path = file_info.get("path") or file_info.get("name")
+            if not self._state.get("supported") or file_info.get("origin") != "local" or not str(path).lower().endswith((".gcode", ".gco")):
+                return
+            disk = self._file_manager.path_on_disk("local", path)
+            machine = self._state.get("machine") or {}
+            if machine.get("mesh_area") == 1:
+                self._startup_analysis.request(disk, "mesh", analyze_mesh_area, float(machine["x_max"]), float(machine["y_max"]))
+            octopod = getattr(getattr(self, "_plugin_manager", None), "plugins", {}).get("octopod")
+            if octopod and octopod.enabled:
+                self._startup_analysis.request(disk, "end", analyze_end_move)
+        except (OSError, KeyError, TypeError, ValueError, AttributeError):
+            self._logger.debug("Optional selected-file analysis unavailable", exc_info=True)
 
     def _prepare_completion_move(self):
         with self._state_lock:
@@ -4202,12 +4250,12 @@ class RmeCompatibilityPlugin(
             path = file_info.get("path") or file_info.get("name")
             if file_info.get("origin") != "local" or not str(path).lower().endswith((".gcode", ".gco")):
                 return
-            target = analyze_end_move(self._file_manager.path_on_disk("local", path))
+            target = self._startup_analysis.request(self._file_manager.path_on_disk("local", path), "end", analyze_end_move)
             with self._state_lock:
                 self._completion_move = target
             if target:
                 self._completion_snapshot.arm(self._plugin_manager, self._printer, self._logger)
-            self._logger.info("RME automatic completion snapshot: %s", target or "no unambiguous final bed move")
+            self._logger.info("RME automatic completion snapshot: %s", target or "analysis not ready or no unambiguous final bed move; startup will not wait")
         except (OSError, UnicodeError, KeyError, TypeError, ValueError, AttributeError):
             self._logger.debug("RME automatic completion snapshot analysis unavailable", exc_info=True)
 
@@ -4245,12 +4293,12 @@ class RmeCompatibilityPlugin(
             path = file_info.get("path") or file_info.get("name")
             if file_info.get("origin") != "local" or not str(path).lower().endswith((".gcode", ".gco")):
                 return
-            command = analyze_mesh_area(
-                self._file_manager.path_on_disk("local", path),
+            command = self._startup_analysis.request(
+                self._file_manager.path_on_disk("local", path), "mesh", analyze_mesh_area,
                 float(machine["x_max"]), float(machine["y_max"]))
             with self._state_lock:
                 self._mesh_area_command = command
-            self._logger.info("RME adaptive mesh: %s", command or "using slicer bounds (geometry not safely analyzable)")
+            self._logger.info("RME adaptive mesh: %s", command or "using slicer bounds (analysis not ready or geometry not safely analyzable)")
         except (OSError, UnicodeError, KeyError, TypeError, ValueError, AttributeError):
             self._logger.debug("RME mesh analysis unavailable; keeping slicer bounds", exc_info=True)
 
@@ -4572,15 +4620,9 @@ class RmeCompatibilityPlugin(
                 # Only acknowledge a snapshot we actually validated.
                 if prompt.get("commit_revision") != record.get("revision"):
                     return
-                try:
-                    self._settings.set(["default_toolmap"], {str(k): v for k, v in prompt["mapping"].items()})
-                    self._settings.set_boolean(["default_toolmap_enabled"], prompt["enabled"])
-                    self._settings.save()
-                except Exception:
-                    # Live mapping is validated and committed; optional default
-                    # persistence must not strand an approved print.
-                    self._logger.exception("Could not save approved mapping defaults")
+                self._start_approved_serial_job()
                 self._release_toolmap_hold(native_complete=True)
+                self._save_toolmap_defaults_later(prompt["mapping"], prompt["enabled"])
                 return
             if state == "cancelled":
                 self._printer.cancel_print()

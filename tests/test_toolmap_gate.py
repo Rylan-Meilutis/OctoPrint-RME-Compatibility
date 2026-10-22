@@ -187,6 +187,10 @@ class ToolmapGateTests(unittest.TestCase):
             f.write("G90\nM83\nG0 X10 Y20\nG1 X30 Y40 E1\n")
             f.flush()
             plugin._file_manager = types.SimpleNamespace(path_on_disk=lambda origin, path: f.name)
+            plugin._warm_startup_analysis({'origin': 'local', 'path': 'part.gcode'})
+            worker = plugin._startup_analysis.worker
+            if worker is not None:
+                worker.join(2)
             plugin._prepare_mesh_area()
         self.assertEqual(plugin._mesh_area_command,
                          "@RME MESH SET x=9.00 y=19.00 width=22.00 height=22.00")

@@ -73,6 +73,10 @@ class EndMoveTests(unittest.TestCase):
             f.write(PREFIX + MOVE + TAIL)
             f.flush()
             plugin._file_manager = types.SimpleNamespace(path_on_disk=lambda *a: f.name)
+            plugin._warm_startup_analysis({'origin': 'local', 'path': 'part.gcode'})
+            worker = plugin._startup_analysis.worker
+            if worker is not None:
+                worker.join(2)
             plugin._prepare_completion_move()
         self.assertEqual(plugin._completion_move[1], MOVE)
         plugin._state["supported"] = False

@@ -33,3 +33,18 @@ Opening Settings no longer triggers a full RME configuration refresh or a
 USB scan. Existing live state is shown immediately; periodic tune polling
 and explicit refresh controls remain available. This removes an identified
 source of extra work, not proof that every source of browser delay is fixed.
+
+## Approval handoff and optional analysis
+
+After a revision-matched firmware review commit (or validated legacy web
+approval), the plugin queues `M75` before releasing the host's mapping hold.
+This establishes serial-print mode before subsequent startup work. It does
+not pick a tool, heat or move, and is never sent for an unapproved/stale review
+or an opted-out Continuous Print helper. Firmware screen-transition timing
+still requires hardware verification.
+
+Mapping-default persistence runs separately after release; filesystem writes
+must not hold up an approved job. Material/fallback validation remains required.
+Optional mesh/end-move scans warm a bounded cache on file selection. Startup
+does not wait for them: a miss keeps slicer probing and omits inferred automatic
+completion capture for that job. Late results cannot alter a running print.

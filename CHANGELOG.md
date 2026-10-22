@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.0b147 — 2026-10-22
+
+- Plugin-only release; no firmware update or reflashing required.
+
+- Queue M75 immediately after a revision-matched review commit, before
+  releasing the host mapping hold, so the firmware can enter serial-print
+  mode without waiting for the first sliced startup command. Stale and
+  unapproved reviews cannot trigger this transition.
+- Move optional whole-file mesh/completion analysis to a bounded background
+  cache warmed on file selection. Startup never waits for those scans; a
+  cold cache keeps slicer probing and omits inferred completion capture for
+  that job. Late analysis results cannot modify a running job.
+- Save optional mapping defaults asynchronously after approval/release,
+  retaining validation and preventing stale saves from replacing newer defaults.
+- Verified: 403 Python tests, 18 browser suites and three real OctoPrint
+  connector checks. Firmware screen timing and hardware latency remain unverified.
+
 ## 0.1.0b146 — 2026-10-22
 
 - Plugin-only release; no firmware update or flashing required for these fixes.

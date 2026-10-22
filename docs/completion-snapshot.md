@@ -10,7 +10,8 @@ with a diagnostic log; hardware verification is required.
 
 Starting with b119, RME automatically inserts a capture barrier for recognizable end-of-print bed
 lowering in local text jobs. No slicer change or re-slicing is needed for the
-standard sequence below. At preflight it finds a final absolute Z-only move
+standard sequence below. A bounded background scan started on file selection
+finds a final absolute Z-only move
 of at least 10 mm after extrusion, nozzle/bed heater-off commands and P0 tool
 parking, with only ordinary shutdown/status commands afterward. At that exact
 file byte position it queues M400, the host-only `@RME SNAPSHOT` marker, then
@@ -21,6 +22,9 @@ missing parking/shutdown, analysis over 5 seconds/100 MiB, and remote/binary
 jobs are not guessed. Missing file-position tags or commands rewritten by
 other plugins also skip automatic capture. Analysis runs only with OctoPod
 enabled and an RME-compatible printer. Original file contents are unchanged.
+Preflight uses only an already-ready result. Cold or still-running analysis
+skips inferred automatic capture for that job rather than delaying approval
+or printing. A late result cannot arm or change an already-started job.
 
 For an ambiguous/custom sequence, the explicit marker remains available.
 Add it after parking and M400, before the final Z move and lights-off:

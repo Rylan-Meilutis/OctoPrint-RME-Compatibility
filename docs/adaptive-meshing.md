@@ -3,8 +3,11 @@
 Requires RME Compatibility 0.1.0b118 and firmware advertising `mesh_area=1` in
 `@RME MACHINE QUERY` (October 4 builds of 6.9.0-RME / 6.10.1-RME, except MINI).
 
-At the synchronous before-print boundary, RME scans the selected local .gcode
-or .gco file once. It tracks absolute/relative XY and E, E resets, tool changes,
+Selection of a local .gcode/.gco file warms a bounded background analysis cache.
+The synchronous before-print boundary only consumes an already-ready result;
+it never waits for a whole-file scan. A cold/incomplete cache keeps the slicer's
+original probing for this job; late results cannot change a running job.
+The detector tracks absolute/relative XY and E, E resets, tool changes,
 and positive-extrusion moves. All tools, skirts/brims and towers contribute;
 pure travel and stationary purge do not. I/J arcs use a conservative full-circle
 envelope. It adds a 1 mm line-width allowance and inserts this immediately before
