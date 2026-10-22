@@ -11,6 +11,29 @@ $(function () {
         }
         self.loginState = parameters[1];
         self.printerState = parameters[2];
+        self.installPauseConfirmation = function () {
+            var controls = self.printerState;
+            if (controls._rmePauseConfirmation) return;
+            controls._rmePauseConfirmation = true;
+            ["pause", "onlyPause"].forEach(function (name) {
+                var original = controls[name];
+                if (typeof original !== "function") return;
+                controls[name] = function () {
+                    var context = this, args = arguments;
+                    if (!self.state().supported || (name === "pause" && ko.unwrap(controls.isPaused))) {
+                        return original.apply(context, args);
+                    }
+                    var proceed = function () { original.apply(context, args); };
+                    if (typeof showConfirmationDialog === "function") {
+                        showConfirmationDialog({message: gettext("Pause this print?"),
+                            cancel: gettext("No, continue the print"),
+                            proceed: gettext("Yes, pause the print"), onproceed: proceed});
+                    } else if (window.confirm(gettext("Pause this print?"))) {
+                        proceed();
+                    }
+                };
+            });
+        };
         self.files = parameters[3];
         self.settingsStorageExpanded = ko.observable(false);
         self.settingsPrinterExpanded = ko.observable(false);
@@ -1965,6 +1988,7 @@ $(function () {
             $("a[href='#tab_plugin_rme_compatibility_objects']").closest("li").hide();
         };
         self.onAllBound = function () {
+            self.installPauseConfirmation();
             // Keep the bound editor outside tab overflow/transform containers.
             $("#rme-tool-mapping").detach().appendTo(document.body);
             self.installDashboardHeight();

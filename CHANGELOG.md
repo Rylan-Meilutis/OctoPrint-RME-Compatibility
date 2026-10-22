@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.0b142 — 2026-10-21
+
+- Inspect the connector's actual selected file at synchronous startup, rather
+  than an asynchronous UI snapshot that may still describe the previous job.
+  Respect the @pause / skip_validation / skip-rme-toolmapping control script;
+  keep real print files gated even when the stale UI file was opted out.
+- Serialize review creation and ignore prior-file lifecycle events so delayed
+  Continuous Print callbacks cannot duplicate a review, release the next job's
+  hold, or inject a stale pause/resume/cancel into the new print.
+- Confirm manual web Pause actions while preserving immediate automatic/API
+  safety pauses, Continuous Print user-interaction pauses, and normal Resume.
+- Add startup-transition/concurrency regressions, browser confirmation tests,
+  and a check using real OctoPrint 1.11.8 file objects and local storage.
+- Use the accompanying firmware for empty-tool INDX startup resume and printer
+  LCD pause confirmation. No physical printer was moved or flashed in testing.
+
 ## 0.1.0b141 — 2026-10-21
 
 - Synchronize tool mapping and fallback/SpoolJoin review with capable printer

@@ -149,6 +149,7 @@ class RmeCompatibilityPlugin(
         self._expected_provider_events = {}
         self._expected_spoolman_event_until = 0
         self._toolmap_hold_active = False
+        self._toolmap_prepare_lock = threading.RLock()
         self._toolmap_review_completed = False
         self._toolmap_review_processing = None
         self._toolmap_review_prompt = None
@@ -157,6 +158,7 @@ class RmeCompatibilityPlugin(
         self._validator_mapping_implementation = None
         self._validator_mapping_signature = None
         self._preflight_gate_started = False
+        self._preflight_file_info = None
         self._mesh_area_command = None
         self._chamber_job_command = None
         self._completion_snapshot = CompletionSnapshot()
@@ -1181,6 +1183,14 @@ class RmeCompatibilityPlugin(
 
     def on_event(self, event, payload):
         """Handle core lifecycle plus SpoolManager's documented event names."""
+        if event in (Events.PRINT_STARTED, Events.PRINT_PAUSED, Events.PRINT_RESUMED,
+                     Events.PRINT_CANCELLING, Events.PRINT_DONE, Events.PRINT_FAILED, Events.PRINT_CANCELLED):
+            selected = self._startup_file_info(self._rme_comm)
+            job = payload or {}
+            if (selected and not selected.get("unresolved") and job.get("origin") and job.get("path")
+                    and (job["origin"], job["path"]) != (selected["origin"], selected["path"])):
+                self._logger.debug("Ignoring late lifecycle event for prior file: %s %s", event, job.get("path"))
+                return
         normalized_event = str(event).lower()
         if normalized_event.startswith("plugin_spoolmanager_"):
             self._defer(self._handle_spoolmanager_event, normalized_event, payload or {})
@@ -1256,6 +1266,7 @@ class RmeCompatibilityPlugin(
                 self._pending_provider_profile_sync = None
                 self._transfer_conflict_cancel = False
                 self._preflight_gate_started = False
+                self._preflight_file_info = None
                 self._toolmap_preflight_decision = None
                 self._toolmap_review_completed = False
                 self._chamber_job_command = None
@@ -1303,6 +1314,10 @@ class RmeCompatibilityPlugin(
             self._publish()
             if event == Events.DISCONNECTED and self._toolmap_hold_active:
                 self._release_toolmap_hold()
+            if event == Events.DISCONNECTED:
+                with self._state_lock:
+                    self._preflight_file_info = None
+                    self._preflight_gate_started = False
             if event == Events.DISCONNECTED and self._firmware_reconnect_pending():
                 self._begin_firmware_reconnect()
         elif event == Events.PRINT_STARTED:
@@ -1375,6 +1390,7 @@ class RmeCompatibilityPlugin(
                 self._firmware_completed_controls.clear()
                 self._transfer_conflict_cancel = False
                 self._preflight_gate_started = False
+                self._preflight_file_info = None
                 self._toolmap_preflight_decision = None
                 self._toolmap_review_completed = False
                 workflow = self._state.get("workflow") or {}
@@ -1818,6 +1834,7 @@ class RmeCompatibilityPlugin(
                 self._stop_print_started_during_transfer()
                 return None
             with self._state_lock:
+                self._preflight_file_info = self._startup_file_info(comm_instance)
                 self._preflight_gate_started = True
                 self._toolmap_review_completed = False
                 self._toolmap_preflight_decision = None
@@ -3983,7 +4000,7 @@ class RmeCompatibilityPlugin(
             info = self._plugin_manager.plugins.get("octopod")
             if not info or not info.enabled:
                 return
-            file_info = ((self._printer.get_current_data() or {}).get("job") or {}).get("file") or {}
+            file_info = self._preflight_selected_file()
             path = file_info.get("path") or file_info.get("name")
             if file_info.get("origin") != "local" or not str(path).lower().endswith((".gcode", ".gco")):
                 return
@@ -4004,7 +4021,7 @@ class RmeCompatibilityPlugin(
             return
         permitted = False
         try:
-            info = ((self._printer.get_current_data() or {}).get("job") or {}).get("file") or {}
+            info = self._preflight_selected_file()
             path = info.get("path") or info.get("name")
             if info.get("origin") == "local" and str(path).lower().endswith((".gcode", ".gco")):
                 requirements = read_requirements(self._file_manager.path_on_disk("local", path), 8, include_unknown=True)
@@ -4026,7 +4043,7 @@ class RmeCompatibilityPlugin(
         if not supported or machine.get("mesh_area") != 1:
             return
         try:
-            file_info = ((self._printer.get_current_data() or {}).get("job") or {}).get("file") or {}
+            file_info = self._preflight_selected_file()
             path = file_info.get("path") or file_info.get("name")
             if file_info.get("origin") != "local" or not str(path).lower().endswith((".gcode", ".gco")):
                 return
@@ -4038,6 +4055,39 @@ class RmeCompatibilityPlugin(
             self._logger.info("RME adaptive mesh: %s", command or "using slicer bounds (geometry not safely analyzable)")
         except (OSError, UnicodeError, KeyError, TypeError, ValueError, AttributeError):
             self._logger.debug("RME mesh analysis unavailable; keeping slicer bounds", exc_info=True)
+
+    def _startup_file_info(self, comm_instance):
+        """Use the connector's selected file at its synchronous start boundary.
+
+        The UI state monitor is asynchronous and can still describe the prior
+        job while Continuous Print is starting its next control/print file.
+        Never skip validation based on that stale file's contents.
+        """
+        current = getattr(comm_instance, "_currentFile", None)
+        try:
+            filename = current.getFilename()
+            origin = current.getFileLocation()
+            if isinstance(filename, str) and filename and origin == "sdcard":
+                return {"origin": origin, "path": filename, "name": os.path.basename(filename)}
+            if isinstance(filename, str) and filename and origin == "local":
+                try:
+                    path = self._file_manager.path_in_storage(origin, filename)
+                    if isinstance(path, str) and path:
+                        return {"origin": origin, "path": path, "name": os.path.basename(path)}
+                except Exception:
+                    self._logger.debug("Could not resolve connector preflight file", exc_info=True)
+                # Never fall back to a stale opted-out UI file if a known
+                # connector file could not be resolved. Retain the safe gate.
+                return {"origin": origin, "path": filename, "unresolved": True}
+        except (AttributeError, TypeError, ValueError, OSError):
+            pass
+        return None
+
+    def _preflight_selected_file(self):
+        with self._state_lock:
+            if self._preflight_file_info is not None:
+                return dict(self._preflight_file_info)
+        return ((self._printer.get_current_data() or {}).get("job") or {}).get("file") or {}
 
     def _selected_job_has_executable_gcode(self):
         """Return false only when the selected text job is provably inert.
@@ -4054,8 +4104,9 @@ class RmeCompatibilityPlugin(
         only after inspecting text.
         """
         try:
-            current = self._printer.get_current_data() or {}
-            file_info = (current.get("job") or {}).get("file") or {}
+            file_info = self._preflight_selected_file()
+            if file_info.get("unresolved"):
+                return True
             origin = file_info.get("origin")
             path = file_info.get("path") or file_info.get("name")
             if not origin or not path:
@@ -4065,7 +4116,7 @@ class RmeCompatibilityPlugin(
             local_path = self._file_manager.path_on_disk(origin, path)
             safe_control_prelude = {"M77", "@PAUSE"}
             saw_control_command = False
-            with open(local_path, "r", encoding="utf-8", errors="replace") as job_file:
+            with open(local_path, "r", encoding="utf-8-sig", errors="replace") as job_file:
                 for raw_line in job_file:
                     code, separator, comment = raw_line.partition(";")
                     if not code.strip() and separator and comment.strip().lower() in {
@@ -4100,6 +4151,14 @@ class RmeCompatibilityPlugin(
             return True
 
     def _prepare_toolmap_prompt(
+        self, payload=None, record_preflight=False, reuse_preflight=False
+    ):
+        # The synchronous script and asynchronous PrintStarted callback may
+        # arrive together. Only one may acquire the host hold/create a review.
+        with self._toolmap_prepare_lock:
+            return self._prepare_toolmap_prompt_serialized(payload, record_preflight, reuse_preflight)
+
+    def _prepare_toolmap_prompt_serialized(
         self, payload=None, record_preflight=False, reuse_preflight=False
     ):
         """Hold a multi-tool local job before any of its queued G-code is sent."""
@@ -4165,7 +4224,7 @@ class RmeCompatibilityPlugin(
             requirements = []
             file_info = {}
             try:
-                file_info = (self._printer.get_current_data().get("job") or {}).get("file") or {}
+                file_info = self._preflight_selected_file()
                 path = file_info.get("path") or file_info.get("name")
                 if path and str(path).lower().endswith((".gcode", ".gco")):
                     requirements = read_requirements(
