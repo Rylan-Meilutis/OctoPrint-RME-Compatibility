@@ -11,16 +11,17 @@
         <g data-bind="css: {cancelled: cancelled}">
             <path fill="none" stroke="#08c" stroke-width="0.6" data-bind="attr: {d: path}"></path>
             <path class="rme-object-hit" fill="none" stroke="transparent" stroke-width="2" role="button" tabindex="0"
-                  data-bind="attr: {d: path, 'aria-label': 'Cancel ' + object}, click: $root.cancelOverviewObject, event: {keydown: function(d,e) { if(e.key === 'Enter') $root.cancelOverviewObject(d); return true; }}">
+                  data-bind="attr: {d: path, 'aria-label': 'Cancel ' + object, 'aria-disabled': !cancellable}, click: $root.cancelOverviewObject, event: {keydown: function(d,e) { if(e.key === 'Enter') $root.cancelOverviewObject(d); return true; }}">
                 <title data-bind="text: object"></title>
             </path>
         </g>
         <!-- /ko -->
     </svg>
-    <div class="rme-object-list" data-bind="foreach: cancelObjects">
+    <div class="rme-object-list" data-bind="foreach: objectList">
         <p><strong data-bind="text: object"></strong>
             <span data-bind="visible: cancelled"> — canceled</span>
-            <button class="btn btn-mini" data-bind="click: $root.cancelOverviewObject, enable: !cancelled">Cancel object</button>
+            <span data-bind="visible: completed && !cancelled"> — finished</span>
+            <button class="btn btn-mini" data-bind="click: $root.cancelOverviewObject, enable: cancellable, attr: {title: reason}">Cancel object</button>
         </p>
     </div>
 </div>

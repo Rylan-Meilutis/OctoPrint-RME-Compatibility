@@ -47,6 +47,45 @@ Validation before deployment: exercise both screens during a serial print,
 verify timeout and tool changes, reconnect, and run a heap/stack soak. Automated
 queue-backpressure tests do not substitute for a physical-printer soak.
 
+## Safe host-side object cancellation
+
+The RME object preview integrates with the compatible Cancel Object plugin for
+local text G-code. Cancellation checks the actual streaming file, print-start
+identity and byte position, not percent, height or elapsed time. Each object's
+last extrusion across the entire file is indexed: a per-layer stop is not a
+completion marker. Cancellation is refused once the final extrusion has been
+queued, even if the printer is still executing buffered moves. The RME API
+also rejects a stale selection from an earlier print of the same file.
+
+Enable slicer object labeling. Use a stable unique name for each instance/copy:
+
+```gcode
+@Object boat id:0 copy 0
+; only this object's moves
+@Objectstop boat id:0 copy 0
+; entire shared tool-change, purge, prime-tower and priming sequence here
+T1
+; shared extrusion moves
+@Object other id:1 copy 0
+; only this object's moves
+@Objectstop other id:1 copy 0
+```
+
+Prusa `; printing object ...` / `; stop printing object ...` comments are also
+recognized. Use absolute XYZ positioning. Tool changes and the *entire* shared
+priming/tower sequence must be outside object spans, including the last stop
+before end G-code. Missing/ambiguous boundaries, relative XYZ object moves, or
+tool/tower blocks inside a span disable cancellation rather than guessing.
+Non-motion commands (including tool selection, heaters, extrusion mode and
+coordinate resets) remain in the stream. Explicit object-stop labels end the
+host skip even when the external plugin's optional stop-tag setting is off.
+The adapter also validates cancellation through that plugin's API/helper.
+
+These completion checks apply to local OctoPrint streaming, not native USB/SD
+printing or unlabeled/binary files. Native firmware M486 cancellation is a
+separate path. Regenerate unlabeled G-code in the slicer; the plugin does not
+rewrite user files to invent object boundaries.
+
 ## Pause causes and progress telemetry (b123)
 
 The reported pause cause appears above the main progress bar and in RME only

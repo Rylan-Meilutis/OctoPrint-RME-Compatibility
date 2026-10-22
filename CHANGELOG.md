@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.0b146 — 2026-10-22
+
+- Plugin-only release; no firmware update or flashing required for these fixes.
+- Correlate printer-file downloads with the requesting browser instance. Other
+  devices and newly opened/reloaded browsers no longer automatically save a
+  previously completed download. Explicit downloads of cached copies still work.
+- Validate local-stream object cancellation against the actual file, print
+  identity and final labeled extrusion across all layers. Reject finished
+  objects, stale selections and unverifiable boundaries; update the RME UI
+  from byte-position telemetry rather than height/time estimates.
+- Preserve non-motion commands, including tool selection, heaters, extrusion
+  modes and coordinate resets, through the compatible Cancel Object filter.
+  Honor explicit object-stop boundaries even when its stop-tag setting is off.
+  Tool changes and the entire shared purge/prime-tower sequence must be outside
+  object spans. Unsafe/unlabeled files fail closed; user files are not rewritten.
+- Verify the supplied dual-color Benchy against the real upstream filter.
+  Its one labeled object and shared tool/tower boundaries pass; the unlabeled
+  globes example still needs slicer object labels enabled. Native USB/SD M486
+  completion handling is outside this host-side fix.
+- Verified: 397 Python tests, 18 browser suites and three real OctoPrint
+  startup/queue integration checks. Physical printer validation remains pending.
+
 ## 0.1.0b145 — 2026-10-22
 
 - Reset browser mapping drafts when the job/review identity changes, even

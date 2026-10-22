@@ -9,6 +9,7 @@ from __future__ import absolute_import
 
 import copy
 import functools
+import hashlib
 import os
 import queue
 import re
@@ -45,6 +46,7 @@ from .spoolmanager import (
 )
 from .storage import StateStore, TransferManifestStore
 from .preview import read_preview
+from . import object_safety
 from .progress import progress_command
 from .mesh_area import analyze as analyze_mesh_area, is_adaptive_probe
 from .completion_snapshot import CompletionSnapshot
@@ -365,6 +367,7 @@ class RmeCompatibilityPlugin(
 
     def on_after_startup(self):
         """Restore durable UI state and start non-serial background workers."""
+        self._cancel_object_implementation()
         data_folder = self.get_plugin_data_folder()
         self._firmware_directory = os.path.join(data_folder, "firmware")
         os.makedirs(self._firmware_directory, exist_ok=True)
@@ -616,6 +619,7 @@ class RmeCompatibilityPlugin(
             "respond": ["action"],
             "stuck": ["action"],
             "apply_toolmap": ["mapping", "enabled"],
+            "cancel_object": ["id", "file", "job_id"],
             "reset_toolmap": [],
             "apply_machine_profile": [],
             "query_controls": [],
@@ -718,6 +722,22 @@ class RmeCompatibilityPlugin(
             self._send_priority_service(
                 "@RME STUCK %s" % action, "stuck_response"
             )
+        elif command == "cancel_object":
+            if not getattr(Permissions, "PRINT", Permissions.CONTROL).can():
+                flask.abort(403)
+            implementation = self._cancel_object_implementation()
+            if implementation is None:
+                raise ValueError("A compatible Cancel Object plugin is required")
+            context = self._object_context()
+            if not context.get("active") or not context.get("job_id") or data["file"] != context.get("file") or data["job_id"] != context.get("job_id"):
+                raise ValueError("This object selection belongs to another print; refresh before cancelling")
+            entries = [row for row in implementation.object_list if row.get("id") == data["id"]]
+            if len(entries) != 1:
+                raise ValueError("No unique Cancel Object mapping; refresh before cancelling")
+            error = self._object_cancel_error(entries[0]["object"], data["job_id"])
+            if error:
+                raise ValueError(error)
+            implementation.cancel_object(data["id"])
         elif command == "apply_toolmap":
             prompt = self._toolmap_review_prompt or self._state.get("prompt") or {}
             if prompt.get("review_id") and data.get("review_id") != prompt["review_id"]:
@@ -985,7 +1005,7 @@ class RmeCompatibilityPlugin(
             permission = getattr(Permissions, "FILES_DOWNLOAD", Permissions.STATUS)
             if not permission.can():
                 flask.abort(403)
-            self._start_storage_download(data["path"], data["target"])
+            self._start_storage_download(data["path"], data["target"], data.get("request_id"))
         elif command == "partial_resume":
             self._resume_partial_transfer()
         elif command == "partial_defer":
@@ -1013,7 +1033,73 @@ class RmeCompatibilityPlugin(
             return flask.jsonify(error="Select a local text G-code file first."), 409
         result = read_preview(self._file_manager.path_on_disk("local", path))
         result["file"] = path
+        self._cancel_object_implementation()
+        context = self._object_context()
+        index = object_safety.read_index(self._file_manager.path_on_disk("local", path))
+        result["job_id"] = context.get("job_id")
+        result["filepos"] = context.get("position")
+        result["active"] = context.get("active", False) and context.get("file") == path
+        drawn = {row["name"] for row in result["objects"]}
+        result["objects"].extend(dict(name=name, segments=[]) for name in index if name not in drawn)
+        for row in result["objects"]:
+            row["safety_reason"] = (index.get(row["name"]) or {}).get("reason")
+            row.update(object_safety.status(index.get(row["name"]), context.get("position"), result["active"]))
+        if not index:
+            result.setdefault("warnings", []).append("Enable object start/stop labels in the slicer to cancel objects safely.")
         return flask.jsonify(result)
+
+    def _object_context(self):
+        """Read the real streaming-file identity/position, never a percentage."""
+        data = self._printer.get_current_data()
+        selected = (data.get("job") or {}).get("file") or {}
+        path = selected.get("path")
+        if selected.get("origin") != "local" or not path:
+            return {}
+        disk = self._file_manager.path_on_disk("local", path)
+        current = getattr(getattr(self._printer, "_comm", None), "_currentFile", None)
+        if current is None or not all(callable(getattr(current, method, None)) for method in ("getFilename", "getStartTime", "getFilepos")):
+            return dict(file=path, disk=disk, active=False)
+        if os.path.realpath(current.getFilename()) != os.path.realpath(disk):
+            return dict(file=path, disk=disk, active=False)
+        started = current.getStartTime()
+        position = current.getFilepos()
+        if not isinstance(position, int) or isinstance(position, bool) or position < 0:
+            position = None
+        active = bool(self._printer.is_printing() or self._printer.is_paused()) and started is not None
+        identity = repr((os.path.realpath(disk), started, object_safety.fingerprint(disk)))
+        return dict(file=path, disk=disk, active=active, position=position,
+                    job_id=hashlib.sha256(identity.encode("utf8")).hexdigest() if active else None)
+
+    def _object_cancel_error(self, name, expected_job_id=None):
+        try:
+            context = self._object_context()
+            if expected_job_id is not None and context.get("job_id") != expected_job_id:
+                return "The active print changed; refresh object selection"
+            rows = object_safety.read_index(context["disk"]) if context.get("disk") else {}
+            fresh = self._object_context()
+            if context.get("job_id") != fresh.get("job_id"):
+                return "The active print changed; refresh object selection"
+            return object_safety.status(rows.get(name), fresh.get("position"), fresh.get("active", False))["reason"]
+        except (OSError, ValueError, AttributeError, TypeError):
+            self._logger.warning("Could not verify cancellation boundaries", exc_info=True)
+            return "Object boundaries or the current print position could not be verified"
+
+    def _cancel_object_implementation(self):
+        info = getattr(getattr(self, "_plugin_manager", None), "plugins", {}).get("cancelobject")
+        implementation = getattr(info, "implementation", None)
+        if implementation is None:
+            return None
+        enabled = lambda: bool(self._state.get("supported") and self._state.get("connected"))
+        if not object_safety.install(implementation, enabled, self._object_cancel_error):
+            return None
+        return implementation
+
+    def object_atcommand_queuing_hook(self, comm_instance, phase, command, parameters, *args, **kwargs):
+        if phase != "queuing" or not self._state.get("supported"):
+            return
+        implementation = self._cancel_object_implementation()
+        if implementation and str(command).lower() == str(implementation.reptag).lower() + "stop":
+            object_safety.stop_span(implementation)
 
     @octoprint.plugin.BlueprintPlugin.route("/selected-spools", methods=["GET"])
     @octoprint.plugin.BlueprintPlugin.route("/filament-report", methods=["GET"])
@@ -1036,7 +1122,7 @@ class RmeCompatibilityPlugin(
             flask.abort(403)
         data = flask.request.get_json(silent=True) or {}
         job = self._start_storage_download(
-            data.get("path", ""), data.get("target", "pi")
+            data.get("path", ""), data.get("target", "pi"), data.get("request_id")
         )
         response = flask.jsonify({"job": job, "state": self._public_state()})
         response.status_code = 202
@@ -1931,6 +2017,9 @@ class RmeCompatibilityPlugin(
             return (None,)
         if not supported:
             return None
+        implementation = self._cancel_object_implementation()
+        if implementation is not None:
+            object_safety.prepare_queue(implementation)
         if phase == "queuing" and {"source:job", "source:file"}.intersection(tags):
             with self._state_lock:
                 chamber_job = self._chamber_job_command
@@ -6501,19 +6590,24 @@ class RmeCompatibilityPlugin(
             raise
         return True
 
-    def _start_storage_download(self, remote_path, target):
+    def _start_storage_download(self, remote_path, target, request_id=None):
         """Queue one printer-to-Pi transfer and optionally hand it to a browser."""
         self._require_storage()
         target = str(target or "pi").lower()
         if target not in ("pi", "device"):
             raise ValueError("Download target must be pi or device")
+        # Correlation only, never an authorization token. Each browser instance
+        # owns its automatic save; shared/persisted snapshots are not actions.
+        if request_id is not None and (not isinstance(request_id, str) or
+                re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id) is None):
+            raise ValueError("Invalid download request identifier")
         filename = secure_filename(
             os.path.basename(str(remote_path).replace("\\", "/").rstrip("/"))
         ) or "download.bin"
         job_id = uuid.uuid4().hex
         stored_name = job_id + "--" + filename
         job = {
-            "id": job_id, "path": str(remote_path), "name": filename,
+            "id": job_id, "request_id": request_id, "path": str(remote_path), "name": filename,
             "stored_name": stored_name, "target": target, "status": "queued",
             "size": 0, "offset": 0, "progress": 0, "error": None,
             "updated": int(time.time()),
@@ -7316,6 +7410,7 @@ __plugin_hooks__ = {
     "octoprint.server.sockjs.emit": __plugin_implementation__.sockjs_emit_hook,
     "octoprint.comm.protocol.action": __plugin_implementation__.action_command_hook,
     "octoprint.comm.protocol.atcommand.sending": __plugin_implementation__.atcommand_sending_hook,
+    "octoprint.comm.protocol.atcommand.queuing": (__plugin_implementation__.object_atcommand_queuing_hook, 0),
     "octoprint.comm.protocol.gcode.received": __plugin_implementation__.gcode_received_hook,
     "octoprint.comm.protocol.gcode.queuing": (__plugin_implementation__.gcode_queuing_hook, 1),
     "octoprint.comm.protocol.gcode.sent": __plugin_implementation__.gcode_sent_hook,

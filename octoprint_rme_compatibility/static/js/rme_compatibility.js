@@ -40,7 +40,20 @@ $(function () {
         self.settingsFirmwareExpanded = ko.observable(false);
         self.cancelObjects = ko.observableArray([]);
         self.objectPreview = ko.observable({objects: [], bed: []});
+        self.objectProgress = ko.observable(null);
         self.previewFile = null;
+        self.fromCurrentData = function (data) {
+            var file = ((data.job || {}).file || {}).path;
+            var flags = (data.state || {}).flags || {};
+            var active = !!(flags.printing || flags.paused);
+            var previous = self.objectProgress();
+            self.objectProgress({file: file, active: active, position: (data.progress || {}).filepos});
+            if (active && (!previous || !previous.active || previous.file !== file)) {
+                self.previewFile = null;
+                updateSelectedPreview();
+            }
+        };
+        self.fromHistoryData = self.fromCurrentData;
         self.installDashboardHeight = function () {
             var element = document.getElementById("tab_plugin_dashboard");
             var dashboard = element && ko.dataFor(element);
@@ -111,23 +124,50 @@ $(function () {
                 self.objectStatus("No unique Cancel Object mapping for this shape. Refresh the object list first.");
                 return;
             }
-            if (obj.cancelled || !window.confirm("Cancel object " + obj.object + "?")) return;
+            if (obj.cancelled) return;
+            if (!obj.cancellable) { self.objectStatus(obj.reason || "This object cannot be cancelled safely."); return; }
+            if (!window.confirm("Cancel object " + obj.object + "?")) return;
             var file = self.objectPreview().file;
+            var jobId = self.objectPreview().job_id;
             $.getJSON(BASEURL + "plugin/rme_compatibility/object-preview").done(function (data) {
-                if (!file || data.file !== file) { self.refreshObjects(); return; }
-                OctoPrint.simpleApiCommand("cancelobject", "cancel", {cancelled: obj.id})
+                if (!file || !jobId || data.file !== file || data.job_id !== jobId) { self.refreshObjects(); return; }
+                var rows = (data.objects || []).filter(function (row) { return row.name === obj.object; });
+                if (rows.length !== 1 || !rows[0].cancellable) {
+                    self.objectStatus(rows.length === 1 ? rows[0].reason : "Object labels are unavailable.");
+                    return;
+                }
+                self.command("cancel_object", {id: obj.id, file: file, job_id: jobId})
                 .done(self.refreshObjects)
                 .fail(function (xhr) { self.objectStatus(responseError(xhr)); });
             }).fail(function (xhr) { self.objectStatus(responseError(xhr)); });
         };
+        function objectSafety(object, metadata) {
+            var preview = self.objectPreview(), progress = self.objectProgress();
+            var active = progress ? progress.active && progress.file === preview.file : preview.active;
+            var position = progress && progress.file === preview.file ? progress.position : preview.filepos;
+            var end = metadata && metadata.last_print_end;
+            var completed = typeof position === "number" && typeof end === "number" && position >= end;
+            var reason = !metadata || typeof end !== "number" ? "No unambiguous object labels were found" : metadata.safety_reason;
+            if (!active || !preview.job_id) reason = "No matching local print is active";
+            else if (completed) reason = "This object has finished being queued for printing";
+            else if (typeof position !== "number") reason = "Current print position is unavailable";
+            if (object.id === undefined || object.id === null) reason = "No unique Cancel Object mapping";
+            return Object.assign({}, object, {completed: completed, cancellable: !reason && !object.cancelled, reason: reason});
+        }
+        self.objectList = ko.pureComputed(function () {
+            return self.cancelObjects().map(function (object) {
+                var matches = (self.objectPreview().objects || []).filter(function (row) { return row.name === object.object; });
+                return objectSafety(object, matches.length === 1 ? matches[0] : null);
+            });
+        });
         self.objectMap = ko.pureComputed(function () {
             return (self.objectPreview().objects || []).map(function (o) {
                 var matches = self.cancelObjects().filter(function (c) { return c.object === o.name; });
                 var match = matches.length === 1 ? matches[0] : {};
-                return {object: o.name, id: match.id, cancelled: !!match.cancelled,
+                return objectSafety({object: o.name, id: match.id, cancelled: !!match.cancelled,
                     path: o.segments.map(function (s) {
                         return "M" + s[0] + " " + (-s[1]) + "L" + s[2] + " " + (-s[3]);
-                    }).join(" ")};
+                    }).join(" ")}, o);
             });
         });
         self.state = ko.observable({
@@ -188,6 +228,10 @@ $(function () {
         self.downloadChoiceEntry = ko.observable(null);
         self.handledDownloadJobs = {};
         self.activeDownloadJobId = null;
+        // Deliberately not persisted: reopening OctoPrint must not replay a
+        // previous automatic save, even for the same authenticated user.
+        self.downloadClientId = window.crypto && typeof window.crypto.randomUUID === "function" ?
+            window.crypto.randomUUID() : Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
         self.nativeFilesKey = "";
         self.fileManagerBridgeInstalled = false;
         self.allViewModelsBound = false;
@@ -1311,7 +1355,8 @@ $(function () {
                 self.files.requestData();
             }
             var download = value.storage && value.storage.download;
-            if (download && download.id && self.activeDownloadJobId === "pending") {
+            var ownsDownload = download && download.request_id === self.downloadClientId;
+            if (ownsDownload && download.id && self.activeDownloadJobId === "pending") {
                 self.activeDownloadJobId = download.id;
             }
             if (download && download.id && self.activeDownloadJobId === download.id) {
@@ -1321,7 +1366,7 @@ $(function () {
                 progressDialog.find(".progress").toggleClass("active", ["queued", "downloading"].indexOf(download.status) >= 0);
                 progressDialog.find(".rme-download-progress-close").toggle(download.status === "ready" || download.status === "error");
             }
-            if (download && download.id && download.status === "ready" && !self.handledDownloadJobs[download.id]) {
+            if (ownsDownload && download.id && download.status === "ready" && !self.handledDownloadJobs[download.id]) {
                 self.handledDownloadJobs[download.id] = true;
                 if (download.target === "device") {
                     var link = document.createElement("a");
@@ -1873,7 +1918,7 @@ $(function () {
             dialog.find(".rme-download-progress-text").text("Waiting for the printer transfer queue…");
             dialog.find(".rme-download-progress-close").hide();
             dialog.modal("show");
-            self.command("storage_download", {path: entry.path, target: target}).fail(function (xhr) {
+            self.command("storage_download", {path: entry.path, target: target, request_id: self.downloadClientId}).fail(function (xhr) {
                 self.activeDownloadJobId = null;
                 dialog.find(".progress").removeClass("active");
                 dialog.find(".rme-download-progress-text").text(responseError(xhr));

@@ -27,6 +27,12 @@ def _install_octoprint_stubs():
     werkzeug.utils = werkzeug_utils
     sys.modules["werkzeug"] = werkzeug
     sys.modules["werkzeug.utils"] = werkzeug_utils
+    werkzeug_exceptions = types.ModuleType("werkzeug.exceptions")
+    class Conflict(Exception):
+        def __init__(self, description):
+            super().__init__(description)
+    werkzeug_exceptions.Conflict = Conflict
+    sys.modules["werkzeug.exceptions"] = werkzeug_exceptions
 
     plugin_module = types.ModuleType("octoprint.plugin")
     for name in (

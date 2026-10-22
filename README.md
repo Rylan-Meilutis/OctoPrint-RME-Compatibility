@@ -155,6 +155,9 @@ underlying operation and persisted state are equivalent.
   rename directories/files, delete entries, start USB prints, and flash BBFs.
   Paths are percent-encoded and cannot escape the printer's user-visible USB
   volume.
+  Automatic device downloads belong only to the browser instance that requested
+  them; opening another browser or reloading OctoPrint does not replay a saved
+  transfer. Cached Pi copies remain available by explicitly clicking Download.
 - Persists the current firmware's required upload manifest before BEGIN,
   including the exact final path, size, SHA-256, retained Pi source, and
   selected transport. Interrupted transfers survive OctoPrint/printer
