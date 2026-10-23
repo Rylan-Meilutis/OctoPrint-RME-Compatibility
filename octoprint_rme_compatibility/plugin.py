@@ -165,6 +165,7 @@ class RmeCompatibilityPlugin(
         self._toolmap_review_begin_pending = None
         self._toolmap_timer_generation = 0
         self._validator_mapping_lock = threading.Lock()
+        self._cancel_reconcile_lock = threading.Lock()
         self._validator_mapping_implementation = None
         self._validator_mapping_signature = None
         self._preflight_gate_started = False
@@ -3828,6 +3829,23 @@ class RmeCompatibilityPlugin(
             return
         host_state = self._printer.get_state_id()
         phase = record.get("pause_phase")
+        if host_state == "CANCELLING":
+            # Post-print filtration is independent of the print lifecycle.
+            # A terminal firmware snapshot may recover a missed cancel-position
+            # callback, but can never declare a moving/stopping printer done.
+            terminal = phase == "none" and record.get("printer_state") in ("STOPPED", "FINISHED", "IDLE")
+            complete = getattr(comm, "_cancel_preparation_done", None)
+            if terminal and callable(complete) and self._cancel_reconcile_lock.acquire(blocking=False):
+                try:
+                    current = getattr(comm, "_currentFile", None)
+                    if self._printer.get_state_id() == "CANCELLING" and current is not None and not current.done:
+                        self._logger.info("Firmware is %s; completing host cancellation independently of post-print filtering", record["printer_state"])
+                        # Use core's callback/marker path. Do not fake ACKs,
+                        # force OPERATIONAL, or bypass pending serial cleanup.
+                        complete(check_timer=False)
+                finally:
+                    self._cancel_reconcile_lock.release()
+            return
         if host_state not in ("PRINTING", "PAUSING", "PAUSED", "RESUMING"):
             return  # Never resurrect a cancelled, finished, or disconnected job.
         if phase in ("pausing", "paused"):

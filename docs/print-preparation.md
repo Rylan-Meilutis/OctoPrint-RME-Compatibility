@@ -48,3 +48,13 @@ must not hold up an approved job. Material/fallback validation remains required.
 Optional mesh/end-move scans warm a bounded cache on file selection. Startup
 does not wait for them: a miss keeps slicer probing and omits inferred automatic
 completion capture for that job. Late results cannot alter a running print.
+
+## Cancellation and post-print filtering
+
+Post-print filtering is background work, not a reason to keep a job marked as
+printing or cancelling. With an active RME session, a precise terminal firmware
+snapshot (`STOPPED`, `FINISHED` or `IDLE`, with `pause_phase=none`) can recover
+a missed OctoPrint cancellation-position callback. Only a host job already in
+Cancelling is eligible. The normal core cancellation callback/queue marker
+owns completion: no fake acknowledgements, forced Operational state, or
+premature completion during motion, parking, pausing or other cleanup.

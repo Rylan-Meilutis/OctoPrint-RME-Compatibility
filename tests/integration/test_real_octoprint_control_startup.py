@@ -14,6 +14,37 @@ from octoprint_rme_compatibility.plugin import RmeCompatibilityPlugin
 
 
 class RealControlStartup(unittest.TestCase):
+    def test_firmware_stopped_cancel_completes_core_callback_while_filtering(self):
+        c = MachineCom.__new__(MachineCom)
+        c.close = Mock()
+        c._state = c.STATE_CANCELLING
+        c._currentFile = types.SimpleNamespace(done=False)
+        c._action_users_mutex = threading.Lock()
+        c._action_users = {'cancel': 'operator'}
+        c._cancel_mutex = threading.Lock()
+        c._cancel_position_timer = Mock()
+        c._recordFilePosition = Mock()
+        c._callback = types.SimpleNamespace(on_comm_print_job_cancelled=Mock())
+        markers = []
+        c.sendCommand = lambda command, **kwargs: markers.append(command)
+        c._continue_sending = Mock()
+        c._changeState = lambda state: setattr(c, '_state', state)
+        p = RmeCompatibilityPlugin()
+        p._logger = logging.getLogger(__name__)
+        p._rme_comm = c
+        p._printer = types.SimpleNamespace(get_state_id=lambda: 'CANCELLING' if c._state == c.STATE_CANCELLING else 'OPERATIONAL')
+        p._state.update(supported=True, connected=True, workflow={'workflow': 'filtration', 'phase': 'post_print', 'state': 'active'})
+        record = dict(printer_state='STOPPED', pause_phase='none')
+        p._state['session'].update(active=True, **record)
+        p._reconcile_printer_pause(record)
+        self.assertTrue(c._currentFile.done)
+        c._callback.on_comm_print_job_cancelled.assert_called_once_with(user='operator')
+        self.assertEqual(c.STATE_CANCELLING, c._state) # No forced state change / fake ACK.
+        self.assertEqual(1, len(markers))
+        markers[0].run()
+        self.assertEqual(c.STATE_OPERATIONAL, c._state)
+        self.assertEqual('active', p._state['workflow']['state'])
+
     def test_real_start_with_suppressed_scripts_and_delayed_events_holds_before_file(self):
         for opted_out in (False, True):
             with self.subTest(opted_out=opted_out), tempfile.TemporaryDirectory() as directory:

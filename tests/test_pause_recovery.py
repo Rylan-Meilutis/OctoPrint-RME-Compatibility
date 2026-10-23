@@ -1,5 +1,7 @@
 import unittest
 import threading
+import logging
+from types import SimpleNamespace
 from unittest.mock import Mock
 from test_toolmap_gate import RmeCompatibilityPlugin, _Printer
 
@@ -27,6 +29,27 @@ class Comm:
 
 
 class PauseRecovery(unittest.TestCase):
+    def test_terminal_cancel_snapshot_completes_core_callback_even_while_filtering(self):
+        for state in ('STOPPED', 'FINISHED', 'IDLE'):
+            p = self.plugin('CANCELLING')
+            p._logger = logging.getLogger('cancel-reconcile-test')
+            p._rme_comm._currentFile = SimpleNamespace(done=False)
+            p._rme_comm._cancel_preparation_done = Mock(side_effect=lambda **kw: setattr(p._rme_comm._currentFile, 'done', True))
+            p._state['workflow'] = dict(workflow='filtration', state='active', phase='post_print')
+            self.snapshot(p, 'none', state)
+            p._rme_comm._cancel_preparation_done.assert_called_once_with(check_timer=False)
+            self.snapshot(p, 'none', state)
+            p._rme_comm._cancel_preparation_done.assert_called_once()
+            self.assertEqual('CANCELLING', p._rme_comm.state) # Core marker owns state change.
+            self.assertEqual([], p._printer.forced_commands)
+
+    def test_cancel_snapshot_cannot_finalize_motion_cleanup_or_stale_state(self):
+        for state, phase in (('PRINTING', 'none'), ('BUSY', 'none'), ('STOPPED', 'paused'), ('PAUSED', 'paused')):
+            p = self.plugin('CANCELLING')
+            p._rme_comm._currentFile = SimpleNamespace(done=False)
+            p._rme_comm._cancel_preparation_done = Mock()
+            self.snapshot(p, phase, state)
+            p._rme_comm._cancel_preparation_done.assert_not_called()
     def test_collision_dialog_survives_missing_event_and_requires_explicit_response(self):
         p = self.plugin()
         self.snapshot(p, "paused", "ATTENTION")

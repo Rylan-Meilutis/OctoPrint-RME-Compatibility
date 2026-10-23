@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.0b148 — 2026-10-23
+
+- Recover a missed cancellation-position callback when an active RME session
+  confirms the printer is terminal and not paused/resuming. Post-print filtering
+  is independent background work and does not block this recovery.
+- Only reconcile a host already Cancelling. Use the normal OctoPrint callback
+  and queue marker, not fake acknowledgements or a forced Operational state;
+  moving/stopping printers and stale snapshots cannot be declared finished.
+- Companion firmware corrects retained cancel/finish-screen lighting and
+  the remaining implicit-tool OctoPrint compatibility paths. Flash the matching
+  refreshed firmware for those firmware-side fixes; the plugin alone is not
+  a replacement for them. Physical cancellation/lighting validation is pending.
+
 ## 0.1.0b147 — 2026-10-22
 
 - Plugin-only release; no firmware update or reflashing required.
