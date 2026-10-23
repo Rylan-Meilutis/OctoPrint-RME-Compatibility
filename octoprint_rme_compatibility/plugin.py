@@ -4204,7 +4204,8 @@ class RmeCompatibilityPlugin(
             if prompt.get("review_id"):
                 self._send_commands(["@RME REVIEW SUBMIT id=%d" % prompt["review_id"]])
             else:
-                self._start_approved_serial_job()
+                if not self._start_approved_serial_job():
+                    return
                 self._release_toolmap_hold()
                 self._save_toolmap_defaults_later(normalized, enabled)
         else:
@@ -4219,7 +4220,33 @@ class RmeCompatibilityPlugin(
         # and before releasing the host hold. M75 establishes the serial UI
         # without picking a tool, heating, moving, or bypassing the review.
         if self._preflight_gate_started and self._toolmap_hold_active:
+            with self._state_lock:
+                prompt = self._toolmap_review_prompt or self._state.get("prompt") or {}
+                review_id = prompt.get("review_id")
+                start_token = self._preflight_start_token
+            plugins = getattr(getattr(self, "_plugin_manager", None), "plugins", {})
+            info = plugins.get("Nozzle_Filament_Validator") or plugins.get("nozzle_filament_validator")
+            validator = getattr(getattr(info, "implementation", None), "validate_file_for_start", None)
+            if callable(validator):
+                selected = self._preflight_selected_file()
+                path = selected.get("path") or selected.get("name")
+                if selected.get("origin") != "local" or not path:
+                    raise RuntimeError("Cannot resolve confirmed file for nozzle/filament validation")
+                disk = self._file_manager.path_on_disk("local", path)
+                self._logger.info("RME mapping approved; validating nozzle and filament before serial start")
+                if not validator(disk):
+                    self._logger.warning("RME startup blocked by nozzle/filament validation")
+                    self._printer.cancel_print()
+                    return False
+            # Validation can show an operator prompt. A cancellation or another
+            # job during that wait must never send M75 or release its hold.
+            with self._state_lock:
+                current = self._toolmap_review_prompt or self._state.get("prompt") or {}
+                if (not self._toolmap_hold_active or start_token != self._preflight_start_token
+                        or current.get("review_id") != review_id):
+                    return False
             self._send_commands(["M75"])
+        return True
 
     def _save_toolmap_defaults_later(self, mapping, enabled):
         with self._state_lock:
@@ -4638,20 +4665,27 @@ class RmeCompatibilityPlugin(
                 # Only acknowledge a snapshot we actually validated.
                 if prompt.get("commit_revision") != record.get("revision"):
                     return
-                self._start_approved_serial_job()
-                self._release_toolmap_hold(native_complete=True)
-                self._save_toolmap_defaults_later(prompt["mapping"], prompt["enabled"])
+            elif state == "submitted":
+                token = (review_id, record.get("revision"))
+                if self._toolmap_review_processing is not None:
+                    return
+                self._toolmap_review_processing = token
+        # Connector callbacks can synchronously run other plugins' queue hooks
+        # and await metadata from our receive workers. Never hold _state_lock
+        # while sending or releasing the counted job hold.
+        if state == "complete":
+            if not self._start_approved_serial_job():
                 return
-            if state == "cancelled":
-                self._printer.cancel_print()
-                return
-            if state != "submitted":
-                self._schedule_publish()
-                return
-            token = (review_id, record.get("revision"))
-            if self._toolmap_review_processing is not None:
-                return
-            self._toolmap_review_processing = token
+            self._release_toolmap_hold(native_complete=True)
+            self._save_toolmap_defaults_later(prompt["mapping"], prompt["enabled"])
+            self._logger.info("RME mapping review %s committed; startup hold released", review_id)
+            return
+        if state == "cancelled":
+            self._printer.cancel_print()
+            return
+        if state != "submitted":
+            self._schedule_publish()
+            return
         try:
             count = int(prompt["count"])
             values = [int(value) for value in str(record["mapping"]).split(",")]

@@ -1,6 +1,7 @@
 """Job-scoped LCD/web mapping and failover confirmation regressions."""
 import copy
 import logging
+import threading
 import types
 import unittest
 from unittest.mock import Mock
@@ -48,6 +49,54 @@ class ToolReview(unittest.TestCase):
         self.assertIsNone(p._state["prompt"])
         self.assertEqual(p._printer.holds, [False])
         self.assertEqual(p._printer.forced_commands, [])
+
+    def test_commit_handoff_does_not_hold_state_lock_across_connector_callbacks(self):
+        p = self.plugin()
+        self.submit(p)
+        p._preflight_gate_started = True
+        original = p._printer.set_job_on_hold
+        def release(value, *args, **kwargs):
+            # Releasing the real connector hold synchronously invokes queue
+            # hooks. A validator may await metadata on another worker.
+            acquired = []
+            def metadata_worker():
+                got_lock = p._state_lock.acquire(timeout=0.2)
+                acquired.append(got_lock)
+                if got_lock:
+                    p._state_lock.release()
+            worker = threading.Thread(target=metadata_worker)
+            worker.start()
+            worker.join(1)
+            self.assertEqual(acquired, [True])
+            return original(value, *args, **kwargs)
+        p._printer.set_job_on_hold = release
+        p._handle_tool_review(dict(id=123, state='complete', revision=19))
+        self.assertFalse(p._toolmap_hold_active)
+
+    def test_nfv_runs_after_commit_before_m75_and_hold_release(self):
+        for outcome in (True, False, 'cancelled'):
+            with self.subTest(outcome=outcome):
+                p = self.plugin()
+                self.submit(p)
+                p._preflight_gate_started = True
+                p._preflight_selected_file = lambda: dict(origin='local', path='part.gcode')
+                p._file_manager = types.SimpleNamespace(path_on_disk=lambda origin, path: '/uploads/' + path)
+                def validate(path):
+                    self.assertEqual(path, '/uploads/part.gcode')
+                    self.assertTrue(p._toolmap_hold_active)
+                    self.assertNotIn(['M75'], p._printer.command_batches)
+                    self.assertFalse(p._printer.holds)
+                    if outcome == 'cancelled':
+                        p._release_toolmap_hold(native_complete=True)
+                    return bool(outcome)
+                p._plugin_manager.plugins['Nozzle_Filament_Validator'] = types.SimpleNamespace(
+                    implementation=types.SimpleNamespace(validate_file_for_start=validate))
+                p._handle_tool_review(dict(id=123, state='complete', revision=19))
+                if outcome is True:
+                    self.assertIn(['M75'], p._printer.command_batches)
+                    self.assertFalse(p._toolmap_hold_active)
+                else:
+                    self.assertNotIn(['M75'], p._printer.command_batches)
 
     def test_wrong_material_shared_cycle_or_unattached_fallback_stays_held(self):
         for joins in ("0:1", "0:2,2:0", "1:2", "0:2,0:1", "8:2"):

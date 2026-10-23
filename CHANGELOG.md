@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.0b149 — 2026-10-23
+
+- Run NFV 3.3.1's explicit validation gate immediately after mapping approval,
+  before M75. This prevents serial-print inactivity completion while validation
+  is still running. NFV's first-command gate reuses the result; failed checks
+  and cancelled/replaced reviews cannot start the printer.
+- Release the mapping hold outside the state lock: connector callbacks and
+  other plugins can receive metadata without lock overlap during startup.
+- Install NFV 3.3.1 as well for block-based metadata parsing and the persistent
+  validation-in-progress message. Older NFV retains its first-command gate.
+- Plugin-only update; no additional firmware flashing required. Local globes
+  and Benchy parsing benchmarks preserve metadata and are about 130x faster;
+  hardware startup latency still needs confirmation.
+
 ## 0.1.0b148 — 2026-10-23
 
 - Recover a missed cancellation-position callback when an active RME session
