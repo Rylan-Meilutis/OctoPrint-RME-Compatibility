@@ -1,0 +1,65 @@
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+const {JSDOM} = require('jsdom');
+const {jQueryFactory} = require('jquery/factory');
+(async function () {
+    const dom = new JSDOM('<html><body></body></html>', {runScripts: 'outside-only'});
+    const w = dom.window, $ = jQueryFactory(w);
+    w.$ = w.jQuery = $;
+    w.eval(fs.readFileSync(require.resolve('knockout/build/output/knockout-latest.js'), 'utf8'));
+    w.OCTOPRINT_VIEWMODELS = [];
+    w.gettext = x => x;
+    w.PNotify = function () {};
+    w.eval(fs.readFileSync('octoprint_rme_compatibility/static/js/rme_compatibility.js', 'utf8'));
+    await new Promise(resolve => $(resolve));
+    const vm = new w.OCTOPRINT_VIEWMODELS[0].construct([{}, {}, {}, {}]);
+    const commands = [];
+    vm.command = (name, data) => commands.push([name, data]);
+    const template = fs.readFileSync('octoprint_rme_compatibility/templates/rme_compatibility_tab.jinja2', 'utf8');
+    const start = template.indexOf('<section id="rme-print-controls"');
+    w.document.body.innerHTML = template.slice(start, template.indexOf('</section>', start) + 10);
+    w.ko.applyBindings(vm, w.document.body);
+    const snapshot = (tune = {}) => ({connected: true, supported: true,
+        machine: {tune: 1, tool_capacity: 2}, lock: {locked: false},
+        tune: {speed: 100, fan: 128, dock_fan: 255, stealth: 0, auto_pa: 1,
+            F0: 95, F1: 105, screen_print: 30, chamber_print: 40, status_print: 50,
+            light: 1, lcd: 1, updated: Date.now()/1000, ...tune}});
+    vm.acceptState(snapshot());
+    assert.equal(vm.tuneFanPercent(), 50);
+    assert.equal(vm.tuneFan(), 50);
+    assert.equal(vm.tuneDockFanPercent(), 100);
+    const speed = w.document.querySelector('[data-rme-tune="speed"]');
+    speed.focus();
+    vm.tuneSpeed(175);
+    vm.acceptState(snapshot({speed: 120, fan: 64, F0: 110, chamber_print: 65, stealth: 1, auto_pa: 2}));
+    assert.equal(vm.tuneSpeed(), 175, 'preserve only the field being edited');
+    assert.equal(vm.tuneFan(), 25, 'fan changes on the printer must sync while speed is edited');
+    assert.equal(vm.tuneFlows()[0].draft(), 110);
+    assert.equal(vm.printBrightnessRows[1].draft(), 65);
+    assert.equal(vm.tune().stealth, 1);
+    assert.equal(vm.tune().auto_pa, 2);
+    const flow = w.document.querySelector('[data-rme-flow="0"]');
+    flow.focus();
+    vm.tuneFlows()[0].draft(125);
+    vm.acceptState(snapshot({speed: 130, fan: 255, F0: 115, F1: 90, lcd: 0, light: 0}));
+    assert.equal(vm.tuneFlows()[0].draft(), 125);
+    assert.equal(vm.tuneFlows()[0].actual(), 115, 'authoritative reading remains live during an edit');
+    assert.equal(vm.tuneFlows()[1].draft(), 90);
+    assert.equal(vm.tuneSpeed(), 130);
+    assert.equal(vm.tuneFan(), 100);
+    w.document.querySelector('button').focus();
+    vm.acceptState(snapshot({speed: 145, fan: 0}));
+    assert.equal(vm.tuneSpeed(), 145, 'a focused button must not freeze synchronization');
+    assert.equal(vm.tuneFan(), 0);
+    assert.equal(commands.length, 0, 'telemetry updates must never send mutations');
+    vm.tuneFan(50);
+    vm.applyTuneFan();
+    assert.equal(commands[0][1].kind, 'fan');
+    assert.equal(commands[0][1].value, 50);
+    const old = snapshot(); delete old.tune.fan; delete old.tune.dock_fan;
+    vm.acceptState(old);
+    assert.equal(vm.tuneFanPercent(), null, 'do not invent fan telemetry on old firmware');
+    assert.equal(vm.tuneDockFanPercent(), null);
+    console.log('Printer-originated print-setting synchronization passed');
+    w.close();
+})().catch(error => {console.error(error); process.exitCode = 1;});

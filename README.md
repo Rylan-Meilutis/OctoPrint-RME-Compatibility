@@ -229,6 +229,17 @@ mapping is supplied to Nozzle Filament Validator before OctoPrint releases the
 job hold. The validator therefore compares each slicer's logical tool against
 the chosen physical tool's nozzle, SpoolManager material, and spool identity.
 
+Live print settings use authoritative printer snapshots, refreshed about every
+two seconds while connected and outside startup, recovery, or file transfers.
+Speed, per-tool flow, fan PWM, Auto PA, stealth, lighting and chamber switches
+update without sending settings back to the printer. Only the particular field
+being edited keeps its draft; other controls continue updating. Lost replies
+expire so one dropped snapshot cannot stop synchronization permanently.
+Fan readback requires matching firmware with `fan` (commanded PWM, 0–255) in
+`RME_TUNE`; the INDX `dock_fan` field uses the same units, or -1 when unsupported.
+Older firmware does not expose the new fan control rather than displaying a
+guessed or stale percentage. Dock-fan readback is shown independently.
+
 ## Filament inventory integration
 
 Choose Automatic, SpoolManager, or Spoolman under **Settings → RME

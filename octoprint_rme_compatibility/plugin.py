@@ -49,6 +49,7 @@ from .preview import read_preview
 from . import object_safety
 from .startup_analysis import BackgroundAnalysis
 from .progress import progress_command
+from . import tool_changes
 from .mesh_area import analyze as analyze_mesh_area, is_adaptive_probe
 from .completion_snapshot import CompletionSnapshot
 from .pause_reason import PauseReason
@@ -234,6 +235,7 @@ class RmeCompatibilityPlugin(
         self._auto_pa_active = False
         self._auto_pa_batch = True
         self._tune_query_pending = False
+        self._tune_query_deadline = 0.0
         self._tune_poll_after = 0.0
         self._tune_last_mutation = 0.0
         self._progress_pending_until = 0.0
@@ -262,6 +264,7 @@ class RmeCompatibilityPlugin(
             "theme": {},
             "light": {},
             "tune": {},
+            "tool_changes": {},
             "filaments": [],
             "manufacturers": {"profiles": [], "loaded": []},
             # M865 loadout metadata is keyed by the firmware's physical tool
@@ -1061,7 +1064,8 @@ class RmeCompatibilityPlugin(
         if selected.get("origin") != "local" or not path:
             return {}
         disk = self._file_manager.path_on_disk("local", path)
-        current = getattr(getattr(self._printer, "_comm", None), "_currentFile", None)
+        comm = self._rme_comm or getattr(self._printer, "_comm", None)
+        current = getattr(comm, "_currentFile", None)
         if current is None or not all(callable(getattr(current, method, None)) for method in ("getFilename", "getStartTime", "getFilepos")):
             return dict(file=path, disk=disk, active=False)
         if os.path.realpath(current.getFilename()) != os.path.realpath(disk):
@@ -1983,6 +1987,7 @@ class RmeCompatibilityPlugin(
                 self._toolmap_preflight_decision = None
                 self._print_job_gcode_sent = False
                 self._skip_cancel_script = False
+                self._state['tool_changes'] = {}
             self._prepare_toolmap_prompt(record_preflight=True)
             self._prepare_mesh_area()
             self._prepare_chamber_job()
@@ -2579,12 +2584,13 @@ class RmeCompatibilityPlugin(
             elif kind == "tune":
                 # Replace one bounded snapshot, never append it to event history.
                 capacity = min(8, int(self._state["machine"].get("tool_capacity", 0)))
-                keys = ("speed", "stealth", "auto_pa", "printing", "light", "lcd", "screen_print", "chamber_print", "status_print", "material_cooling", "print_filter", "post_filter") + tuple("F%d" % i for i in range(capacity))
+                keys = ("speed", "fan", "dock_fan", "progress_percent", "progress_remaining", "host_percent", "stealth", "auto_pa", "printing", "light", "lcd", "screen_print", "chamber_print", "status_print", "material_cooling", "print_filter", "post_filter") + tuple("F%d" % i for i in range(capacity))
                 self._state["tune"] = {key: record[key] for key in keys if key in record}
                 self._state["tune"]["updated"] = time.time()
                 self._tune_query_pending = False
             elif kind == "host_progress":
                 self._progress_pending_until = 0.0
+                self._state['progress_sync'] = {key: record[key] for key in ('accepted', 'percent', 'remaining', 'paused') if key in record}
             elif kind == "toolmap":
                 self._toolmap_supported = True
                 self._toolmap_probe_sent = False
@@ -3914,6 +3920,7 @@ class RmeCompatibilityPlugin(
                         if identity_ready and self._settings.get_boolean(["firmware_auto_check"]) and time.monotonic() >= self._release_check_after:
                             self._start_release_task()
                     self._sync_host_progress()
+                    self._sync_tool_changes()
                     self._query_tune(periodic=True)
                     if time.monotonic() < next_keepalive:
                         continue
@@ -3944,6 +3951,27 @@ class RmeCompatibilityPlugin(
             return str(self._printer.get_state_id() or "").upper() in {"PRINTING", "PAUSED"}
         except Exception:
             return False
+
+    def _sync_tool_changes(self):
+        try:
+            context = self._object_context()
+            result = dict(active=bool(context.get('active')), file=context.get('file'),
+                          job_id=context.get('job_id'), total=None, completed=None, remaining=None)
+            if context.get('active') and context.get('position') is not None:
+                capacity = min(8, int(self._state.get('machine', {}).get('logical_tools') or 8))
+                selections = self._startup_analysis.request(context['disk'], 'tool_changes', tool_changes.read_selections, capacity)
+                if selections is not None:
+                    mapping = self._state.get('toolmap') or {}
+                    result.update(tool_changes.remaining(selections, context['position'],
+                        mapping.get('mapping') if mapping.get('enabled') else None))
+            with self._state_lock:
+                if self._state.get('tool_changes') == result:
+                    return
+                self._state['tool_changes'] = result
+            self._schedule_publish()
+        except (OSError, ValueError, TypeError, AttributeError):
+            # Optional display analysis must never hold or stop a print.
+            return
 
     def _sync_host_progress(self):
         with self._state_lock:
@@ -3980,7 +4008,10 @@ class RmeCompatibilityPlugin(
 
     def _query_tune(self, periodic=False):
         with self._state_lock:
-            if self._state["machine"].get("tune") != 1 or self._tune_query_pending:
+            if self._state["machine"].get("tune") != 1:
+                return
+            now = time.monotonic()
+            if self._tune_query_pending and now < self._tune_query_deadline:
                 return
         if periodic:
             # Do not add configuration polling to startup/reset/recovery.
@@ -3990,12 +4021,16 @@ class RmeCompatibilityPlugin(
         with self._state_lock:
             if periodic and time.monotonic() < self._tune_poll_after:
                 return
-            if self._state["machine"].get("tune") != 1 or self._tune_query_pending:
+            if self._state["machine"].get("tune") != 1 or (self._tune_query_pending and time.monotonic() < self._tune_query_deadline):
                 return
             self._tune_query_pending = True
-            self._tune_poll_after = time.monotonic() + 10
+            self._tune_query_deadline = time.monotonic() + 10
+            self._tune_poll_after = time.monotonic() + 2
         try:
-            self._send_command("@RME TUNE QUERY")
+            if periodic and self._state["session"].get("active") and self._state["machine"].get("live_controls") == 1:
+                self._send_priority_service("@RME TUNE QUERY", "tune_query")
+            else:
+                self._send_command("@RME TUNE QUERY")
         except Exception:
             with self._state_lock:
                 self._tune_query_pending = False
@@ -4017,6 +4052,10 @@ class RmeCompatibilityPlugin(
         value = int(raw)
         if kind == "speed" and 10 <= value <= 300:
             command = "M220 S%d" % value
+        elif kind == "fan" and 0 <= value <= 100:
+            if not 0 <= self._state.get("tune", {}).get("fan", -1) <= 255:
+                raise ValueError("Firmware does not report synchronized fan state")
+            command = "M106 S%d" % ((value * 255 + 50) // 100)
         elif kind == "flow" and 50 <= value <= 150:
             tool = str(data.get("tool", ""))
             if not re.fullmatch(r"\d", tool) or not 0 <= int(tool) < capacity:
@@ -4273,6 +4312,8 @@ class RmeCompatibilityPlugin(
                 return
             disk = self._file_manager.path_on_disk("local", path)
             machine = self._state.get("machine") or {}
+            self._startup_analysis.request(disk, 'tool_changes', tool_changes.read_selections,
+                min(8, int(machine.get('logical_tools') or 8)))
             if machine.get("mesh_area") == 1:
                 self._startup_analysis.request(disk, "mesh", analyze_mesh_area, float(machine["x_max"]), float(machine["y_max"]))
             octopod = getattr(getattr(self, "_plugin_manager", None), "plugins", {}).get("octopod")

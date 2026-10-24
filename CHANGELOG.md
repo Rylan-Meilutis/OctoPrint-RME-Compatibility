@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.0b150 — 2026-10-23
+
+- Add a Dashboard/RME planned-tool-changes-remaining display, indexed from the
+  actual streamed file in the background and updated from byte position and
+  confirmed mapping. Initial pickup/repeated picks are excluded; manual tool
+  operations and fallback interventions are not predicted.
+- Guard native Cancel Object buttons/actions as well as the RME preview, and
+  use the current connector for final-extrusion position checks. Rebuilding
+  the native object list cannot re-enable a completed object's cancellation.
+- Add firmware displayed/host progress readback and acknowledged progress
+  values to distinguish host estimates, slicer percentages and transport lag.
+  The reported 88%/93% mismatch still requires a corresponding progress trace.
+- Synchronize printer-originated print-fan PWM and INDX dock-fan readback with
+  matching firmware. Add a capability-checked print-fan percentage control.
+- Keep all other tune controls live while preserving only the particular
+  field being edited. Focusing an Apply button no longer freezes all drafts.
+- Use read-only bindings for firmware-owned Auto PA and chamber switches.
+- Refresh snapshots about every two seconds, recover dropped replies after
+  a bounded timeout, and use the read-only service path on capable live sessions
+  so heater waits do not block synchronization. Startup/transfer guards remain.
+- Companion LCD fan/dock-fan and bed-temperature editors now follow remote
+  changes while open, except during an active edit.
+
 ## 0.1.0b149 — 2026-10-23
 
 - Run NFV 3.3.1's explicit validation gate immediately after mapping approval,

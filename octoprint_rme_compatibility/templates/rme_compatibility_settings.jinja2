@@ -6,7 +6,7 @@
     <div class="control-group">
         <label class="control-label" data-bind="text: label"></label>
         <div class="controls">
-            <select data-bind="attr: {'data-chamber-setting': key}, enable: $parent.tuneEnabled() && $parent.tune()[key] !== undefined, value: $parent.tune()[key], valueAllowUnset: true, event: {change: $parent.changeChamberSetting}">
+            <select data-bind="attr: {'data-chamber-setting': key}, enable: $parent.tuneEnabled() && $parent.tune()[key] !== undefined, rmeLightState: $parent.tune()[key], event: {change: $parent.changeChamberSetting}">
                 <option value="0">Off</option><option value="1">On</option>
             </select>
             <span data-bind="visible: $parent.tune()[key] === undefined">Requires compatible firmware</span>
@@ -19,7 +19,7 @@
     <div class="control-group">
         <label class="control-label">Auto PA mode</label>
         <div class="controls">
-            <select data-bind="enable: tuneEnabled() && tune().auto_pa !== undefined, value: tune().auto_pa, event: {change: changeAutoPa}">
+            <select data-bind="enable: tuneEnabled() && tune().auto_pa !== undefined, rmeLightState: tune().auto_pa, event: {change: changeAutoPa}">
                 <option value="0">Off — skip calibration</option>
                 <option value="1">Auto — use valid cache</option>
                 <option value="2">On — always calibrate</option>

@@ -1,0 +1,25 @@
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+const {JSDOM} = require('jsdom');
+const {jQueryFactory} = require('jquery/factory');
+(async function () {
+    const dom = new JSDOM('<html><body><div id="tab_plugin_dashboard"><p id="existing">Dashboard remains intact</p></div></body></html>', {runScripts: 'outside-only'});
+    const w = dom.window, $ = jQueryFactory(w);
+    w.$ = w.jQuery = $;
+    w.eval(fs.readFileSync(require.resolve('knockout/build/output/knockout-latest.js'), 'utf8'));
+    w.OCTOPRINT_VIEWMODELS = []; w.gettext = x => x; w.PNotify = function () {};
+    w.eval(fs.readFileSync('octoprint_rme_compatibility/static/js/rme_compatibility.js', 'utf8'));
+    await new Promise(resolve => $(resolve));
+    const vm = new w.OCTOPRINT_VIEWMODELS[0].construct([{}, {}, {}, {}]);
+    vm.state({supported: true, connected: true, tool_changes: {active: true, file: 'a.gcode', remaining: 3, total: 9}});
+    vm.renderToolChangeWidget(); vm.renderToolChangeWidget();
+    assert.equal(w.document.querySelectorAll('#rme-tool-changes-dashboard').length, 1);
+    assert.equal(w.document.querySelector('#rme-tool-changes-dashboard p').textContent, '3 / 9');
+    assert.equal(w.document.querySelector('#existing').textContent, 'Dashboard remains intact');
+    vm.state({supported: true, connected: true, tool_changes: {active: true, file: 'a.gcode', remaining: 0, total: 9}});
+    assert.equal(w.document.querySelector('#rme-tool-changes-dashboard p').textContent, '0 / 9');
+    vm.objectProgress({file: 'b.gcode', active: true, position: 0});
+    assert.equal(vm.toolChangeText(), 'No active local print');
+    console.log('Dashboard planned tool-change counter passed');
+    w.close();
+})().catch(error => {console.error(error); process.exitCode = 1;});

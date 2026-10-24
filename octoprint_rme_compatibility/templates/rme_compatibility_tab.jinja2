@@ -27,17 +27,23 @@
             <div data-bind="foreach: printBrightnessRows">
                 <div data-bind="visible: $root.tune()[kind + '_print'] >= 0">
                     <label><span data-bind="text: label"></span>: <span data-bind="text: $root.tune()[kind + '_print']"></span>%</label>
-                    <input type="range" min="0" max="100" step="1" data-bind="value: draft, enable: $root.tuneLightingEnabled, attr: {'aria-label': label + ' print brightness'}">
+                    <input type="range" min="0" max="100" step="1" data-bind="value: draft, enable: $root.tuneLightingEnabled, attr: {'aria-label': label + ' print brightness', 'data-rme-brightness': kind}">
                     <button class="btn" data-bind="click: $root.applyPrintBrightness, enable: $root.tuneLightingEnabled">Apply</button>
                 </div>
             </div>
         </div>
         <label>Speed (%) — printer: <span data-bind="text: tune().speed"></span>%</label>
-        <input type="number" min="10" max="300" class="input-small" data-bind="value: tuneSpeed, enable: tuneEnabled">
+        <input type="number" min="10" max="300" class="input-small" data-rme-tune="speed" data-bind="value: tuneSpeed, enable: tuneEnabled">
         <button class="btn" data-bind="click: applyTuneSpeed, enable: tuneEnabled">Apply speed</button>
+        <div data-bind="visible: tuneFanPercent() !== null">
+            <label>Print fan — printer: <span data-bind="text: tuneFanPercent"></span>%</label>
+            <input type="number" min="0" max="100" class="input-small" data-rme-tune="fan" data-bind="value: tuneFan, enable: tuneEnabled() && tuneFanPercent() !== null">
+            <button class="btn" data-bind="click: applyTuneFan, enable: tuneEnabled() && tuneFanPercent() !== null">Apply fan</button>
+        </div>
+        <p data-bind="visible: tuneDockFanPercent() !== null">Dock fan — printer: <span data-bind="text: tuneDockFanPercent"></span>%</p>
         <button class="btn" data-bind="click: toggleTuneStealth, enable: tuneEnabled, text: Number(tune().stealth) ? 'Stealth: On' : 'Stealth: Off', attr: {'aria-pressed': !!Number(tune().stealth)}"></button>
         <label data-bind="visible: tune().auto_pa !== undefined">Auto PA
-          <select data-bind="enable: tuneEnabled, value: tune().auto_pa, event: {change: changeAutoPa}">
+          <select data-bind="enable: tuneEnabled, rmeLightState: tune().auto_pa, event: {change: changeAutoPa}">
             <option value="0">Off — skip calibration</option>
             <option value="1">Auto — use valid cache</option>
             <option value="2">On — always calibrate</option>
@@ -46,10 +52,12 @@
         <small data-bind="visible: tune().auto_pa !== undefined">Saved on the printer. Applies to the next calibration command; does not interrupt a calibration already running.</small>
         <div data-bind="foreach: tuneFlows">
             <label><span data-bind="text: label"></span> flow — printer: <span data-bind="text: actual"></span>%</label>
-            <input type="number" min="50" max="150" class="input-small" data-bind="value: draft, enable: $root.tuneEnabled">
+            <input type="number" min="50" max="150" class="input-small" data-bind="value: draft, enable: $root.tuneEnabled, attr: {'data-rme-flow': tool}">
             <button class="btn" data-bind="click: $root.applyTuneFlow, enable: $root.tuneEnabled">Apply flow</button>
         </div>
         <p data-bind="visible: !tuneEnabled()">Waiting for current printer state, or controls are locked by a transfer/printer lock.</p>
+        <h5>Planned tool changes remaining</h5><p data-bind="text: toolChangeText"></p>
+        <small>Initial pickup excluded. Queued G-code progress; manual changes and fallback interventions are not predicted.</small>
         <h5>Live tool mapping</h5><p data-bind="text: liveMapping"></p>
         <small>Logical G-code tools are zero-based; printer tool labels are one-based. Mapping changes are made before a print.</small>
     </section>

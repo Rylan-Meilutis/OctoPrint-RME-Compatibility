@@ -206,6 +206,22 @@ class ObjectContextTests(unittest.TestCase):
             current.getFilepos = lambda: None
             self.assertIn('unavailable', plugin._object_cancel_error('A'))
 
+    def test_authoritative_connector_is_used_when_legacy_comm_is_missing(self):
+        from test_toolmap_gate import RmeCompatibilityPlugin
+        with tempfile.NamedTemporaryFile() as stream:
+            stream.write(b'M83\n@Object A\nG1 X1 E1\n@Objectstop A\n'); stream.flush()
+            current = SimpleNamespace(getFilename=lambda: stream.name, getStartTime=lambda: 5,
+                                      getFilepos=lambda: os.path.getsize(stream.name))
+            plugin = RmeCompatibilityPlugin()
+            plugin._rme_comm = SimpleNamespace(_currentFile=current)
+            plugin._printer = SimpleNamespace(
+                get_current_data=lambda: {'job': {'file': {'origin': 'local', 'path': 'A.gcode'}}},
+                is_printing=lambda: True, is_paused=lambda: False)
+            plugin._file_manager = SimpleNamespace(path_on_disk=lambda *args: stream.name)
+            plugin._logger = Mock()
+            self.assertTrue(plugin._object_context()['active'])
+            self.assertIn('finished', plugin._object_cancel_error('A'))
+
 
 class DownloadCorrelationTests(unittest.TestCase):
     def test_request_correlation_survives_completion(self):

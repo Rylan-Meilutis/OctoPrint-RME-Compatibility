@@ -13,12 +13,20 @@ const {jQueryFactory} = require('jquery/factory');
     w.eval(fs.readFileSync('octoprint_rme_compatibility/static/js/rme_compatibility.js', 'utf8'));
     await new Promise(resolve => $(resolve));
     const vm = new w.OCTOPRINT_VIEWMODELS[0].construct([{}, {}, {}, {}]);
+    vm.state({supported: true});
+    w.document.body.innerHTML = '<div id="tab_plugin_cancelobject"><div id="cancel-table"><button class="cancel-btn" value="0">Cancel</button><button class="cancel-btn" value="1">Cancel</button></div></div><div id="rme-object-overview"></div>';
+    let nativeCalls = 0;
+    const native = {cancelObject: () => nativeCalls++, updateObjectList: () => {
+        w.document.querySelectorAll('.cancel-btn').forEach(button => {button.disabled = false;});
+    }};
+    w.ko.applyBindings(native, w.document.getElementById('cancel-table'));
     vm.printerState.filepath = w.ko.observable('parts.gcode');
     const preview = {file: 'parts.gcode', job_id: 'job1', active: true, filepos: 0,
         objects: [{name: 'A', segments: [], last_print_end: 100, safety_reason: null, cancellable: true},
             {name: 'B', segments: [], last_print_end: 200, safety_reason: null, cancellable: true}]};
     vm.objectPreview(preview);
     vm.cancelObjects([{id: 0, object: 'A', cancelled: false}, {id: 1, object: 'B', cancelled: false}]);
+    vm.integrateCancelObjectPreview();
     assert(vm.objectList().every(row => row.cancellable));
     let sent = [];
     vm.command = (name, data) => { sent.push({name, data}); return $.Deferred().promise(); };
@@ -31,6 +39,13 @@ const {jQueryFactory} = require('jquery/factory');
     assert.equal(vm.objectList()[0].completed, true);
     assert.equal(vm.objectList()[0].cancellable, false);
     assert.equal(vm.objectList()[1].cancellable, true);
+    assert.equal(w.document.querySelector('.cancel-btn[value="0"]').disabled, true);
+    assert.equal(w.document.querySelector('.cancel-btn[value="0"]').textContent, 'Finished');
+    native.updateObjectList();
+    assert.equal(w.document.querySelector('.cancel-btn[value="0"]').disabled, true, 'upstream list rebuild cannot re-enable a finished object');
+    native.cancelObject(0);
+    assert.equal(sent.length, 1, 'native action uses the same completion guard');
+    assert.equal(nativeCalls, 0);
     vm.cancelOverviewObject(vm.objectList()[0]);
     assert.equal(sent.length, 1);
     // Fresh server state beats a stale enabled button.

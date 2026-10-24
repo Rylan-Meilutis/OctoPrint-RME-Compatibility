@@ -105,7 +105,7 @@ class HostProgressTests(unittest.TestCase):
             plugin._query_tune(periodic=True)
         self.assertEqual(sent, [])
         state = "PRINTING"
-        for now, expected in ((100, 1), (102, 1), (110, 2)):
+        for now, expected in ((100, 1), (101, 1), (102, 2), (110, 3)):
             plugin._tune_query_pending = False
             with patch("octoprint_rme_compatibility.plugin.time.monotonic", return_value=now):
                 plugin._query_tune(periodic=True)
@@ -113,4 +113,4 @@ class HostProgressTests(unittest.TestCase):
         plugin._tune_query_pending = False
         with patch("octoprint_rme_compatibility.plugin.time.monotonic", return_value=111):
             plugin._query_tune()
-        self.assertEqual(len(sent), 3)  # User controls retain immediate refresh.
+        self.assertEqual(len(sent), 4)  # User controls retain immediate refresh.

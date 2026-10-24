@@ -2,12 +2,52 @@ import types
 import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from test_toolmap_gate import RmeCompatibilityPlugin
 from octoprint_rme_compatibility.protocol import parse_line
 
 
 class PrintControlsTests(unittest.TestCase):
+    def test_live_snapshot_replaces_all_print_settings_without_sending_writes(self):
+        plugin = self.plugin()
+        plugin._schedule_publish = lambda: None
+        for fan in (0, 128, 255, 64):
+            record = dict(record='tune', fan=fan, dock_fan=100, speed=123,
+                stealth=1, auto_pa=2, lcd=0, light=1, screen_print=25,
+                chamber_print=50, status_print=75, material_cooling=0,
+                print_filter=1, post_filter=0, F0=95, F7=110)
+            plugin._handle_record(record)
+            for key, value in record.items():
+                if key != 'record':
+                    self.assertEqual(plugin._state['tune'][key], value)
+        self.assertEqual(self.commands, [])
+        plugin._handle_record(dict(record='tune', speed=100))
+        self.assertNotIn('fan', plugin._state['tune'])
+
+    def test_fan_override_requires_telemetry_and_uses_pwm_not_percent(self):
+        for value, pwm in ((0, 0), (25, 64), (50, 128), (100, 255)):
+            plugin = self.plugin()
+            with self.assertRaises(ValueError):
+                plugin._set_print_override(dict(kind='fan', value=value))
+            plugin._state['tune']['fan'] = 0
+            plugin._set_print_override(dict(kind='fan', value=value))
+            self.assertEqual(self.commands[-1], 'M106 S%d' % pwm)
+
+    def test_lost_tune_reply_retries_boundedly_and_live_poll_bypasses_wait(self):
+        plugin = self.plugin()
+        plugin._state['session']['active'] = True
+        plugin._state['machine']['live_controls'] = 1
+        plugin._printer.get_state_id = lambda: 'PRINTING'
+        priority = []
+        plugin._send_priority_service = lambda command, trigger: priority.append((command, trigger))
+        for now, count in ((100, 1), (102, 1), (109, 1), (110, 2)):
+            with patch('octoprint_rme_compatibility.plugin.time.monotonic', return_value=now):
+                plugin._query_tune(periodic=True)
+            self.assertEqual(len(priority), count)
+        plugin._handle_record = lambda record: None
+        self.assertEqual(self.commands, [])
+
     def test_streamed_chamber_manifest_inspects_all_used_materials(self):
         for types_text, usage, expected in (
             ("PLA;ABS", "100;100", 0),

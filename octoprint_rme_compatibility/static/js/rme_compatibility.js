@@ -119,14 +119,14 @@ $(function () {
             OctoPrint.simpleApiCommand("cancelobject", "objlist", {})
                 .fail(function (xhr) { self.objectStatus(responseError(xhr)); });
         };
-        self.cancelOverviewObject = function (obj) {
+        self.cancelOverviewObject = function (obj, alreadyConfirmed) {
             if (obj.id === undefined || obj.id === null) {
                 self.objectStatus("No unique Cancel Object mapping for this shape. Refresh the object list first.");
                 return;
             }
             if (obj.cancelled) return;
             if (!obj.cancellable) { self.objectStatus(obj.reason || "This object cannot be cancelled safely."); return; }
-            if (!window.confirm("Cancel object " + obj.object + "?")) return;
+            if (alreadyConfirmed !== true && !window.confirm("Cancel object " + obj.object + "?")) return;
             var file = self.objectPreview().file;
             var jobId = self.objectPreview().job_id;
             $.getJSON(BASEURL + "plugin/rme_compatibility/object-preview").done(function (data) {
@@ -170,6 +170,18 @@ $(function () {
                     }).join(" ")}, o);
             });
         });
+        self.syncNativeObjectButtons = function () {
+            if (!self.state().supported) return;
+            $("#tab_plugin_cancelobject .cancel-btn").each(function () {
+                var button = this;
+                var rows = self.objectList().filter(function (row) { return String(row.id) === String(button.value); });
+                var row = rows.length === 1 ? rows[0] : null;
+                button.disabled = !row || !row.cancellable;
+                button.title = row ? (row.reason || "Cancel object") : "Object boundaries are unavailable";
+                if (row) button.textContent = row.cancelled ? "Cancelled" : row.completed ? "Finished" : "Cancel";
+            });
+        };
+        self.objectList.subscribe(function () { self.syncNativeObjectButtons(); });
         self.state = ko.observable({
             connected: false,
             supported: false,
@@ -346,10 +358,36 @@ $(function () {
         self.unlockPin = ko.observable("");
         self.lightScreen = ko.observable(100);
         self.tuneSpeed = ko.observable(100);
+        self.tuneFan = ko.observable(0);
         self.tuneFlows = ko.observableArray([]);
+        self.toolChangeText = ko.pureComputed(function () {
+            var stats = self.state().tool_changes || {};
+            var progress = self.objectProgress();
+            if (!self.state().connected || !stats.active || (progress && (!progress.active || progress.file !== stats.file))) return "No active local print";
+            return typeof stats.remaining === "number" ? stats.remaining + " / " + stats.total : "Calculating…";
+        });
+        self.renderToolChangeWidget = function () {
+            var root = $("#tab_plugin_dashboard");
+            if (!root.length) return;
+            var widget = root.find("#rme-tool-changes-dashboard");
+            if (!widget.length) {
+                widget = $('<div id="rme-tool-changes-dashboard" class="rme-card" role="status" aria-live="polite"><strong>Planned tool changes remaining</strong><p></p><small>Initial pickup excluded; based on queued G-code, not percentage.</small></div>').appendTo(root);
+            }
+            widget.toggle(!!self.state().supported);
+            widget.find("p").text(self.toolChangeText());
+        };
+        self.toolChangeText.subscribe(function () { self.renderToolChangeWidget(); });
         self.tune = ko.pureComputed(function () { return self.state().tune || {}; });
         self.tuneAvailable = ko.pureComputed(function () {
             return !!self.state().connected && Number((self.state().machine || {}).tune) === 1;
+        });
+        self.tuneFanPercent = ko.pureComputed(function () {
+            var raw = self.tune().fan;
+            return raw !== undefined && Number(raw) >= 0 && Number(raw) <= 255 ? Math.round(Number(raw) * 100 / 255) : null;
+        });
+        self.tuneDockFanPercent = ko.pureComputed(function () {
+            var raw = self.tune().dock_fan;
+            return raw !== undefined && Number(raw) >= 0 && Number(raw) <= 255 ? Math.round(Number(raw) * 100 / 255) : null;
         });
         self.tuneEnabled = ko.pureComputed(function () {
             var updated = Number(self.tune().updated || 0) * 1000;
@@ -414,6 +452,7 @@ $(function () {
             self.command("set_print_override", {kind: row.kind, value: Number(row.draft())});
         };
         self.applyTuneSpeed = function () { self.command("set_print_override", {kind: "speed", value: Number(self.tuneSpeed())}); };
+        self.applyTuneFan = function () { self.command("set_print_override", {kind: "fan", value: Number(self.tuneFan())}); };
         self.applyTuneFlow = function (row) { self.command("set_print_override", {kind: "flow", tool: row.tool, value: Number(row.draft())}); };
         self.toggleTuneStealth = function () { self.command("set_print_override", {kind: "stealth", value: Number(self.tune().stealth) ? 0 : 1}); };
         self.changeAutoPa = function (_, event) {
@@ -1311,11 +1350,12 @@ $(function () {
             var oldPrompt = self.state().prompt || {};
             self.state(value);
             if (value.tune) {
-                var editingTune = $(document.activeElement).closest("#rme-print-controls").length;
-                if (!editingTune && value.tune.speed !== undefined) self.tuneSpeed(value.tune.speed);
-                if (!editingTune) self.printBrightnessRows.forEach(function (row) {
+                var active = $(document.activeElement);
+                if (!active.is('[data-rme-tune="speed"]') && value.tune.speed !== undefined) self.tuneSpeed(value.tune.speed);
+                if (!active.is('[data-rme-tune="fan"]') && self.tuneFanPercent() !== null) self.tuneFan(self.tuneFanPercent());
+                self.printBrightnessRows.forEach(function (row) {
                     var actual = value.tune[row.kind + "_print"];
-                    if (actual !== undefined && Number(actual) >= 0) row.draft(Number(actual));
+                    if (!active.is('[data-rme-brightness="' + row.kind + '"]') && actual !== undefined && Number(actual) >= 0) row.draft(Number(actual));
                 });
                 var count = Math.min(8, Number((value.machine || {}).tool_capacity) || 0);
                 if (self.tuneFlows().length !== count) {
@@ -1327,7 +1367,7 @@ $(function () {
                     var actual = value.tune["F" + row.tool];
                     if (actual !== undefined) {
                         row.actual(actual);
-                        if (!editingTune) row.draft(actual);
+                        if (!active.is('[data-rme-flow="' + row.tool + '"]')) row.draft(actual);
                     }
                 });
             }
@@ -2049,6 +2089,23 @@ $(function () {
             // retains RME's context without rebinding Cancel Object's controls.
             preview.detach().insertBefore(list);
             preview.find(".rme-object-list").hide();
+            var native = ko.dataFor(list[0]);
+            if (native && typeof native.cancelObject === "function" && !native._rmeCompletedGuard) {
+                native._rmeCompletedGuard = true;
+                var cancel = native.cancelObject, update = native.updateObjectList;
+                native.cancelObject = function (id) {
+                    if (!self.state().supported) return cancel.apply(this, arguments);
+                    var rows = self.objectList().filter(function (row) { return String(row.id) === String(id); });
+                    if (rows.length === 1) self.cancelOverviewObject(rows[0], true);
+                    else self.objectStatus("Object boundaries are unavailable; refresh objects first.");
+                };
+                if (typeof update === "function") native.updateObjectList = function () {
+                    var result = update.apply(this, arguments);
+                    self.syncNativeObjectButtons();
+                    return result;
+                };
+            }
+            self.syncNativeObjectButtons();
             $("a[href='#tab_plugin_rme_compatibility_objects']").closest("li").hide();
         };
         self.onAllBound = function () {
@@ -2056,6 +2113,7 @@ $(function () {
             // Keep the bound editor outside tab overflow/transform containers.
             $("#rme-tool-mapping").detach().appendTo(document.body);
             self.installDashboardHeight();
+            self.renderToolChangeWidget();
             self.integrateCancelObjectPreview();
             // Move the already-bound controls once, preserving their KO context.
             if ($("#control").length) $("#rme-print-controls").detach().appendTo("#control");
