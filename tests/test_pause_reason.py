@@ -42,3 +42,31 @@ class PauseReasonTests(unittest.TestCase):
         self.assertEqual(reason.pause("Tool change in progress")["source"], "unreported")
         self.assertTrue(reason.evidence("Tool change failed: lock not engaged", "Firmware workflow"))
         self.assertIn("lock not engaged", reason.reason)
+
+    def test_obico_detection_survives_generic_pause_and_expires(self):
+        reason = PauseReason()
+        self.assertTrue(reason.observe_obico(dict(cmd="pause", initiator="system"), now=1))
+        self.assertFalse(reason.active)
+        snapshot = reason.pause(now=2)
+        self.assertIn("spaghetti detection", snapshot['reason'])
+        self.assertEqual(snapshot['source'], 'Obico automatic failure detection')
+        reason.resume()
+        self.assertEqual(reason.pause(now=3)['source'], 'unreported')
+        reason.observe_obico(dict(cmd="pause", initiator="system"), now=4)
+        self.assertEqual(reason.pause(now=100)['source'], 'unreported')
+
+    def test_obico_manual_and_unknown_commands_are_not_spaghetti(self):
+        for initiator in ('user', 'api', None, 'unknown'):
+            reason = PauseReason()
+            reason.observe_obico(dict(cmd='pause', initiator=initiator))
+            self.assertNotIn('spaghetti', reason.pause()['reason'])
+        for command in (None, [], {}, dict(cmd='resume', initiator='system'), dict(cmd='cancel')):
+            self.assertFalse(PauseReason().observe_obico(command))
+
+    def test_obico_late_evidence_updates_an_existing_unknown_pause(self):
+        reason = PauseReason()
+        reason.pause()
+        reason.observe_obico(dict(cmd='pause', initiator='system'))
+        self.assertIn('spaghetti detection', reason.snapshot()['reason'])
+        reason.reset()
+        self.assertEqual(reason.pause()['source'], 'unreported')

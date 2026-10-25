@@ -44,6 +44,25 @@ class PauseReason:
         self.candidate = None
         return self.snapshot()
 
+    def observe_obico(self, command, now=None):
+        """Obico emits plugin_obico_command before asking OctoPrint to pause.
+
+        Its server labels detector pauses initiator=system; API/user pauses
+        must not be mislabeled as spaghetti. Never inspect or publish args,
+        which can contain unrelated remote-control data.
+        """
+        if not isinstance(command, dict) or command.get("cmd") != "pause":
+            return False
+        initiator = str(command.get("initiator") or "").lower()
+        if initiator == "system":
+            message = "Obico detected a possible print failure (spaghetti detection)"
+            source = "Obico automatic failure detection"
+        elif initiator in ("user", "api"):
+            message, source = "Paused remotely through Obico", "Obico remote command"
+        else:
+            message, source = "Obico requested a pause (reason not provided)", "Obico"
+        return self.evidence(message, source, now)
+
     def observe(self, line):
         action = re.match(r"^//\s*action:\s*(pause|paused)\b\s*(.*)$", line, re.I)
         if action:

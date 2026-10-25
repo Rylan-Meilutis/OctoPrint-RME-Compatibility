@@ -10,6 +10,19 @@ from octoprint_rme_compatibility.protocol import parse_line
 
 
 class ToolReview(unittest.TestCase):
+    def test_obico_event_updates_rme_pause_without_controlling_printer(self):
+        p = self.plugin()
+        p._pause_reason.pause()
+        p.on_event('plugin_obico_command', dict(cmd='pause', initiator='system'))
+        self.assertIn('spaghetti detection', p._state['pause']['reason'])
+        self.assertTrue(p._state['pause']['active'])
+        self.assertFalse(p._printer.command_batches)
+        self.assertFalse(p._printer.forced_commands)
+        p._state['connected'] = False
+        p._pause_reason.reset()
+        p.on_event('plugin_obico_command', dict(cmd='pause', initiator='system'))
+        self.assertIsNone(p._pause_reason.candidate)
+
     def plugin(self):
         p = RmeCompatibilityPlugin()
         p._printer = _Printer()

@@ -1292,6 +1292,14 @@ class RmeCompatibilityPlugin(
 
     def on_event(self, event, payload):
         """Handle core lifecycle plus SpoolManager's documented event names."""
+        if (event == "plugin_obico_command"
+                or event == getattr(Events, "PLUGIN_OBICO_COMMAND", object())):
+            with self._state_lock:
+                if self._state.get("supported") and self._state.get("connected"):
+                    if self._pause_reason.observe_obico(payload):
+                        self._state["pause"] = self._pause_reason.snapshot()
+                        self._schedule_publish()
+            return
         if event == "FileSelected":
             self._defer(self._warm_startup_analysis, payload or {})
             return

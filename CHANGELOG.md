@@ -2,6 +2,10 @@
 
 ## 0.1.0b151 — 2026-10-25
 
+- Display Obico's automatic failure/spaghetti-detection pause reason using its
+  command event and `initiator=system`. Distinguish manual/API and unspecified
+  Obico pauses; do not infer spaghetti from a generic pause. Evidence expires
+  and is cleared on resume or a new job.
 - Dismiss the mapper immediately after the matching approved commit while
   retaining the execution hold during NFV validation. With companion firmware
   advertising `serial_prepare=1`, keep its protected serial Preparing screen
