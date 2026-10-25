@@ -160,6 +160,11 @@ class RmeCompatibilityPlugin(
         self._toolmap_review_completed = False
         self._toolmap_review_processing = None
         self._toolmap_review_prompt = None
+        self._toolmap_validating = False
+        self._startup_request = None
+        self._startup_reply = None
+        self._startup_reply_ready = threading.Event()
+        self._startup_preparation_id = None
         self._toolmap_review_records = queue.Queue()
         self._toolmap_review_worker = False
         self._toolmap_review_last_begin = None
@@ -375,6 +380,7 @@ class RmeCompatibilityPlugin(
 
     def on_after_startup(self):
         """Restore durable UI state and start non-serial background workers."""
+        self._install_octopod_helper_filter()
         self._cancel_object_implementation()
         data_folder = self.get_plugin_data_folder()
         self._firmware_directory = os.path.join(data_folder, "firmware")
@@ -2211,6 +2217,12 @@ class RmeCompatibilityPlugin(
     def _handle_record(self, record):
         """Fold one parsed firmware record into the authoritative UI state."""
         kind = record["record"]
+        if kind == "startup_ack":
+            with self._state_lock:
+                if self._startup_request == (record.get("id"), record.get("action")):
+                    self._startup_reply = bool(record.get("accepted"))
+                    self._startup_reply_ready.set()
+            return
         if kind == "review":
             with self._state_lock:
                 self._toolmap_review_records.put(dict(record))
@@ -2556,7 +2568,7 @@ class RmeCompatibilityPlugin(
             elif kind == "prompt":
                 # A native/background Ok prompt must not replace a job-owned
                 # mapping/fallback decision (and cause PrintStarted to reopen it).
-                if self._toolmap_hold_active and (self._state.get("dialog") or {}).get("workflow") == "tool_mapping":
+                if self._toolmap_hold_active and not self._toolmap_validating and (self._state.get("dialog") or {}).get("workflow") == "tool_mapping":
                     self._state["prompt"] = self._toolmap_review_prompt or self._state.get("prompt")
                 elif self._toolmap_hold_active and (
                         record["actions"] == ["Abort", "Print"] or
@@ -2896,7 +2908,7 @@ class RmeCompatibilityPlugin(
                     del errors[:-10]
             # Nested native filament dialogs can temporarily own the host UI,
             # without destroying/recreating the job's mapping/fallback review.
-            if self._toolmap_hold_active and self._state.get("prompt") is None and self._toolmap_review_prompt:
+            if self._toolmap_hold_active and not self._toolmap_validating and self._state.get("prompt") is None and self._toolmap_review_prompt:
                 self._state["prompt"] = self._toolmap_review_prompt
         # The receive hook must remain memory-only; persistence and websocket
         # publication happen after returning control to OctoPrint's RX loop.
@@ -4263,6 +4275,27 @@ class RmeCompatibilityPlugin(
                 prompt = self._toolmap_review_prompt or self._state.get("prompt") or {}
                 review_id = prompt.get("review_id")
                 start_token = self._preflight_start_token
+                if self._toolmap_validating:
+                    return False
+                self._toolmap_validating = True
+                self._toolmap_review_prompt = prompt
+                if (self._state.get("prompt") or {}).get("kind") == "toolmap":
+                    self._state["prompt"] = None
+                self._state["startup"] = dict(phase="validating", message="Validating nozzle and filament…")
+                prepare = self._state.get("session", {}).get("serial_prepare") == 1
+                preparation_id = (review_id or (uuid.uuid4().int & 0xffffffff) or 1) if prepare else None
+                self._startup_preparation_id = preparation_id
+            self._schedule_publish()
+            # PREPARE displays a protected serial screen without starting the
+            # print timer or its inactivity timeout. Older firmware keeps the
+            # host gate but cannot provide this new validation-wait screen.
+            if prepare:
+                if not self._startup_exchange("PREPARE", preparation_id):
+                    self._printer.cancel_print()
+                    return False
+            with self._state_lock:
+                if not self._toolmap_hold_active or start_token != self._preflight_start_token:
+                    return False
             plugins = getattr(getattr(self, "_plugin_manager", None), "plugins", {})
             info = plugins.get("Nozzle_Filament_Validator") or plugins.get("nozzle_filament_validator")
             validator = getattr(getattr(info, "implementation", None), "validate_file_for_start", None)
@@ -4284,8 +4317,28 @@ class RmeCompatibilityPlugin(
                 if (not self._toolmap_hold_active or start_token != self._preflight_start_token
                         or current.get("review_id") != review_id):
                     return False
+            if prepare:
+                if not self._startup_exchange("RELEASE", preparation_id):
+                    self._printer.cancel_print()
+                    return False
+                with self._state_lock:
+                    if not self._toolmap_hold_active or start_token != self._preflight_start_token:
+                        return False
+                    self._startup_preparation_id = None
             self._send_commands(["M75"])
         return True
+
+    def _startup_exchange(self, action, job_id):
+        with self._state_lock:
+            self._startup_request = (job_id, action)
+            self._startup_reply = None
+            self._startup_reply_ready.clear()
+        self._send_priority_services(["@RME SESSION %s id=%d" % (action, job_id)], "startup")
+        if not self._startup_reply_ready.wait(5):
+            self._logger.error("RME startup %s was not acknowledged; keeping job blocked", action)
+            return False
+        with self._state_lock:
+            return self._startup_request == (job_id, action) and self._startup_reply is True
 
     def _save_toolmap_defaults_later(self, mapping, enabled):
         with self._state_lock:
@@ -4321,6 +4374,12 @@ class RmeCompatibilityPlugin(
                 self._startup_analysis.request(disk, "end", analyze_end_move)
         except (OSError, KeyError, TypeError, ValueError, AttributeError):
             self._logger.debug("Optional selected-file analysis unavailable", exc_info=True)
+
+    def _install_octopod_helper_filter(self):
+        from .octopod_notifications import install
+        info = getattr(self._plugin_manager, "plugins", {}).get("octopod")
+        if info and getattr(info, "enabled", True):
+            install(info.implementation)
 
     def _prepare_completion_move(self):
         with self._state_lock:
@@ -4596,6 +4655,10 @@ class RmeCompatibilityPlugin(
 
     def _release_toolmap_hold(self, native_complete=False):
         with self._state_lock:
+            preparation_id = self._startup_preparation_id
+            self._startup_preparation_id = None
+            self._toolmap_validating = False
+            self._state["startup"] = None
             startup_holds = list(self._startup_boundary_holds.values())
             self._startup_boundary_holds.clear()
             prompt = self._state.get("prompt")
@@ -4614,6 +4677,8 @@ class RmeCompatibilityPlugin(
             owner.set_job_on_hold(False)
         if held:
             try:
+                if preparation_id and not native_complete and self._state.get("connected"):
+                    self._send_priority_services(["@RME SESSION ABORT id=%d" % preparation_id], "startup")
                 if review_id and not native_complete and self._state.get("connected"):
                     try:
                         self._send_priority_services(["@RME REVIEW CANCEL id=%d" % review_id], "tool_review")
@@ -4631,7 +4696,7 @@ class RmeCompatibilityPlugin(
     def _start_native_tool_review(self):
         """Feature-detected LCD review; legacy firmware retains the host gate."""
         with self._state_lock:
-            if not self._toolmap_hold_active:
+            if not self._toolmap_hold_active or self._toolmap_validating:
                 return
             prompt = self._toolmap_review_prompt or self._state.get("prompt") or {}
             if prompt.get("native_state") == "blocked":

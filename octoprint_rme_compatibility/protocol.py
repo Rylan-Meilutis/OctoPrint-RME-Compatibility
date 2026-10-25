@@ -195,6 +195,7 @@ def parse_line(raw_line):
         ("RME_ENVELOPE ", "envelope"),
         ("RME_LIMITS ", "limits"),
         ("RME_SESSION ", "session"),
+        ("RME_STARTUP ", "startup_ack"),
         ("RME_LOCK ", "lock"),
         ("RME_THEME ", "theme"),
         ("RME_LIGHT ", "light"),

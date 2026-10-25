@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.0b151 — 2026-10-25
+
+- Dismiss the mapper immediately after the matching approved commit while
+  retaining the execution hold during NFV validation. With companion firmware
+  advertising `serial_prepare=1`, keep its protected serial Preparing screen
+  open without starting the timer or motion. Acknowledged, job-scoped release
+  follows validation; cancellation, lease loss, and rejected acknowledgements
+  cannot start job G-code. Older firmware retains validation-before-M75.
+- Suppress OctoPod job notifications for Continuous Print's generated local
+  automation scripts. Filter the notification boundary (including its
+  PrinterStateChanged completion path), not core lifecycle events needed by
+  Continuous Print. Real-file notifications and OctoPod's Test button remain.
+
 ## 0.1.0b150 — 2026-10-23
 
 - Add a Dashboard/RME planned-tool-changes-remaining display, indexed from the

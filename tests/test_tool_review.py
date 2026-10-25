@@ -84,6 +84,10 @@ class ToolReview(unittest.TestCase):
                 def validate(path):
                     self.assertEqual(path, '/uploads/part.gcode')
                     self.assertTrue(p._toolmap_hold_active)
+                    self.assertIsNone(p._state['prompt'])
+                    self.assertEqual(p._state['startup']['phase'], 'validating')
+                    p._handle_record(dict(record='session', lease=1, printer_state='ATTENTION'))
+                    self.assertIsNone(p._state['prompt'])
                     self.assertNotIn(['M75'], p._printer.command_batches)
                     self.assertFalse(p._printer.holds)
                     if outcome == 'cancelled':
@@ -97,6 +101,49 @@ class ToolReview(unittest.TestCase):
                     self.assertFalse(p._toolmap_hold_active)
                 else:
                     self.assertNotIn(['M75'], p._printer.command_batches)
+
+    def test_prepared_firmware_acknowledges_screen_before_validation(self):
+        p = self.plugin()
+        self.submit(p)
+        p._preflight_gate_started = True
+        p._state['session']['serial_prepare'] = 1
+        p._preflight_selected_file = lambda: dict(origin='local', path='part.gcode')
+        p._file_manager = types.SimpleNamespace(path_on_disk=lambda *args: '/uploads/part.gcode')
+        actions = []
+        def service(commands, trigger):
+            action = commands[0].split()[2]
+            actions.append(action)
+            p._handle_record(parse_line('RME_STARTUP id=123 action=%s accepted=1' % action))
+        p._send_priority_services = service
+        def validate(path):
+            self.assertEqual(actions, ['PREPARE'])
+            self.assertIsNone(p._state['prompt'])
+            self.assertTrue(p._toolmap_hold_active)
+            self.assertNotIn(['M75'], p._printer.command_batches)
+            # Duplicate completions cannot validate twice or reopen the popup.
+            p._handle_tool_review(dict(id=123, state='complete', revision=19))
+            self.assertEqual(actions, ['PREPARE'])
+            return True
+        p._plugin_manager.plugins['Nozzle_Filament_Validator'] = types.SimpleNamespace(
+            implementation=types.SimpleNamespace(validate_file_for_start=validate))
+        p._handle_tool_review(dict(id=123, state='complete', revision=19))
+        self.assertEqual(actions, ['PREPARE', 'RELEASE'])
+        self.assertIn(['M75'], p._printer.command_batches)
+        self.assertFalse(p._toolmap_hold_active)
+
+    def test_rejected_preparation_never_runs_validator_or_m75(self):
+        p = self.plugin()
+        self.submit(p)
+        p._preflight_gate_started = True
+        p._state['session']['serial_prepare'] = 1
+        validator = Mock()
+        p._plugin_manager.plugins['Nozzle_Filament_Validator'] = types.SimpleNamespace(
+            implementation=types.SimpleNamespace(validate_file_for_start=validator))
+        p._send_priority_services = lambda *args: p._handle_record(
+            parse_line('RME_STARTUP id=123 action=PREPARE accepted=0'))
+        p._handle_tool_review(dict(id=123, state='complete', revision=19))
+        validator.assert_not_called()
+        self.assertNotIn(['M75'], p._printer.command_batches)
 
     def test_wrong_material_shared_cycle_or_unattached_fallback_stays_held(self):
         for joins in ("0:1", "0:2,2:0", "1:2", "0:2,0:1", "8:2"):
