@@ -7,6 +7,34 @@ from octoprint_rme_compatibility.progress import progress_command
 
 
 class HostProgressTests(unittest.TestCase):
+    def test_counts_are_capability_checked_and_match_current_file(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._state['machine'].update(host_progress=1, host_tool_changes=1)
+        plugin._state['session']['active'] = True
+        data = self.data()
+        data['job']['file']['path'] = 'part.gcode'
+        plugin._printer = types.SimpleNamespace(get_current_data=lambda: data,
+            get_state_id=lambda: 'PRINTING', is_paused=lambda: False)
+        sent = []
+        plugin._send_priority_service = lambda command, trigger: sent.append(command)
+        for left, total, file, expected in (
+            (3, 9, 'part.gcode', 'tools_remaining=3 tools_total=9'),
+            (0, 0, 'part.gcode', 'tools_remaining=0 tools_total=0'),
+            (1, 9, 'old.gcode', 'tools_remaining=unknown tools_total=unknown'),
+            (None, None, 'part.gcode', 'tools_remaining=unknown tools_total=unknown'),
+            (10, 9, 'part.gcode', 'tools_remaining=unknown tools_total=unknown')):
+            plugin._state['tool_changes'] = dict(active=True, file=file, remaining=left, total=total)
+            plugin._progress_pending_until = 0
+            plugin._progress_last_command = None
+            plugin._sync_host_progress()
+            self.assertIn(expected, sent[-1])
+            self.assertTrue(sent[-1].endswith('paused=0'))
+        plugin._state['machine']['host_tool_changes'] = 0
+        plugin._progress_pending_until = 0
+        plugin._progress_last_command = None
+        plugin._sync_host_progress()
+        self.assertNotIn('tools_', sent[-1])
+
     def data(self, percent=23.8, remaining=134):
         return {"job": {"file": {"origin": "local"}}, "progress": {"completion": percent, "printTimeLeft": remaining}}
 

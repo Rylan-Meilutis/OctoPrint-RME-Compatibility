@@ -360,23 +360,169 @@ $(function () {
         self.tuneSpeed = ko.observable(100);
         self.tuneFan = ko.observable(0);
         self.tuneFlows = ko.observableArray([]);
-        self.toolChangeText = ko.pureComputed(function () {
+        self.dashboardWidgetOptions = [
+            {key: "dashboard_rme_progress", title: "RME workflow progress circle", initial: true},
+            {key: "dashboard_rme_bar", title: "RME workflow overlay on OctoPrint progress bar", initial: true},
+            {key: "dashboard_tool_changes", title: "RME planned tool changes remaining", initial: true},
+            {key: "dashboard_dock_fan", title: "RME dock fan speed", label: "Dock fan", field: "dock_fan", rpm: "dock_rpm", type: "pwm"},
+            {key: "dashboard_heatbreak_fan", title: "RME heatbreak fan speed", label: "Heatbreak fan", field: "heatbreak_pwm", rpm: "heatbreak_rpm", type: "pwm"},
+            {key: "dashboard_part_fan_rpm", title: "RME measured part-cooling fan RPM", label: "Part fan RPM", field: "part_fan_rpm", type: "rpm", max: 15000},
+            {key: "dashboard_controller_fan", title: "RME controller cooling fan speed", label: "Controller fan", field: "controller_fan_pwm", rpm: "controller_fan_rpm", type: "pwm"},
+            {key: "dashboard_heatbreak_temp", title: "RME heatbreak temperature", label: "Heatbreak temp", field: "heatbreak_temp", type: "temp", max: 120},
+            {key: "dashboard_buddy_mcu", title: "RME Buddy MCU temperature", label: "Buddy MCU", field: "buddy_mcu", type: "temp", max: 150},
+            {key: "dashboard_buddy_board", title: "RME Buddy board temperature", label: "Buddy board", field: "buddy_board", type: "temp", max: 150},
+            {key: "dashboard_head_mcu", title: "RME toolhead MCU temperature", label: "Head MCU", field: "head_mcu", type: "temp", max: 150},
+            {key: "dashboard_head_board", title: "RME toolhead board temperature", label: "Head board", field: "head_board", type: "temp", max: 150},
+            {key: "dashboard_head_ambient", title: "RME INDX head ambient temperature", label: "Head ambient", field: "head_ambient", type: "temp", max: 100},
+            {key: "dashboard_chamber_temp", title: "RME chamber temperature", label: "Chamber", field: "chamber_temp", type: "temp", max: 100}
+        ];
+        var dashboardFallbackSettings = {}, dashboardSubscriptions = [];
+        self.dashboardWidgetSetting = function (option) {
+            var settings = (((self.settings || {}).settings || {}).plugins || {}).rme_compatibility || dashboardFallbackSettings;
+            if (!ko.isObservable(settings[option.key])) {
+                settings[option.key] = ko.observable(settings[option.key] === undefined ? !!option.initial : !!settings[option.key]);
+            }
+            return settings[option.key];
+        };
+        self.dashboardWidgetEnabled = function (key) {
+            var option = self.dashboardWidgetOptions.filter(function (item) { return item.key === key; })[0];
+            return option ? !!ko.unwrap(self.dashboardWidgetSetting(option)) : false;
+        };
+        self.installDashboardWidgets = function () {
+            var element = document.getElementById("tab_plugin_dashboard");
+            var dashboard = element && ko.dataFor(element);
+            self.dashboardWidgetOptions.forEach(function (option) {
+                var enabled = self.dashboardWidgetSetting(option);
+                if (dashboardSubscriptions.indexOf(enabled) < 0) {
+                    dashboardSubscriptions.push(enabled);
+                    enabled.subscribe(function () {
+                        self.renderToolChangeWidget(); self.renderDashboardSensors(); scheduleCoreWorkflowRender();
+                    });
+                }
+                if (!dashboard || !ko.isObservable(dashboard.widgetsSettings)) return;
+                var row = dashboard.widgetsSettings().filter(function (item) { return item.rmeKey === option.key; })[0];
+                if (row) row.enabled = enabled;
+                else dashboard.widgetsSettings.push({title: option.title, enabled: enabled, rmeKey: option.key});
+            });
+        };
+        self.onSettingsBeforeShow = function () { self.installDashboardWidgets(); };
+        self.dashboardSensorReadings = ko.pureComputed(function () {
+            var tune = self.state().tune || {}, age = self.tick() - Number(tune.updated || 0) * 1000;
+            var fresh = !!self.state().connected && !!self.state().supported && age >= -5000 && age < 15000;
+            var nativeSettings = (((self.settings || {}).settings || {}).plugins || {}).dashboard || {};
+            var fahrenheit = ko.unwrap(nativeSettings.useFahrenheit) === true;
+            return self.dashboardWidgetOptions.filter(function (option) {
+                return option.field && self.dashboardWidgetEnabled(option.key);
+            }).map(function (option) {
+                var raw = tune[option.field], rpm = tune[option.rpm];
+                var known = fresh && typeof raw === "number" && isFinite(raw) &&
+                    (option.type === "temp" ? raw !== -1 && raw > -100 && raw < 500 : raw >= 0 && raw <= (option.type === "pwm" ? 255 : 100000));
+                var measured = fresh && typeof rpm === "number" && isFinite(rpm) && rpm >= 0 && rpm <= 100000;
+                var value = known ? (option.type === "pwm" ? Math.round(raw * 100 / 255) :
+                    option.type === "temp" ? Math.round((fahrenheit ? raw * 9 / 5 + 32 : raw) * 10) / 10 : Math.round(raw)) : null;
+                return {key: option.key, title: option.title, label: option.label,
+                    text: known ? value + (option.type === "temp" ? (fahrenheit ? "°F" : "°C") : option.type === "pwm" ? "%" : "") : "—",
+                    detail: !fresh ? "Waiting for telemetry" : !known ? "Unavailable" : option.rpm ?
+                        (measured ? Math.round(rpm) + " RPM" : "RPM unavailable") : option.type === "rpm" ? "Measured RPM" : "Measured temperature",
+                    fraction: known ? Math.max(0, Math.min(1, raw / (option.type === "pwm" ? 255 : option.max))) : 0,
+                    description: option.type === "pwm" ? "Commanded PWM percentage; RPM is a separate measurement." :
+                        "Read-only sensor. Gauge range is a display scale, not a safety threshold."};
+            });
+        });
+        self.renderDashboardSensors = function () {
+            var root = $("#tab_plugin_dashboard");
+            if (!root.length) return;
+            if (!self.state().supported || !self.state().connected) {
+                root.find(".rme-dashboard-sensor").remove();
+                root.find(".rme-dashboard-sensor-neighbor").removeClass("rme-dashboard-sensor-neighbor"); return;
+            }
+            var readings = self.dashboardSensorReadings(), ids = readings.map(function (reading) { return "rme-" + reading.key; });
+            root.find(".rme-dashboard-sensor").each(function () { if (ids.indexOf(this.id) < 0) $(this).remove(); });
+            var fan = root.find(".dashboard_threeQuarterGauge").filter(function () {
+                return String($(this).attr("data-bind") || "").indexOf("'fan'") >= 0;
+            }).first();
+            fan.toggleClass("rme-dashboard-sensor-neighbor", readings.length > 0);
+            var nativeSvg = fan.children("svg").first(), nativeArc = nativeSvg.find("path.dashboardGauge").first();
+            var arc = nativeArc.attr("d") || "M31.82 108.18a54 54 0 1 1 76.36 0";
+            var length = parseFloat(nativeArc.attr("stroke-dasharray")) || 254.47;
+            var area = fan.parent();
+            if (!area.length) area = root.find(".dashboardProgressContainer").first().parent();
+            if (!area.length) area = root;
+            readings.forEach(function (reading) {
+                var widget = root.find("#rme-" + reading.key);
+                if (!widget.length) {
+                    widget = $('<div class="dashboardGridItem dashboard_threeQuarterGauge rme-dashboard-sensor" role="status">' +
+                        '<svg viewBox="0 0 140 140" role="img"><path class="bg" stroke="#ccc" fill="none" />' +
+                        '<path class="dashboardGauge rme-sensor-gauge" stroke="#09c" fill="none" />' +
+                        '<text class="rme-sensor-value" font-size="23" x="50%" y="48%" dominant-baseline="middle" text-anchor="middle" fill="#08c"></text>' +
+                        '<text class="rme-sensor-detail" font-size="10" x="50%" y="68%" text-anchor="middle" fill="currentColor"></text>' +
+                        '<text class="rme-sensor-caption" font-size="12" x="50%" y="88%" text-anchor="middle" fill="currentColor"></text></svg></div>')
+                        .attr("id", "rme-" + reading.key).appendTo(area);
+                }
+                widget.children("svg").attr({viewBox: nativeSvg.attr("viewBox") || "0 0 140 140", "aria-label": reading.title});
+                if (nativeSvg.width() > 0 && nativeSvg.height() > 0) widget.children("svg").css({width: nativeSvg.width(), height: nativeSvg.height()});
+                widget.find("path").attr("d", arc);
+                widget.find(".rme-sensor-gauge").attr({"stroke-dasharray": length, "stroke-dashoffset": length * (1 - reading.fraction)});
+                widget.find(".rme-sensor-value").text(reading.text);
+                widget.find(".rme-sensor-detail").text(reading.detail);
+                widget.find(".rme-sensor-caption").text(reading.label);
+                widget.attr({"aria-label": reading.title + ": " + reading.text + ", " + reading.detail,
+                    title: reading.title + ": " + reading.text + ", " + reading.detail + ". " + reading.description});
+            });
+        };
+        self.dashboardSensorReadings.subscribe(function () { self.renderDashboardSensors(); });
+        self.toolChangeGauge = ko.pureComputed(function () {
             var stats = self.state().tool_changes || {};
             var progress = self.objectProgress();
-            if (!self.state().connected || !stats.active || (progress && (!progress.active || progress.file !== stats.file))) return "No active local print";
-            return typeof stats.remaining === "number" ? stats.remaining + " / " + stats.total : "Calculating…";
+            var active = !!self.state().connected && !!stats.active && !(progress && (!progress.active || progress.file !== stats.file));
+            var known = active && Number.isInteger(stats.remaining) && Number.isInteger(stats.total) &&
+                stats.remaining >= 0 && stats.total >= stats.remaining;
+            return {active: active, known: known, text: !active ? "No active local print" :
+                known ? stats.remaining + "/" + stats.total : "Calculating…",
+                fraction: known ? (stats.total === 0 ? 1 : stats.remaining / stats.total) : 0};
         });
+        self.toolChangeText = ko.pureComputed(function () { return self.toolChangeGauge().text; });
         self.renderToolChangeWidget = function () {
             var root = $("#tab_plugin_dashboard");
             if (!root.length) return;
             var widget = root.find("#rme-tool-changes-dashboard");
-            if (!widget.length) {
-                widget = $('<div id="rme-tool-changes-dashboard" class="rme-card" role="status" aria-live="polite"><strong>Planned tool changes remaining</strong><p></p><small>Initial pickup excluded; based on queued G-code, not percentage.</small></div>').appendTo(root);
+            if (!self.state().supported || !self.state().connected || !self.dashboardWidgetEnabled("dashboard_tool_changes")) {
+                widget.remove(); root.find(".rme-dashboard-tool-changes-neighbor").removeClass("rme-dashboard-tool-changes-neighbor"); return;
             }
-            widget.toggle(!!self.state().supported);
-            widget.find("p").text(self.toolChangeText());
+            if (!widget.length) {
+                widget = $('<div id="rme-tool-changes-dashboard" class="dashboardGridItem dashboard_threeQuarterGauge" role="status" aria-live="polite">' +
+                    '<svg viewBox="0 0 140 140" role="img" aria-label="Planned tool changes remaining">' +
+                    '<path class="bg rme-tool-changes-track" stroke="#ccc" fill="none" />' +
+                    '<path class="dashboardGauge rme-tool-changes-gauge" stroke="#09c" fill="none" />' +
+                    '<text class="dashboardGauge rme-tool-changes-value" font-size="24" x="50%" y="48%" dominant-baseline="middle" text-anchor="middle" fill="#08c"></text>' +
+                    '<text class="rme-tool-changes-caption" font-size="13" x="50%" y="70%" text-anchor="middle" fill="currentColor">Tool changes</text>' +
+                    '<text font-size="12" x="50%" y="83%" text-anchor="middle" fill="currentColor">remaining</text></svg></div>').appendTo(root);
+            }
+            var fan = root.find(".dashboard_threeQuarterGauge").filter(function () {
+                return String($(this).attr("data-bind") || "").indexOf("'fan'") >= 0;
+            }).first();
+            fan.addClass("rme-dashboard-tool-changes-neighbor");
+            var anchor = root.find("#rme-dashboard-progress");
+            if (!anchor.length) anchor = fan;
+            if (anchor.length && widget.prev()[0] !== anchor[0]) widget.insertAfter(anchor);
+            if (!anchor.length) {
+                var area = root.find(".dashboardProgressContainer").first().parent();
+                if (area.length) widget.appendTo(area);
+            }
+            var svg = fan.children("svg").first(), gauge = svg.find("path.dashboardGauge").first();
+            var arc = gauge.attr("d") || "M31.82 108.18a54 54 0 1 1 76.36 0";
+            var length = parseFloat(gauge.attr("stroke-dasharray")) || 254.47;
+            widget.children("svg").attr("viewBox", svg.attr("viewBox") || "0 0 140 140");
+            if (svg.width() > 0 && svg.height() > 0) widget.children("svg").css({width: svg.width(), height: svg.height()});
+            var value = self.toolChangeGauge();
+            widget.find("path").attr("d", arc);
+            widget.find(".rme-tool-changes-gauge").attr({"stroke-dasharray": length, "stroke-dashoffset": length * (1 - value.fraction)});
+            widget.find(".rme-tool-changes-value").text(value.known ? value.text : "—")
+                .attr("font-size", value.text.length > 11 ? 14 : value.text.length > 7 ? 18 : 24);
+            widget.attr("aria-label", "Planned tool changes remaining: " + value.text)
+                .attr("title", value.text + " planned tool changes remaining. Initial pickup excluded; based on queued G-code, not percentage.");
         };
-        self.toolChangeText.subscribe(function () { self.renderToolChangeWidget(); });
+        self.toolChangeGauge.subscribe(function () { self.renderToolChangeWidget(); });
         self.tune = ko.pureComputed(function () { return self.state().tune || {}; });
         self.tuneAvailable = ko.pureComputed(function () {
             return !!self.state().connected && Number((self.state().machine || {}).tune) === 1;
@@ -2113,6 +2259,8 @@ $(function () {
             // Keep the bound editor outside tab overflow/transform containers.
             $("#rme-tool-mapping").detach().appendTo(document.body);
             self.installDashboardHeight();
+            self.installDashboardWidgets();
+            self.renderDashboardSensors();
             self.renderToolChangeWidget();
             self.integrateCancelObjectPreview();
             // Move the already-bound controls once, preserving their KO context.
@@ -2577,7 +2725,7 @@ $(function () {
                 toolIndicator.find(".rme-active-tool-label").text(self.activeToolText());
                 toolIndicator.attr("title", self.activeToolText());
             }
-            if (!active) {
+            if (!active || !self.dashboardWidgetEnabled("dashboard_rme_bar")) {
                 target.removeClass("rme-workflow-active rme-workflow-indeterminate");
                 overlay.remove();
                 return;
@@ -2607,7 +2755,7 @@ $(function () {
                 return String($(this).attr("data-bind") || "").indexOf("'fan'") >= 0;
             }).first();
             if (!self.state().connected || !self.state().supported ||
-                ko.unwrap(settings.dashboard_rme_progress) === false) {
+                !self.dashboardWidgetEnabled("dashboard_rme_progress")) {
                 circle.remove();
                 fan.removeClass("rme-dashboard-fan-neighbor");
                 return;

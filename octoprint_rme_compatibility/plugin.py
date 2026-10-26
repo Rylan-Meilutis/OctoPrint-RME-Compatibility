@@ -533,6 +533,19 @@ class RmeCompatibilityPlugin(
             "firmware_auto_check": True,
             "firmware_variant": "",
             "dashboard_rme_progress": True,
+            "dashboard_rme_bar": True,
+            "dashboard_tool_changes": True,
+            "dashboard_dock_fan": False,
+            "dashboard_heatbreak_fan": False,
+            "dashboard_part_fan_rpm": False,
+            "dashboard_controller_fan": False,
+            "dashboard_heatbreak_temp": False,
+            "dashboard_buddy_mcu": False,
+            "dashboard_buddy_board": False,
+            "dashboard_head_mcu": False,
+            "dashboard_head_board": False,
+            "dashboard_head_ambient": False,
+            "dashboard_chamber_temp": False,
             "legacy_notifications": False,
             "auto_machine_profile": True,
             "prompt_toolmap_on_print": True,
@@ -2604,7 +2617,10 @@ class RmeCompatibilityPlugin(
             elif kind == "tune":
                 # Replace one bounded snapshot, never append it to event history.
                 capacity = min(8, int(self._state["machine"].get("tool_capacity", 0)))
-                keys = ("speed", "fan", "dock_fan", "progress_percent", "progress_remaining", "host_percent", "stealth", "auto_pa", "printing", "light", "lcd", "screen_print", "chamber_print", "status_print", "material_cooling", "print_filter", "post_filter") + tuple("F%d" % i for i in range(capacity))
+                keys = ("speed", "fan", "dock_fan", "dock_rpm", "heatbreak_pwm", "heatbreak_rpm", "part_fan_rpm",
+                        "controller_fan_pwm", "controller_fan_rpm", "heatbreak_temp", "buddy_mcu", "buddy_board",
+                        "head_mcu", "head_board", "head_ambient", "chamber_temp",
+                        "progress_percent", "progress_remaining", "host_percent", "stealth", "auto_pa", "printing", "light", "lcd", "screen_print", "chamber_print", "status_print", "material_cooling", "print_filter", "post_filter") + tuple("F%d" % i for i in range(capacity))
                 self._state["tune"] = {key: record[key] for key in keys if key in record}
                 self._state["tune"]["updated"] = time.time()
                 self._tune_query_pending = False
@@ -4001,9 +4017,21 @@ class RmeCompatibilityPlugin(
                 return
         if not self._host_progress_ready():
             return
-        command = progress_command(self._printer.get_current_data() or {}, self._printer.is_paused())
+        data = self._printer.get_current_data() or {}
+        command = progress_command(data, self._printer.is_paused())
         if command is None:
             return
+        with self._state_lock:
+            stats = dict(self._state.get('tool_changes') or {})
+            tool_changes_supported = self._state['machine'].get('host_tool_changes') == 1
+        if tool_changes_supported:
+            selected = (data.get('job') or {}).get('file') or {}
+            left, total = stats.get('remaining'), stats.get('total')
+            known = (stats.get('active') and selected.get('origin') == 'local'
+                     and selected.get('path') == stats.get('file')
+                     and type(left) is int and type(total) is int and 0 <= left <= total <= 200000)
+            fields = ' tools_remaining=%d tools_total=%d' % (left, total) if known else ' tools_remaining=unknown tools_total=unknown'
+            command = command.replace(' paused=', fields + ' paused=')
         with self._state_lock:
             now = time.monotonic()
             previous = self._progress_last_command

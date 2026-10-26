@@ -48,7 +48,10 @@
     <div class="control-group">
         <label class="control-label">Dashboard</label>
         <div class="controls">
-            <label class="checkbox"><input type="checkbox" data-bind="checked: settings.settings.plugins.rme_compatibility.dashboard_rme_progress"> Show the persistent RME progress circle</label>
+            <p>These visibility toggles also appear in Dashboard's enabled/disabled widget settings. Extra sensors are read-only and off by default. Unsupported or stale readings show unavailable, not zero.</p>
+            <div data-bind="foreach: dashboardWidgetOptions">
+                <label class="checkbox"><input type="checkbox" data-bind="checked: $root.dashboardWidgetSetting($data)"> <span data-bind="text: title"></span></label>
+            </div>
         </div>
     </div>
     <div class="control-group">

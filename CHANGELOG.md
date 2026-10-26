@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.0b152 — 2026-10-25
+
+- Register RME progress-circle, workflow-bar, tool-change and optional sensor
+  visibility toggles in Dashboard's native enabled/disabled widget settings.
+  They share persisted RME settings with the fallback RME settings controls.
+- Add read-only dock, heatbreak and controller fan percentage/RPM gauges,
+  part-cooling RPM, and Buddy/head MCU, board, heatbreak, head-ambient and
+  chamber temperatures when reported by companion firmware. Extra sensors
+  default off, follow Dashboard's temperature units, and show unavailable for
+  missing or stale readings. PWM percentage is not inferred from RPM.
+- Replace the Dashboard tool-change text card with a native-style circular
+  gauge showing remaining/total. Prints with no planned changes show `0/0`
+  with a full ring; unknown/inactive data is not shown as a known zero.
+- Send capability-checked planned tool-change counts with host progress for
+  the companion serial LCD's fourth statistics item. Pending/stale/different
+  files are cleared rather than guessed. The LCD shows it only above zero.
+
 ## 0.1.0b151 — 2026-10-25
 
 - Display Obico's automatic failure/spaghetti-detection pause reason using its

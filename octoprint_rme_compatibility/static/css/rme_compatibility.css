@@ -347,6 +347,14 @@
     max-width: 100%;
     height: auto;
 }
+#rme-tool-changes-dashboard { display: block; }
+#rme-tool-changes-dashboard > svg { width: 140px; max-width: 100%; height: auto; }
+#rme-tool-changes-dashboard .rme-tool-changes-gauge { transition: stroke-dashoffset .25s linear; }
+#tab_plugin_dashboard .rme-dashboard-tool-changes-neighbor { left: 0; }
+.rme-dashboard-sensor { display: block; }
+.rme-dashboard-sensor > svg { width: 140px; max-width: 100%; height: auto; }
+.rme-dashboard-sensor .rme-sensor-gauge { transition: stroke-dashoffset .25s linear; }
+#tab_plugin_dashboard .rme-dashboard-sensor-neighbor { left: 0; }
 #tab_plugin_dashboard .rme-dashboard-fan-neighbor {
     /* The native last-row centering does not count the adjacent RME gauge. */
     left: 0;
