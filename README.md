@@ -402,6 +402,14 @@ Protocol and transport tests do not require OctoPrint itself:
 python -m unittest discover -s tests -v
 ```
 
+Dashboard layout regression `tests/test_dashboard_layout.js` uses Playwright's
+Chromium with jQuery and Knockout available to Node. Run `playwright install
+chromium` in your test environment first. Set `RME_DASHBOARD_CSS` to a local
+Dashboard `static/css/dashboard.css` to test the complete upstream stylesheet;
+otherwise the test reproduces its relevant grid, font and fullscreen rules.
+It checks narrow/normal/fullscreen layouts and result cleanup without printer
+hardware. Other browser scripts use jsdom (plus knockout-mapping where needed).
+
 When the Buddy firmware checkout is adjacent to this repository, the serial
 link suite also reads its shared RME transfer constants and drives the real
 plugin file service through an independent fragmented-byte firmware peer. This

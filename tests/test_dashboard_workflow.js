@@ -30,7 +30,8 @@ const {jQueryFactory} = require('jquery/factory');
     await render(true, true);
     assert.equal($('#fan').next().attr('id'), 'rme-dashboard-progress');
     assert.equal($('#rme-dashboard-progress path.rme-dashboard-track').attr('d'), 'native-arc');
-    assert.equal($('#rme-dashboard-progress > svg').css('height'), '140px');
+    assert.equal($('#rme-dashboard-progress > svg').attr('height'), '140');
+    assert.equal($('#rme-dashboard-progress > svg')[0].style.height, '');
     await render(true, true);
     assert.equal($('#rme-dashboard-progress').length, 1);
     await render(false, true); // Stale capabilities after disconnect must not keep it visible.

@@ -406,6 +406,28 @@ $(function () {
             });
         };
         self.onSettingsBeforeShow = function () { self.installDashboardWidgets(); };
+        // Use Dashboard's existing gauge grid, including when its fan is hidden.
+        // Never append a gauge to the tab/progress wrapper or freeze its CSS size.
+        function dashboardGaugeGrid(root, fan) {
+            var grid = fan.closest(".dashboardGridContainer");
+            if (!grid.length) grid = root.find(".dashboard_threeQuarterGauge").not(".rme-dashboard-gauge").first().closest(".dashboardGridContainer");
+            if (!grid.length) grid = root.find(".rme-dashboard-gauge-grid").first();
+            if (!grid.length) grid = root.find(".dashboardGridContainer").first();
+            return grid;
+        }
+        function refreshDashboardGrid(root) {
+            root.find(".dashboardGridContainer").each(function () {
+                var grid = $(this);
+                grid.toggleClass("rme-dashboard-gauge-grid", grid.children(".rme-dashboard-gauge").length > 0);
+            });
+        }
+        function fitDashboardValue(element, text, size) {
+            // Dashboard's global SVG text rules override presentation attributes.
+            element.text(text).css("font-size", size + "px");
+            var width = text.length * size * 0.65;
+            element.attr({textLength: width > 78 ? 78 : null,
+                lengthAdjust: width > 78 ? "spacingAndGlyphs" : null});
+        }
         self.dashboardSensorReadings = ko.pureComputed(function () {
             var tune = self.state().tune || {}, age = self.tick() - Number(tune.updated || 0) * 1000;
             var fresh = !!self.state().connected && !!self.state().supported && age >= -5000 && age < 15000;
@@ -434,41 +456,40 @@ $(function () {
             if (!root.length) return;
             if (!self.state().supported || !self.state().connected) {
                 root.find(".rme-dashboard-sensor").remove();
-                root.find(".rme-dashboard-sensor-neighbor").removeClass("rme-dashboard-sensor-neighbor"); return;
+                refreshDashboardGrid(root); return;
             }
             var readings = self.dashboardSensorReadings(), ids = readings.map(function (reading) { return "rme-" + reading.key; });
             root.find(".rme-dashboard-sensor").each(function () { if (ids.indexOf(this.id) < 0) $(this).remove(); });
             var fan = root.find(".dashboard_threeQuarterGauge").filter(function () {
                 return String($(this).attr("data-bind") || "").indexOf("'fan'") >= 0;
             }).first();
-            fan.toggleClass("rme-dashboard-sensor-neighbor", readings.length > 0);
             var nativeSvg = fan.children("svg").first(), nativeArc = nativeSvg.find("path.dashboardGauge").first();
             var arc = nativeArc.attr("d") || "M31.82 108.18a54 54 0 1 1 76.36 0";
             var length = parseFloat(nativeArc.attr("stroke-dasharray")) || 254.47;
-            var area = fan.parent();
-            if (!area.length) area = root.find(".dashboardProgressContainer").first().parent();
-            if (!area.length) area = root;
+            var area = dashboardGaugeGrid(root, fan);
+            if (!area.length) return;
             readings.forEach(function (reading) {
                 var widget = root.find("#rme-" + reading.key);
                 if (!widget.length) {
-                    widget = $('<div class="dashboardGridItem dashboard_threeQuarterGauge rme-dashboard-sensor" role="status">' +
-                        '<svg viewBox="0 0 140 140" role="img"><path class="bg" stroke="#ccc" fill="none" />' +
+                    widget = $('<div class="dashboardGridItem dashboard_threeQuarterGauge rme-dashboard-gauge rme-dashboard-sensor" role="status">' +
+                        '<svg width="140" height="140" viewBox="0 0 140 140" role="img"><path class="bg" stroke="#ccc" fill="none" />' +
                         '<path class="dashboardGauge rme-sensor-gauge" stroke="#09c" fill="none" />' +
                         '<text class="rme-sensor-value" font-size="23" x="50%" y="48%" dominant-baseline="middle" text-anchor="middle" fill="#08c"></text>' +
-                        '<text class="rme-sensor-detail" font-size="10" x="50%" y="68%" text-anchor="middle" fill="currentColor"></text>' +
-                        '<text class="rme-sensor-caption" font-size="12" x="50%" y="88%" text-anchor="middle" fill="currentColor"></text></svg></div>')
+                        '</svg><div class="rme-gauge-label rme-sensor-caption"></div>' +
+                        '<div class="rme-gauge-detail rme-sensor-detail"></div></div>')
                         .attr("id", "rme-" + reading.key).appendTo(area);
                 }
                 widget.children("svg").attr({viewBox: nativeSvg.attr("viewBox") || "0 0 140 140", "aria-label": reading.title});
-                if (nativeSvg.width() > 0 && nativeSvg.height() > 0) widget.children("svg").css({width: nativeSvg.width(), height: nativeSvg.height()});
+                if (widget.parent()[0] !== area[0]) widget.appendTo(area);
                 widget.find("path").attr("d", arc);
                 widget.find(".rme-sensor-gauge").attr({"stroke-dasharray": length, "stroke-dashoffset": length * (1 - reading.fraction)});
-                widget.find(".rme-sensor-value").text(reading.text);
+                fitDashboardValue(widget.find(".rme-sensor-value"), reading.text, 23);
                 widget.find(".rme-sensor-detail").text(reading.detail);
                 widget.find(".rme-sensor-caption").text(reading.label);
                 widget.attr({"aria-label": reading.title + ": " + reading.text + ", " + reading.detail,
                     title: reading.title + ": " + reading.text + ", " + reading.detail + ". " + reading.description});
             });
+            refreshDashboardGrid(root);
         };
         self.dashboardSensorReadings.subscribe(function () { self.renderDashboardSensors(); });
         self.toolChangeGauge = ko.pureComputed(function () {
@@ -487,40 +508,38 @@ $(function () {
             if (!root.length) return;
             var widget = root.find("#rme-tool-changes-dashboard");
             if (!self.state().supported || !self.state().connected || !self.dashboardWidgetEnabled("dashboard_tool_changes")) {
-                widget.remove(); root.find(".rme-dashboard-tool-changes-neighbor").removeClass("rme-dashboard-tool-changes-neighbor"); return;
+                widget.remove(); refreshDashboardGrid(root); return;
             }
             if (!widget.length) {
-                widget = $('<div id="rme-tool-changes-dashboard" class="dashboardGridItem dashboard_threeQuarterGauge" role="status" aria-live="polite">' +
-                    '<svg viewBox="0 0 140 140" role="img" aria-label="Planned tool changes remaining">' +
+                widget = $('<div id="rme-tool-changes-dashboard" class="dashboardGridItem dashboard_threeQuarterGauge rme-dashboard-gauge" role="status" aria-live="polite">' +
+                    '<svg width="140" height="140" viewBox="0 0 140 140" role="img" aria-label="Planned tool changes remaining">' +
                     '<path class="bg rme-tool-changes-track" stroke="#ccc" fill="none" />' +
                     '<path class="dashboardGauge rme-tool-changes-gauge" stroke="#09c" fill="none" />' +
                     '<text class="dashboardGauge rme-tool-changes-value" font-size="24" x="50%" y="48%" dominant-baseline="middle" text-anchor="middle" fill="#08c"></text>' +
-                    '<text class="rme-tool-changes-caption" font-size="13" x="50%" y="70%" text-anchor="middle" fill="currentColor">Tool changes</text>' +
-                    '<text font-size="12" x="50%" y="83%" text-anchor="middle" fill="currentColor">remaining</text></svg></div>').appendTo(root);
+                    '</svg><div class="rme-gauge-label rme-tool-changes-caption">Tool changes</div>' +
+                    '<div class="rme-gauge-detail">remaining</div></div>');
             }
             var fan = root.find(".dashboard_threeQuarterGauge").filter(function () {
                 return String($(this).attr("data-bind") || "").indexOf("'fan'") >= 0;
             }).first();
-            fan.addClass("rme-dashboard-tool-changes-neighbor");
+            var area = dashboardGaugeGrid(root, fan);
+            if (!area.length) { widget.remove(); return; }
             var anchor = root.find("#rme-dashboard-progress");
             if (!anchor.length) anchor = fan;
             if (anchor.length && widget.prev()[0] !== anchor[0]) widget.insertAfter(anchor);
-            if (!anchor.length) {
-                var area = root.find(".dashboardProgressContainer").first().parent();
-                if (area.length) widget.appendTo(area);
-            }
+            if (widget.parent()[0] !== area[0]) widget.appendTo(area);
             var svg = fan.children("svg").first(), gauge = svg.find("path.dashboardGauge").first();
             var arc = gauge.attr("d") || "M31.82 108.18a54 54 0 1 1 76.36 0";
             var length = parseFloat(gauge.attr("stroke-dasharray")) || 254.47;
             widget.children("svg").attr("viewBox", svg.attr("viewBox") || "0 0 140 140");
-            if (svg.width() > 0 && svg.height() > 0) widget.children("svg").css({width: svg.width(), height: svg.height()});
             var value = self.toolChangeGauge();
             widget.find("path").attr("d", arc);
             widget.find(".rme-tool-changes-gauge").attr({"stroke-dasharray": length, "stroke-dashoffset": length * (1 - value.fraction)});
-            widget.find(".rme-tool-changes-value").text(value.known ? value.text : "—")
-                .attr("font-size", value.text.length > 11 ? 14 : value.text.length > 7 ? 18 : 24);
+            fitDashboardValue(widget.find(".rme-tool-changes-value"), value.known ? value.text : "—",
+                value.text.length > 11 ? 14 : value.text.length > 7 ? 18 : 24);
             widget.attr("aria-label", "Planned tool changes remaining: " + value.text)
                 .attr("title", value.text + " planned tool changes remaining. Initial pickup excluded; based on queued G-code, not percentage.");
+            refreshDashboardGrid(root);
         };
         self.toolChangeGauge.subscribe(function () { self.renderToolChangeWidget(); });
         self.tune = ko.pureComputed(function () { return self.state().tune || {}; });
@@ -2757,12 +2776,12 @@ $(function () {
             if (!self.state().connected || !self.state().supported ||
                 !self.dashboardWidgetEnabled("dashboard_rme_progress")) {
                 circle.remove();
-                fan.removeClass("rme-dashboard-fan-neighbor");
+                refreshDashboardGrid(root);
                 return;
             }
             if (!circle.length) {
-                circle = $('<div id="rme-dashboard-progress" class="dashboardGridItem dashboard_threeQuarterGauge" role="group" aria-label="RME workflow progress">' +
-                    '<svg viewBox="0 0 140 140" role="img" aria-label="RME">' +
+                circle = $('<div id="rme-dashboard-progress" class="dashboardGridItem dashboard_threeQuarterGauge rme-dashboard-gauge" role="group" aria-label="RME workflow progress">' +
+                    '<svg width="140" height="140" viewBox="0 0 140 140" role="img" aria-label="RME">' +
                     '<path class="bg rme-dashboard-track" stroke="#ccc" fill="none" />' +
                     '<path class="dashboardGauge rme-dashboard-workflow-gauge" stroke="#09c" fill="none" />' +
                     // Same vector as firmware src/gui/res/svg/rme_host_16x16.svg.
@@ -2771,25 +2790,20 @@ $(function () {
                     '<path fill="#4b2e83" d="M4.5 3.5h4.1c2.05 0 3.4 1.18 3.4 3.02 0 1.31-.68 2.28-1.86 2.72l2.18 3.26H9.75L7.9 9.55H6.75v2.95H4.5zm2.25 1.85v2.42h1.6c.88 0 1.4-.44 1.4-1.22 0-.77-.52-1.2-1.4-1.2z" />' +
                     '</svg>' +
                     '<text class="dashboardGauge rme-dashboard-percentage" font-size="20" x="50%" y="73%" dominant-baseline="middle" text-anchor="middle" fill="#08c"></text>' +
-                    '<text class="dashboardGauge rme-dashboard-workflow-caption" font-size="20" x="50%" y="90%" dominant-baseline="middle" text-anchor="middle" fill="#08c"></text>' +
-                    '</svg></div>');
-                var progressArea = root.find(".dashboardProgressContainer").first().parent();
-                if (progressArea.length) circle.appendTo(progressArea);
-                else circle.appendTo(root);
+                    '</svg><div class="rme-gauge-label rme-dashboard-workflow-caption"></div></div>');
             }
+            var area = dashboardGaugeGrid(root, fan);
+            if (!area.length) { circle.remove(); return; }
+            if (circle.parent()[0] !== area[0]) circle.appendTo(area);
             var arc = "M31.82 108.18a54 54 0 1 1 76.36 0", arcLength = 254.47;
             if (fan.length) {
-                fan.addClass("rme-dashboard-fan-neighbor");
                 if (circle.prev()[0] !== fan[0]) circle.insertAfter(fan);
-                // Match the native gauge dimensions, including fullscreen themes.
+                // Match geometry; Dashboard's stylesheet owns responsive sizing.
                 var fanSvg = fan.children("svg").first();
                 var nativeGauge = fanSvg.find("path.dashboardGauge").first();
                 arc = nativeGauge.attr("d") || arc;
                 arcLength = parseFloat(nativeGauge.attr("stroke-dasharray")) || arcLength;
                 circle.children("svg").attr("viewBox", fanSvg.attr("viewBox") || "0 0 140 140");
-                if (fanSvg.width() > 0 && fanSvg.height() > 0) {
-                    circle.children("svg").css({width: fanSvg.width(), height: fanSvg.height()});
-                }
             }
             var raw = self.workflowProgress();
             var progress = Number(raw);
@@ -2806,6 +2820,7 @@ $(function () {
             circle.find(".rme-dashboard-percentage").text(determinate ? Math.round(bounded) + "%" : (active ? "…" : ""));
             circle.find(".rme-dashboard-workflow-caption").text(active ? "RME" : "Ready");
             circle.attr("title", label).attr("aria-label", label);
+            refreshDashboardGrid(root);
         }
 
         function updateCorePrintClock() {

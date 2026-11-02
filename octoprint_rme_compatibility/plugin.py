@@ -3841,9 +3841,14 @@ class RmeCompatibilityPlugin(
         self._send_session_command("@RME SESSION OPEN events=31 legacy=%d" % legacy)
 
     def _send_session_command(self, command):
-        # Ordinary send queues may be waiting for an ok from paused firmware.
+        # Cancellation can discard a queued command before its final ok. Keep
+        # polling out of band until the terminal firmware snapshot releases
+        # OctoPrint's cancellation callback/marker. A retained result screen
+        # and asynchronous filtration must not hold this handshake hostage.
         try:
-            active = self._printer.get_state_id() in ("PRINTING", "PAUSING", "PAUSED", "RESUMING")
+            active = self._printer.get_state_id() in (
+                "PRINTING", "PAUSING", "PAUSED", "RESUMING", "CANCELLING", "FINISHING",
+            )
         except AttributeError:
             active = False
         if active:

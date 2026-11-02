@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.0b153 — 2026-11-02
+
+- Keep RME gauges in Dashboard's existing gauge grid and inherit its responsive
+  SVG sizing. Neutralize native last-row offsets only while that grid contains
+  RME items, since Dashboard's offset count does not include injected gauges.
+- Put gauge captions and sensor details below the rings, explicitly size value
+  text against Dashboard's blanket font rules, and bound long numeric values.
+- Keep session recovery queries out of the ACK-blocked job queue during
+  cancellation and finishing too. A terminal firmware snapshot can finish
+  OctoPrint's normal cancellation callback without dismissing the printer's
+  result screen or waiting for background filtration. Motion/stopping states
+  still cannot finish cancellation early.
+
 ## 0.1.0b152 — 2026-10-25
 
 - Register RME progress-circle, workflow-bar, tool-change and optional sensor

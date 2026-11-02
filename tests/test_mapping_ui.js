@@ -204,7 +204,7 @@ const {jQueryFactory} = require('jquery/factory');
     assert.equal(dashboard.querySelector('.rme-dashboard-logo path').getAttribute('d'),
         'M4.5 3.5h4.1c2.05 0 3.4 1.18 3.4 3.02 0 1.31-.68 2.28-1.86 2.72l2.18 3.26H9.75L7.9 9.55H6.75v2.95H4.5zm2.25 1.85v2.42h1.6c.88 0 1.4-.44 1.4-1.22 0-.77-.52-1.2-1.4-1.2z');
     assert.equal(fan.nextElementSibling.id, 'rme-dashboard-progress');
-    assert(fan.classList.contains('rme-dashboard-fan-neighbor'));
+    assert(fan.parentElement.classList.contains('rme-dashboard-gauge-grid'));
     assert.equal(dashboard.querySelector('.rme-dashboard-workflow-caption').textContent, 'Ready');
     await renderDashboard({workflow: 'tool_change', state: 'active', progress: 50});
     assert.equal(dashboard.querySelector('.rme-dashboard-percentage').textContent, '50%');

@@ -143,6 +143,16 @@ class PauseRecovery(unittest.TestCase):
         self.snapshot(p, "paused")
         self.assertEqual(p._state["pause"]["reason"], "Spaghetti detected")
 
+    def test_cancel_and_finish_keepalive_cannot_wait_behind_discarded_job_ack(self):
+        for host in ("CANCELLING", "FINISHING"):
+            with self.subTest(host=host):
+                p = self.plugin(host)
+                p._send_command = Mock(side_effect=AssertionError("job ACK is missing"))
+                for command in ("@RME SESSION KEEPALIVE", "@RME SESSION QUERY"):
+                    p._send_session_command(command)
+                    p._send_priority_service.assert_called_with(command, "session_recovery")
+                p._send_command.assert_not_called()
+
     def test_detected_spaghetti_reason_and_rejected_resume_are_recoverable(self):
         p = self.plugin("RESUMING")
         self.assertTrue(p._pause_reason.observe("//action:notification Spaghetti detected"))

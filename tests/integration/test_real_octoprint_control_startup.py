@@ -36,6 +36,19 @@ class RealControlStartup(unittest.TestCase):
         p._state.update(supported=True, connected=True, workflow={'workflow': 'filtration', 'phase': 'post_print', 'state': 'active'})
         record = dict(printer_state='STOPPED', pause_phase='none')
         p._state['session'].update(active=True, **record)
+        # The original regression was before reconciliation: session polling
+        # entered the ordinary ACK-blocked queue during CANCELLING, so the
+        # terminal snapshot could never arrive while the result screen stayed.
+        p._send_command = Mock(side_effect=AssertionError('normal queue blocked by missing job ACK'))
+        wire = []
+        c._sendingLock = threading.RLock()
+        c._serial_encoding = 'ascii'
+        c._use_up_clear = Mock(return_value=False)
+        c._do_send = Mock(side_effect=AssertionError('must not consume job line'))
+        c._do_send_without_checksum = wire.append
+        p._printer.commands = lambda command, **kw: p.gcode_queuing_hook(c, 'queuing', command, None, None, tags=kw['tags'])
+        p._send_session_command('@RME SESSION KEEPALIVE')
+        self.assertEqual([b'@RME SESSION KEEPALIVE'], wire)
         p._reconcile_printer_pause(record)
         self.assertTrue(c._currentFile.done)
         c._callback.on_comm_print_job_cancelled.assert_called_once_with(user='operator')
