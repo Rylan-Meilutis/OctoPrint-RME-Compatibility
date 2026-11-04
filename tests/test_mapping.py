@@ -5,6 +5,29 @@ from octoprint_rme_compatibility.mapping import compatible, read_requirements, r
 
 
 class MappingTests(unittest.TestCase):
+    def test_legacy_profile_ids_are_not_mapping_or_join_materials(self):
+        for required, alias in [('PLA', 'PLA-00C'), ('TPU', 'TPU-00L'),
+                                ('PETG', 'PET-007'), ('HIPS', 'HIP-00M')]:
+            req = [{'logical': 0, 'material': required}]
+            loaded = [{'tool': i, 'firmware_material': alias, 'firmware_profile': alias,
+                       'provider_material': required} for i in range(2)]
+            validate(req, loaded, {}, False)
+            self.assertEqual(fallback_choices(req[0], loaded, {0}), [1])
+            self.assertIsNotNone(recommend(req, loaded, 2))
+        self.assertFalse(compatible('TPU', 'TPU-95A'))
+        self.assertFalse(compatible('PLA', 'PLA-ESD'))
+        self.assertFalse(compatible('PLA', 'PLA-CF'))
+        self.assertFalse(compatible('S00000C', 'S00000C'))
+        for alias, required in [('S00ABCD', 'PLA'), ('PA-ZZZ', 'PA'),
+                                ('PC-123', 'PC'), ('XYZ-ABC', 'TPU')]:
+            req = [{'logical': 0, 'material': required}]
+            loaded = [{'tool': 0, 'firmware_material': alias, 'firmware_profile': alias,
+                       'provider_material': required}]
+            validate(req, loaded, {}, False)
+            loaded[0]['firmware_material'] = 'ASA'
+            with self.assertRaises(ValueError):
+                validate(req, loaded, {}, False)
+
     def test_fallback_ranking_chain_and_per_print_reset(self):
         req = {'logical': 0, 'material': 'PLA', 'color': '#ffffff'}
         loaded = [{'tool': i, 'material': m, 'color': c} for i, m, c in

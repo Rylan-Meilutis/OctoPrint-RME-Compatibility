@@ -8,12 +8,30 @@ def material(value):
     value = str(value or "").strip().upper()
     if value in ("", "---", "NONE", "UNKNOWN", "NEW"):
         return ""
+    # Missing material metadata cannot be reconstructed from a profile ID.
+    # Exact provider associations are handled by loaded_material instead.
+    if re.fullmatch(r"(?:[A-Z]{1,3}-0[0-9A-Z]{2}|S[0-9A-Z]{6})", value):
+        return ""  # An opaque profile ID is not a polymer.
     # Do not equate composite/specialty materials with their base polymer.
     return {"PET": "PETG", "TPU": "FLEX", "TPE": "FLEX", "NYLON": "PA"}.get(value, value)
 
 
 def compatible(required, loaded):
     return bool(material(required)) and material(required) == material(loaded)
+
+
+def loaded_material(row):
+    """Keep provider profile identity separate from the polymer contract.
+
+    provider_material is populated only after an exact, unique profile lookup.
+    It is not inferred from a prefix or from the currently selected tool.
+    A distinct explicit firmware material remains authoritative.
+    """
+    reported = row.get("firmware_reported_material", row.get("firmware_material"))
+    profile = row.get("firmware_profile") or row.get("profile")
+    if reported and reported == profile and row.get("provider_material"):
+        return row["provider_material"]
+    return row.get("firmware_material") or row.get("material")
 
 
 def color_distance(a, b):
@@ -61,7 +79,7 @@ def recommend(requirements, loaded, count):
         candidates.append([
             (tool, color_distance(req.get("color"), row.get("color")))
             for tool, row in sorted(by_tool.items()) if 0 <= tool < count and
-            compatible(req["material"], row.get("firmware_material") or row.get("material"))
+            compatible(req["material"], loaded_material(row))
         ])
 
     @functools.lru_cache(maxsize=2048)
@@ -100,7 +118,7 @@ def validate(requirements, loaded, mapping, enabled):
         logical = int(req["logical"])
         physical = mapping.get(logical, mapping.get(str(logical), logical)) if enabled else logical
         row = by_tool.get(int(physical), {})
-        if not compatible(req["material"], row.get("firmware_material") or row.get("material")):
+        if not compatible(req["material"], loaded_material(row)):
             raise ValueError("T%d requires %s; physical T%d has no matching loaded material" %
                              (logical, req["material"], physical))
 
@@ -109,7 +127,7 @@ def fallback_choices(requirement, loaded, excluded):
     """Same-material backups, closest known color first; never auto-select."""
     return [int(row["tool"]) for row in sorted(
         (row for row in loaded if int(row["tool"]) not in excluded and
-         compatible(requirement["material"], row.get("firmware_material") or row.get("material"))),
+         compatible(requirement["material"], loaded_material(row))),
         key=lambda row: (color_distance(requirement.get("color"), row.get("color")), int(row["tool"])))]
 
 

@@ -1,6 +1,7 @@
 import unittest
 import threading
 import logging
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import Mock
 from test_toolmap_gate import RmeCompatibilityPlugin, _Printer
@@ -29,6 +30,32 @@ class Comm:
 
 
 class PauseRecovery(unittest.TestCase):
+    def test_inert_continuousprint_helpers_do_not_control_a_firmware_job(self):
+        p = self.plugin('PAUSED')
+        p._state['session']['printer_state'] = 'IDLE'
+        path = 'ContinuousPrint/tmp/continuousprint_start_print.gcode'
+        p._printer.get_current_data = lambda: {'job': {'file': {'origin': 'local', 'path': path}}}
+        with tempfile.NamedTemporaryFile(mode='w+') as stream:
+            p._file_manager = SimpleNamespace(path_on_disk=lambda *a: stream.name)
+            stream.write('@pause\n;skip-rme-toolmapping\n;skip_validation\n')
+            stream.flush()
+            self.assertTrue(p._selected_job_is_host_control_macro())
+            for action in ('pause', 'resume', 'cancel'):
+                self.assertFalse(p._request_priority_control(action))
+            p._state['machine']['host_progress'] = 1
+            p._send_command = Mock()
+            p._sync_host_progress()
+            p._send_command.assert_not_called()
+            self.assertEqual(p._printer.forced_commands, [])
+            p._state['session']['printer_state'] = 'PAUSED'
+            self.assertFalse(p._selected_job_is_host_control_macro())
+            self.assertTrue(p._request_priority_control('cancel'))
+            p._state['session']['printer_state'] = 'IDLE'
+            stream.write('G1 X20 E1\n'); stream.flush()
+            self.assertFalse(p._selected_job_is_host_control_macro())
+            path = 'real_print.gcode'
+            self.assertFalse(p._selected_job_is_host_control_macro())
+
     def test_terminal_cancel_snapshot_completes_core_callback_even_while_filtering(self):
         for state in ('STOPPED', 'FINISHED', 'IDLE'):
             p = self.plugin('CANCELLING')

@@ -54,7 +54,7 @@ from .mesh_area import analyze as analyze_mesh_area, is_adaptive_probe
 from .completion_snapshot import CompletionSnapshot
 from .pause_reason import PauseReason
 from .end_move import analyze as analyze_end_move, normalized as normalize_end_move
-from .mapping import read_requirements, recommend, validate, compatible, fallback_commands, recent_mapping_valid
+from .mapping import read_requirements, recommend, validate, compatible, fallback_commands, recent_mapping_valid, loaded_material
 from .uploader import FirmwareUploader, UploadError, firmware_metadata
 from .live_controls import command as live_control_command
 from .firmware_image import validate as validate_firmware_image
@@ -2015,6 +2015,11 @@ class RmeCompatibilityPlugin(
                 self._print_job_gcode_sent = False
                 self._skip_cancel_script = False
                 self._state['tool_changes'] = {}
+            # Queue explicit family repair BEFORE the review or any job G-code.
+            # This also repairs per-tool ad-hoc copies, not just menu presets.
+            repairs = self._loaded_material_repair_commands()
+            if repairs:
+                self._send_commands(repairs + ["M865 Q"])
             self._prepare_toolmap_prompt(record_preflight=True)
             self._prepare_mesh_area()
             self._prepare_chamber_job()
@@ -2824,32 +2829,13 @@ class RmeCompatibilityPlugin(
                     if len(candidates) == 1:
                         provider_match = candidates[0]
                 if provider_match:
-                    # Some 6.8.1-RME builds echo the seven-character custom
-                    # profile into both S and P even though FILAMENT SET was
-                    # published with an explicit base= family.  The alias is
-                    # ours, so its provider record is the authoritative and
-                    # unambiguous source for the persisted base association.
-                    # Keep the raw values for diagnostics, but do not let the
-                    # duplicated alias become the UI material or M976 input.
-                    reported_material = loadout.get("firmware_material", "")
-                    reported_profile = loadout.get("firmware_profile", "")
-                    if (
-                        loadout.get("material_family_reported") is True
-                        and reported_profile
-                        and reported_material == reported_profile
-                        and reported_profile == provider_match.get("alias")
-                    ):
-                        inferred_base = self._firmware_filament_base(
-                            provider_match.get("material")
-                        )
-                        if inferred_base != "none":
-                            loadout.update(
-                                firmware_reported_material=reported_material,
-                                firmware_material=inferred_base,
-                                material_family_reported=True,
-                            )
+                    # Preserve actual firmware state. Provider metadata is a
+                    # separate field until the explicit printer-side repair
+                    # is acknowledged; never pretend a UI correction fixed
+                    # the material used by firmware PA validation.
                     loadout.update(
                         firmware_alias=loadout.get("profile", ""),
+                        provider_material=provider_match.get("material", ""),
                         material=provider_match.get("material", loadout.get("material", "")),
                         vendor=provider_match.get("vendor", ""),
                         display_name=provider_match.get("display_name", ""),
@@ -3461,6 +3447,8 @@ class RmeCompatibilityPlugin(
         commands = {"pause": "M601", "resume": "M602", "cancel": "M604"}
         if action not in commands:
             raise ValueError("Unknown priority control action: %s" % action)
+        if self._selected_job_is_host_control_macro():
+            return False
         with self._state_lock:
             if not (self._state.get("connected") and self._state.get("supported")):
                 return False
@@ -4015,6 +4003,8 @@ class RmeCompatibilityPlugin(
             return
 
     def _sync_host_progress(self):
+        if self._selected_job_is_host_control_macro():
+            return
         with self._state_lock:
             if self._state["machine"].get("host_progress") != 1 or not self._state["session"].get("active"):
                 return
@@ -4520,6 +4510,57 @@ class RmeCompatibilityPlugin(
             if self._preflight_file_info is not None:
                 return dict(self._preflight_file_info)
         return ((self._printer.get_current_data() or {}).get("job") or {}).get("file") or {}
+
+    def _loaded_material_repair_commands(self):
+        """Migrate legacy loaded profiles using exact provider metadata.
+
+        This is capability-gated and only used at the held startup boundary.
+        Firmware atomically checks if_profile before persisting the family;
+        stale observations cannot relabel another spool or an active job.
+        """
+        with self._state_lock:
+            if self._state.get("session", {}).get("material_repair") != 1:
+                return []
+            rows = copy.deepcopy(self._state.get("loaded_filaments") or [])
+        commands = []
+        for row in rows:
+            profile = row.get("firmware_profile") or row.get("profile")
+            reported = row.get("firmware_reported_material", row.get("firmware_material"))
+            base = self._firmware_filament_base(row.get("provider_material"))
+            tool = row.get("tool")
+            if (type(tool) is int and 0 <= tool < 8 and base != "none"
+                    and reported in (None, "", profile) and reported != base
+                    and re.fullmatch(r"[A-Za-z0-9_-]{1,7}", str(profile or ""))):
+                commands.append("@RME FILAMENT ASSIGN tool=%d if_profile=%s material=%s" % (tool, profile, base))
+        return commands
+
+    def _selected_job_is_host_control_macro(self):
+        """Recognize inert Continuous Print helpers, not mapping opt-out prints.
+
+        Their @pause belongs to OctoPrint's queue state machine. There is no
+        firmware job to pause, resume, cancel, or publish print progress for.
+        Never suppress controls while firmware reports a real active job.
+        """
+        with self._state_lock:
+            if str(self._state.get("session", {}).get("printer_state", "")).upper() not in {"IDLE", "FINISHED", "STOPPED"}:
+                return False
+        try:
+            selected = ((self._printer.get_current_data() or {}).get("job") or {}).get("file") or {}
+            path = str(selected.get("path") or "").replace("\\", "/")
+            if selected.get("origin") != "local" or not re.fullmatch(
+                    r"ContinuousPrint/tmp/continuousprint_(?:start|finish|end|cancel)_print\.gcode", path):
+                return False
+            with open(self._file_manager.path_on_disk("local", path), "r", encoding="utf-8-sig") as stream:
+                text = stream.read(65537)
+            if len(text) > 65536:
+                return False
+            for raw in text.splitlines():
+                code = raw.partition(";")[0].strip().upper()
+                if code and code not in {"@PAUSE", "M77"}:
+                    return False
+            return True
+        except (OSError, UnicodeError, AttributeError, TypeError):
+            return False
 
     def _selected_job_has_executable_gcode(self):
         """Return false only when the selected text job is provably inert.
@@ -5932,7 +5973,7 @@ class RmeCompatibilityPlugin(
                 with self._state_lock:
                     loaded = next((row for row in self._state.get("loaded_filaments", [])
                                    if int(row.get("tool", -1)) == tool), {})
-                if not compatible(loaded.get("firmware_material") or loaded.get("material"), spool.get("material")):
+                if not compatible(loaded_material(loaded), spool.get("material")):
                     raise ValueError("Spool material must match the known loaded material for T%d" % tool)
             normalized.append((tool, database_id))
 

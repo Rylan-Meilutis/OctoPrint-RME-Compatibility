@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0b154 — 2026-11-04
+
+- Keep provider profile IDs separate from material families. Repair missing printer-side material metadata from an exact provider association before review/startup, including opaque IDs and the eighth ad-hoc spool. Require firmware capability and an atomic expected-profile check; never relabel a different spool or an active print.
+- Preserve actual firmware reports until repair is acknowledged. Use explicit provider material for legacy mapping/spool-join comparisons instead of guessing a polymer from profile-name prefixes. Keep genuine material mismatches blocked.
+- Do not send firmware pause/resume/cancel/progress for inert Continuous Print helper jobs when no firmware print exists. Active firmware jobs retain recovery controls.
+- Companion firmware lets a new review replace an old finished/cancelled print result screen while protecting unrelated dialogs and active jobs.
+
 ## 0.1.0b153 — 2026-11-02
 
 - Keep RME gauges in Dashboard's existing gauge grid and inherit its responsive

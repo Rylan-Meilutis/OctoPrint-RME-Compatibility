@@ -866,7 +866,8 @@ class ToolmapGateTests(unittest.TestCase):
                                "color_name": "Blue", "color": "#0073ff"})
         loaded = next(item for item in plugin._state["loaded_filaments"] if item["tool"] == 7)
         self.assertEqual("PLA", loaded["material"])
-        self.assertEqual("PLA", loaded["firmware_material"])
+        self.assertEqual("PLA-008", loaded["firmware_material"])
+        self.assertEqual("PLA", loaded["provider_material"])
         self.assertEqual(8, loaded["database_id"])
         # A b126 state restored after upgrading has no assigned_profiles.
         plugin._state["spoolmanager"].pop("assigned_profiles")
@@ -2822,9 +2823,9 @@ class ToolmapGateTests(unittest.TestCase):
         ))
 
         loaded = plugin._state["loaded_filaments"][0]
-        self.assertEqual("PET-00O", loaded["firmware_reported_material"])
         self.assertEqual("PET-00O", loaded["firmware_profile"])
-        self.assertEqual("PETG", loaded["firmware_material"])
+        self.assertEqual("PET-00O", loaded["firmware_material"])
+        self.assertEqual("PETG", loaded["provider_material"])
         self.assertEqual("PETG", loaded["material"])
         self.assertEqual("Black PETG", loaded["display_name"])
         self.assertTrue(loaded["material_family_reported"])

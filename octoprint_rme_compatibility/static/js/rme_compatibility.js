@@ -292,7 +292,7 @@ $(function () {
                 var loaded = (self.state().loaded_filaments || []).filter(function (item) { return Number(item.tool) === tool; })[0] || {};
                 return {tool: tool, color: self.mappingColor(loaded.color), label: self.mappingToolLabel(tool),
                     suggested: Number((self.prompt().recommendation || {})[row.logical]) === tool,
-                    compatible: !!required && required === mappingMaterial(loaded.firmware_material || loaded.material)};
+                    compatible: !!required && required === mappingLoadedMaterial(loaded)};
             });
         };
         self.chooseMappingTool = function (row, choice) {
@@ -348,7 +348,7 @@ $(function () {
         self.mappingToolLabel = function (tool) {
             var rows = self.state().loaded_filaments || [];
             var loaded = rows.filter(function (row) { return Number(row.tool) === Number(tool); })[0] || {};
-            return "T" + tool + " · " + (loaded.material || "Unknown material") +
+            return "T" + tool + " · " + self.loadedFilamentLabel(loaded) +
                 (loaded.color_name ? " · " + loaded.color_name : "");
         };
         self.mappingEnabled = ko.observable(true);
@@ -2355,7 +2355,16 @@ $(function () {
         function mappingMaterial(value) {
             var name = String(value || "").trim().toUpperCase();
             if (["", "---", "NONE", "UNKNOWN", "NEW"].indexOf(name) >= 0) return "";
+            if (/^(?:[A-Z]{1,3}-0[0-9A-Z]{2}|S[0-9A-Z]{6})$/.test(name)) return "";
             return ({PET: "PETG", TPU: "FLEX", TPE: "FLEX", NYLON: "PA"})[name] || name;
+        }
+
+        function mappingLoadedMaterial(loaded) {
+            loaded = loaded || {};
+            var reported = loaded.firmware_reported_material || loaded.firmware_material;
+            var profile = loaded.firmware_profile || loaded.profile;
+            return mappingMaterial(reported && reported === profile && loaded.provider_material ?
+                loaded.provider_material : (loaded.firmware_material || loaded.material));
         }
 
         self.chooseMappingSpool = function (row, spool) {
@@ -2371,7 +2380,7 @@ $(function () {
                 selected: ko.observable(original),
                 dirty: ko.observable(false)
             };
-            row.material = mappingMaterial(loaded && (loaded.firmware_material || loaded.material));
+            row.material = mappingLoadedMaterial(loaded);
             row.availableSpools = ko.pureComputed(function () {
                 var inventory = self.inventorySpools().slice();
                 if (!row.material) return [];
@@ -2401,7 +2410,7 @@ $(function () {
             var queued = ko.utils.arrayFirst(self.pendingNewSpools(), function (item) {
                 return Number(item.tool) === Number(row.tool);
             }) || {};
-            var material = queued.material || loaded.firmware_material || loaded.material || "PLA";
+            var material = mappingMaterial(queued.material) || mappingLoadedMaterial(loaded) || "PLA";
             if (material === "NEW" || material === "---") material = "PLA";
             var colorName = queued.color_name || loaded.color_name || "";
             if (colorName === "None" || colorName === "Custom") colorName = "";

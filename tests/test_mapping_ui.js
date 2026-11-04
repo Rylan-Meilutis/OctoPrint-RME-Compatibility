@@ -23,6 +23,9 @@ const {jQueryFactory} = require('jquery/factory');
     assert.equal(linked.profile, 'PLA-00D'); // Internal identity is untouched.
     assert.equal(vm.loadedFilamentLabel({profile: 'PLA', material: 'PLA'}), 'PLA');
     assert.equal(vm.loadedFilamentLabel({profile: 'PLA-00D', material: 'PLA-00D'}), 'Unassigned');
+    assert.equal(vm.loadedFilamentLabel({profile: 'PLA-00C', material: 'PLA', provider_material: 'PLA'}), 'PLA');
+    assert.equal(vm.loadedFilamentLabel({material: 'TPU-95A'}), 'TPU-95A');
+    assert.equal(vm.loadedFilamentLabel({profile: 'S00000C', material: 'S00000C'}), 'Unassigned');
     assert(!vm.spoolLabel({alias: 'PLA-00D', material: 'PLA', display_name: 'PLA-00D'}).includes('PLA-00D'));
     const state = {supported: true, prompt: {kind: 'toolmap', requirements: [
         {logical: 0, material: 'PLA', color: '#ffffff'}], recommendation: {0: 1, 1: 0, 2: 2}},
