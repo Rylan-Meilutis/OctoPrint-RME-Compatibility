@@ -2309,6 +2309,7 @@ class RmeCompatibilityPlugin(
                         follow_up.append("@RME TOOLMAP QUERY")
             elif kind == "session":
                 self._state["session"]["tool_review"] = int(record.get("tool_review", 0))
+                self._state["session"]["material_repair"] = int(record.get("material_repair", 0))
                 if record.get("preferred_baud"):
                     self._defer(self._configure_auto_baud)
                 previous_lease = bool(self._state["session"].get("active"))

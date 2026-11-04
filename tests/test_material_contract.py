@@ -64,6 +64,13 @@ class MaterialContract(unittest.TestCase):
         p._state['spoolmanager'].update(published=[], assigned_profiles=[], inventory=[{'database_id': 8, 'material': 'PLA'}])
         self.assertEqual(['@RME FILAMENT ASSIGN tool=7 if_profile=PLA-008 material=PLA'], p._loaded_material_repair_commands())
 
+    def test_old_firmware_snapshot_clears_cached_repair_capability(self):
+        p = self.plugin('S00ABCD', 'PLA')
+        p._handle_record(parse_line('RME_SESSION lease=1 printer_state=IDLE material_repair=1'))
+        self.assertEqual(1, len(p._loaded_material_repair_commands()))
+        p._handle_record(parse_line('RME_SESSION lease=1 printer_state=IDLE'))
+        self.assertEqual([], p._loaded_material_repair_commands())
+
     def test_repair_is_queued_before_review_and_job_gcode(self):
         p = self.plugin('S00ABCD', 'PLA')
         p._state['machine']['logical_tools'] = 1
