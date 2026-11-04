@@ -67,3 +67,17 @@ class MaterialContract(unittest.TestCase):
         self.assertTrue(p._prepare_print_start(object()))
         self.assertEqual(['@RME FILAMENT ASSIGN tool=7 if_profile=S00ABCD material=PLA', 'M865 Q', 'REVIEW'], order)
 
+    def test_event_only_native_review_repairs_before_begin(self):
+        p = self.plugin('S00ABCD', 'PLA')
+        p._state['session']['tool_review'] = 1
+        p._toolmap_hold_active = True
+        p._toolmap_review_prompt = {'count': 8, 'enabled': False,
+            'mapping': {i: i for i in range(8)},
+            'requirements': [{'logical': 7, 'material': 'PLA'}]}
+        batches = []
+        p._send_commands = batches.append
+        p._start_native_tool_review()
+        self.assertEqual('@RME FILAMENT ASSIGN tool=7 if_profile=S00ABCD material=PLA', batches[0][0])
+        self.assertEqual('M865 Q', batches[0][1])
+        self.assertTrue(batches[0][2].startswith('@RME REVIEW BEGIN '))
+

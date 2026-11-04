@@ -4810,6 +4810,13 @@ class RmeCompatibilityPlugin(
             enabled = prompt["enabled"]
         commands = ["@RME REVIEW BEGIN id=%d mapping=%s enabled=%d" %
                     (review_id, ",".join(str(mapping[i]) for i in range(int(prompt["count"]))), enabled)]
+        # Older connectors can open review from PrintStarted before the
+        # synchronous startup gate runs. Keep the same repair-before-review
+        # ordering on that path too.
+        if not self._preflight_gate_started:
+            repairs = self._loaded_material_repair_commands()
+            if repairs:
+                commands = repairs + ["M865 Q"] + commands
         commands += ["@RME REVIEW TOOL id=%d logical=%d material=%s" %
                      (review_id, row["logical"], row["material"]) for row in requirements]
         commands += ["@RME REVIEW SHOW id=%d" % review_id]
