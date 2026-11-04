@@ -4522,11 +4522,32 @@ class RmeCompatibilityPlugin(
             if self._state.get("session", {}).get("material_repair") != 1:
                 return []
             rows = copy.deepcopy(self._state.get("loaded_filaments") or [])
+            provider = self._state.get("spoolmanager") or {}
+            records = copy.deepcopy((provider.get("assigned_profiles") or [])
+                                    + (provider.get("published") or [])
+                                    + (provider.get("inventory") or []))
         commands = []
         for row in rows:
             profile = row.get("firmware_profile") or row.get("profile")
             reported = row.get("firmware_reported_material", row.get("firmware_material"))
-            base = self._firmware_filament_base(row.get("provider_material"))
+            family = row.get("provider_material")
+            if not family:
+                # Upgrade caches predate provider_material. Resolve the exact
+                # identity again, including an eighth ad-hoc spool which was
+                # absent from the seven published menu presets.
+                candidates = set()
+                for item in records:
+                    aliases = {item.get("alias")}
+                    try:
+                        alias = spool_alias(item.get("material"), item["database_id"])
+                        aliases.update((alias, spool_alias(item.get("material"), item["database_id"], {alias})))
+                    except (KeyError, TypeError, ValueError):
+                        pass
+                    if profile in aliases and item.get("material"):
+                        candidates.add((item.get("database_id"), item["material"]))
+                if len(candidates) == 1:
+                    family = next(iter(candidates))[1]
+            base = self._firmware_filament_base(family)
             tool = row.get("tool")
             if (type(tool) is int and 0 <= tool < 8 and base != "none"
                     and reported in (None, "", profile) and reported != base

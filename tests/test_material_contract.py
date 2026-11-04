@@ -47,10 +47,22 @@ class MaterialContract(unittest.TestCase):
         self.assertEqual([], p._loaded_material_repair_commands())
         p = self.plugin('S00ABCD', 'PLA')
         p._state['loaded_filaments'][0].pop('provider_material')
+        p._state['spoolmanager'].update(published=[], assigned_profiles=[], inventory=[])
         self.assertEqual([], p._loaded_material_repair_commands())
         p = self.plugin('S00ABCD', 'PLA')
         p._state['session'].pop('material_repair')
         self.assertEqual([], p._loaded_material_repair_commands())
+
+    def test_upgrade_cache_and_eighth_spool_resolve_exact_identity(self):
+        p = self.plugin('S00ABCD', 'PLA')
+        p._state['loaded_filaments'][0].pop('provider_material')
+        self.assertEqual(['@RME FILAMENT ASSIGN tool=7 if_profile=S00ABCD material=PLA'], p._loaded_material_repair_commands())
+        p._state['spoolmanager']['published'].append({'alias': 'S00ABCD', 'database_id': 13, 'material': 'PETG'})
+        self.assertEqual([], p._loaded_material_repair_commands())
+        p = self.plugin('PLA-008', 'PLA')
+        p._state['loaded_filaments'][0].pop('provider_material')
+        p._state['spoolmanager'].update(published=[], assigned_profiles=[], inventory=[{'database_id': 8, 'material': 'PLA'}])
+        self.assertEqual(['@RME FILAMENT ASSIGN tool=7 if_profile=PLA-008 material=PLA'], p._loaded_material_repair_commands())
 
     def test_repair_is_queued_before_review_and_job_gcode(self):
         p = self.plugin('S00ABCD', 'PLA')
