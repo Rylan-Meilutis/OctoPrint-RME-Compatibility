@@ -1,6 +1,8 @@
-# Verified against Prusa's published release assets on 2026-10-17.
+# Verified against Prusa's published release assets through 2026-11-05.
 # Unknown versions fail closed until their supported machines are verified.
 SUPPORTED = {
+    "8.0.0": {"coreone", "coreonel", "coreone_indx", "mk4", "mk3.5"},
+    "8.0.1": {"xl", "mini", *("mini-en-" + x for x in ("cs", "de", "es", "fr", "it", "pl", "ja", "uk"))},
     "6.4.2": {"xl", "mini", *("mini-en-" + x for x in ("cs", "de", "es", "fr", "it", "pl", "ja", "uk"))},
     "6.5.3": {"coreone", "coreonel", "mk4", "mk3.5"},
     "6.5.7": {"coreone", "coreonel", "mk4", "mk3.5"},

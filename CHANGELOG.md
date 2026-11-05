@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.1.0b156 — 2026-11-05
+
+- Recognize the verified 8.0.0 RME releases for CORE One, CORE One L, INDX, MK4-family and MK3.5-family printers, and 8.0.1 for XL and MINI, including MINI language variants.
 - Negotiate `tune_delta=1` and merge sequenced, changed-value tune responses during periodic polling. Keep explicit queries and legacy firmware on full snapshots. Recover from missing/out-of-order replies and reconnects with full state, with a periodic 30-second full refresh.
 
 ## 0.1.0b155 — 2026-11-04

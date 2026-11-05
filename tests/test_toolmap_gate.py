@@ -1467,6 +1467,8 @@ class ToolmapGateTests(unittest.TestCase):
                 self.release_resume = threading.Event()
                 self.cancel_calls = 0
                 self.discard_calls = []
+                self.discard_started = threading.Event()
+                self.release_discard = threading.Event()
 
             def write_file(self, *args, **kwargs):
                 self.resume_started.set()
@@ -1478,6 +1480,8 @@ class ToolmapGateTests(unittest.TestCase):
                 self.release_resume.set()
 
             def discard_partial(self, remote_path, size, digest):
+                self.discard_started.set()
+                self.release_discard.wait(timeout=5)
                 self.discard_calls.append((remote_path, size, digest))
 
         with tempfile.TemporaryDirectory() as directory:
@@ -1517,8 +1521,10 @@ class ToolmapGateTests(unittest.TestCase):
             self.assertTrue(plugin._file_service.resume_started.wait(timeout=1))
 
             plugin._discard_partial_transfer()
+            self.assertTrue(plugin._file_service.discard_started.wait(timeout=1))
             with plugin._partial_thread_lock:
                 discard_worker = plugin._partial_thread
+            plugin._file_service.release_discard.set()
             discard_worker.join(timeout=2)
 
             self.assertFalse(discard_worker.is_alive())

@@ -29,10 +29,16 @@ class FirmwareReleaseTests(unittest.TestCase):
         self.assertEqual(fw.SUPPORTED["6.8.1"], {"coreone", "coreonel"})
         self.assertNotIn("mini", fw.SUPPORTED["6.5.7"])
         self.assertNotIn("6.10.0", fw.SUPPORTED)
+        self.assertEqual(fw.SUPPORTED["8.0.0"], {"coreone", "coreonel", "coreone_indx", "mk4", "mk3.5"})
+        self.assertEqual(fw.SUPPORTED["8.0.1"], {"xl", "mini", *("mini-en-" + x for x in ("cs", "de", "es", "fr", "it", "pl", "ja", "uk"))})
+        self.assertNotIn("8.0.2", fw.SUPPORTED)
 
     def test_unsupported_download_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "does not support"):
             fw.download(dict(name="coreone_indx_6.10.3-RME.bbf"), "/tmp")
+        for name in ("xl_8.0.0-RME.bbf", "mini_8.0.0-RME.bbf", "coreone_indx_8.0.1-RME.bbf"):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "does not support"):
+                fw.download(dict(name=name), "/tmp")
 
     def test_token_only_sent_to_api_not_redirect_cdn(self):
         redirect = Mock(status_code=302, headers={"Location": "https://release-assets.githubusercontent.com/example"})
