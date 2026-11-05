@@ -242,6 +242,8 @@ class RmeCompatibilityPlugin(
         self._tune_query_pending = False
         self._tune_query_deadline = 0.0
         self._tune_poll_after = 0.0
+        self._tune_sequence = None
+        self._tune_full_after = 0.0
         self._tune_last_mutation = 0.0
         self._progress_pending_until = 0.0
         self._progress_last_command = None
@@ -1382,6 +1384,8 @@ class RmeCompatibilityPlugin(
                 self._state["tune"] = {}
                 self._tune_query_pending = False
                 self._tune_poll_after = 0.0
+                self._tune_sequence = None
+                self._tune_full_after = 0.0
                 self._progress_last_command = None
                 self._progress_last_sent = 0.0
                 self._active_tool_was_single_tool_default = False
@@ -2621,13 +2625,28 @@ class RmeCompatibilityPlugin(
                     key: record[key] for key in ("index", "from", "to")
                 })
             elif kind == "tune":
-                # Replace one bounded snapshot, never append it to event history.
+                # Delta frames require a contiguous negotiated baseline. A
+                # dropped/out-of-order reply forces the next query to be full.
+                sequence = record.get("seq")
+                partial = record.get("delta") == 1
+                if partial and (self._state["machine"].get("tune_delta") != 1
+                                or type(sequence) is not int or self._tune_sequence is None
+                                or sequence != ((self._tune_sequence + 1) & 0xffffffff)):
+                    self._tune_sequence = None
+                    self._tune_query_pending = False
+                    return
                 capacity = min(8, int(self._state["machine"].get("tool_capacity", 0)))
                 keys = ("speed", "fan", "dock_fan", "dock_rpm", "heatbreak_pwm", "heatbreak_rpm", "part_fan_rpm",
                         "controller_fan_pwm", "controller_fan_rpm", "heatbreak_temp", "buddy_mcu", "buddy_board",
                         "head_mcu", "head_board", "head_ambient", "chamber_temp",
                         "progress_percent", "progress_remaining", "host_percent", "stealth", "auto_pa", "printing", "light", "lcd", "screen_print", "chamber_print", "status_print", "material_cooling", "print_filter", "post_filter") + tuple("F%d" % i for i in range(capacity))
-                self._state["tune"] = {key: record[key] for key in keys if key in record}
+                changes = {key: record[key] for key in keys if key in record}
+                if partial:
+                    self._state["tune"].update(changes)
+                else:
+                    self._state["tune"] = changes
+                    self._tune_full_after = time.monotonic() + 30
+                self._tune_sequence = sequence if type(sequence) is int else None
                 self._state["tune"]["updated"] = time.time()
                 self._tune_query_pending = False
             elif kind == "host_progress":
@@ -4070,11 +4089,15 @@ class RmeCompatibilityPlugin(
             self._tune_query_pending = True
             self._tune_query_deadline = time.monotonic() + 10
             self._tune_poll_after = time.monotonic() + 2
+            command = "@RME TUNE QUERY"
+            if (periodic and self._state["machine"].get("tune_delta") == 1
+                    and self._tune_sequence is not None and time.monotonic() < self._tune_full_after):
+                command += " since=%d" % self._tune_sequence
         try:
             if periodic and self._state["session"].get("active") and self._state["machine"].get("live_controls") == 1:
-                self._send_priority_service("@RME TUNE QUERY", "tune_query")
+                self._send_priority_service(command, "tune_query")
             else:
-                self._send_command("@RME TUNE QUERY")
+                self._send_command(command)
         except Exception:
             with self._state_lock:
                 self._tune_query_pending = False

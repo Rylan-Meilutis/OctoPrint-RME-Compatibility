@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Negotiate `tune_delta=1` and merge sequenced, changed-value tune responses during periodic polling. Keep explicit queries and legacy firmware on full snapshots. Recover from missing/out-of-order replies and reconnects with full state, with a periodic 30-second full refresh.
+
 ## 0.1.0b155 — 2026-11-04
 
 - Send session keepalives out of band during Starting, including the firmware's protected validation-wait screen. A queued display command cannot block lease renewal and cause firmware to cancel startup after 30 seconds.
