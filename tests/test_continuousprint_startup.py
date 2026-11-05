@@ -11,6 +11,50 @@ from test_toolmap_gate import RmeCompatibilityPlugin, _Settings, _Printer
 
 
 class ContinuousPrintStartup(unittest.TestCase):
+    def test_startup_validation_cancellation_and_replacement_cannot_continue(self):
+        for interruption in ('none', 'cancel', 'replace', 'reject', 'release_cancel', 'prepare_replace'):
+            with self.subTest(interruption=interruption), tempfile.TemporaryDirectory() as directory:
+                p = self.plugin(Path(directory))
+                p._preflight_gate_started = True
+                p._toolmap_hold_active = True
+                p._preflight_start_token = ('real.gcode', 1)
+                p._toolmap_review_prompt = dict(review_id=17)
+                p._state['session']['serial_prepare'] = 1
+                state = ['STARTING']
+                p._printer.get_state_id = lambda: state[0]
+                exchanges = []
+                def exchange(action, job_id):
+                    exchanges.append(action)
+                    if action == 'RELEASE' and interruption == 'release_cancel':
+                        state[0] = 'CANCELLING'  # Before the lifecycle event arrives.
+                    if action == 'PREPARE' and interruption == 'prepare_replace':
+                        p._preflight_start_token = ('replacement.gcode', 2)
+                        return False
+                    return True
+                p._startup_exchange = exchange
+                def validate(path):
+                    if interruption == 'cancel':
+                        state[0] = 'CANCELLING'
+                    if interruption == 'replace':
+                        p._preflight_start_token = ('replacement.gcode', 2)
+                        return False
+                    return interruption != 'reject'
+                validator = types.SimpleNamespace(validate_file_for_start=validate)
+                p._plugin_manager.plugins['Nozzle_Filament_Validator'] = types.SimpleNamespace(implementation=validator)
+                p._preflight_selected_file = lambda: dict(origin='local', path='real.gcode')
+                p._send_commands = Mock()
+                self.assertEqual(interruption == 'none', p._start_approved_serial_job())
+                self.assertEqual(['PREPARE', 'RELEASE'] if interruption in ('none', 'release_cancel') else ['PREPARE'], exchanges)
+                self.assertEqual(1 if interruption == 'none' else 0, p._send_commands.call_count)
+                self.assertEqual(1 if interruption == 'reject' else 0, len(p._printer.cancel_calls))
+
+    def test_late_review_completion_with_no_live_gate_is_not_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            p = self.plugin(Path(directory))
+            p._send_commands = Mock()
+            self.assertFalse(p._start_approved_serial_job())
+            p._send_commands.assert_not_called()
+
     def plugin(self, root):
         p = RmeCompatibilityPlugin()
         p._printer = _Printer()

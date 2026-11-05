@@ -3836,7 +3836,7 @@ class RmeCompatibilityPlugin(
         # and asynchronous filtration must not hold this handshake hostage.
         try:
             active = self._printer.get_state_id() in (
-                "PRINTING", "PAUSING", "PAUSED", "RESUMING", "CANCELLING", "FINISHING",
+                "STARTING", "PRINTING", "PAUSING", "PAUSED", "RESUMING", "CANCELLING", "FINISHING",
             )
         except AttributeError:
             active = False
@@ -4302,8 +4302,13 @@ class RmeCompatibilityPlugin(
         # Only after the matching firmware commit (or validated legacy review),
         # and before releasing the host hold. M75 establishes the serial UI
         # without picking a tool, heating, moving, or bypassing the review.
+        with self._state_lock:
+            if not self._toolmap_hold_active:
+                return False
         if self._preflight_gate_started and self._toolmap_hold_active:
             with self._state_lock:
+                if not self._preflight_gate_started or not self._toolmap_hold_active:
+                    return False
                 prompt = self._toolmap_review_prompt or self._state.get("prompt") or {}
                 review_id = prompt.get("review_id")
                 start_token = self._preflight_start_token
@@ -4318,16 +4323,30 @@ class RmeCompatibilityPlugin(
                 preparation_id = (review_id or (uuid.uuid4().int & 0xffffffff) or 1) if prepare else None
                 self._startup_preparation_id = preparation_id
             self._schedule_publish()
+            def current_start():
+                # Cancellation events may lag the connector state. A delayed
+                # validator/ACK must not resume this job or cancel its successor.
+                with self._state_lock:
+                    return (self._toolmap_hold_active
+                            and start_token == self._preflight_start_token
+                            and self._toolmap_validating
+                            and getattr(self._printer, "get_state_id", lambda: "STARTING")() not in (
+                                "CANCELLING", "FINISHING", "OPERATIONAL", "CLOSED", "ERROR"))
+
+            def cancel_current_start():
+                if current_start():
+                    self._printer.cancel_print()
+            if not current_start():
+                return False
             # PREPARE displays a protected serial screen without starting the
             # print timer or its inactivity timeout. Older firmware keeps the
             # host gate but cannot provide this new validation-wait screen.
             if prepare:
                 if not self._startup_exchange("PREPARE", preparation_id):
-                    self._printer.cancel_print()
+                    cancel_current_start()
                     return False
-            with self._state_lock:
-                if not self._toolmap_hold_active or start_token != self._preflight_start_token:
-                    return False
+            if not current_start():
+                return False
             plugins = getattr(getattr(self, "_plugin_manager", None), "plugins", {})
             info = plugins.get("Nozzle_Filament_Validator") or plugins.get("nozzle_filament_validator")
             validator = getattr(getattr(info, "implementation", None), "validate_file_for_start", None)
@@ -4340,24 +4359,27 @@ class RmeCompatibilityPlugin(
                 self._logger.info("RME mapping approved; validating nozzle and filament before serial start")
                 if not validator(disk):
                     self._logger.warning("RME startup blocked by nozzle/filament validation")
-                    self._printer.cancel_print()
+                    cancel_current_start()
                     return False
             # Validation can show an operator prompt. A cancellation or another
             # job during that wait must never send M75 or release its hold.
             with self._state_lock:
                 current = self._toolmap_review_prompt or self._state.get("prompt") or {}
-                if (not self._toolmap_hold_active or start_token != self._preflight_start_token
+                if (not current_start()
                         or current.get("review_id") != review_id):
                     return False
             if prepare:
                 if not self._startup_exchange("RELEASE", preparation_id):
-                    self._printer.cancel_print()
+                    cancel_current_start()
                     return False
                 with self._state_lock:
-                    if not self._toolmap_hold_active or start_token != self._preflight_start_token:
+                    if not current_start():
                         return False
                     self._startup_preparation_id = None
+            if not current_start():
+                return False
             self._send_commands(["M75"])
+            return current_start()
         return True
 
     def _startup_exchange(self, action, job_id):

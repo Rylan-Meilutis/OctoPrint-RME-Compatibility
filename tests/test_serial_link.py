@@ -1177,11 +1177,21 @@ class CheckedOutFirmwareContractTests(unittest.TestCase):
                 )
                 self.assertIn("r != FilamentType::none", filament)
                 self.assertIn('remote_value(command, "base")', remote_queue)
-                self.assertIn("base_preset_name", m865)
-                self.assertIn("params.base_preset", m865)
+                if 'buddy::m865_material::apply_base_option(p, params)' in m865:
+                    material_parser = ref_file(ref, 'src/common/m865_material.hpp')
+                    self.assertIn('filament_name_buffer_size', material_parser)
+                    self.assertIn('params.base_preset', material_parser)
+                else:
+                    self.assertIn("base_preset_name", m865)
+                    self.assertIn("params.base_preset", m865)
                 self.assertIn("filament_material_name(params)", m865)
                 self.assertIn('SERIAL_ECHO("\\\" P\\\"")', m865)
-                self.assertIn("requested == authoritative_name", m976_material)
+                if 'filament_material::matches(requested, authoritative_name' in m976_material:
+                    material_family = ref_file(ref, 'src/common/filament_material.hpp')
+                    self.assertIn('constexpr bool matches(', material_family)
+                    self.assertIn('canonical_name(requested) == canonical_name(loaded)', material_family)
+                else:
+                    self.assertIn("requested == authoritative_name", m976_material)
                 self.assertIn("query_hash_timeout_ms", firmware_status)
 
         # The 6.8.1 branch emits an immediate assignment detail record while

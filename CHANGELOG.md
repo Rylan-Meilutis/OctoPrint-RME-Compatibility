@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0b155 — 2026-11-04
+
+- Send session keepalives out of band during Starting, including the firmware's protected validation-wait screen. A queued display command cannot block lease renewal and cause firmware to cancel startup after 30 seconds.
+- Recheck the live startup token, hold, and connector state after preparation, validation, and release acknowledgements. Late callbacks cannot start a cancelled job or cancel a replacement job. Preserve event-only connector support.
+- Add cancellation/replacement regressions and a real-OctoPrint Starting-state transport regression. No companion firmware changes are required for this fix.
+
 ## 0.1.0b154 — 2026-11-04
 
 - Keep provider profile IDs separate from material families. Repair missing printer-side material metadata from an exact provider association before review/startup, including opaque IDs and the eighth ad-hoc spool. Require firmware capability and an atomic expected-profile check; never relabel a different spool or an active print.

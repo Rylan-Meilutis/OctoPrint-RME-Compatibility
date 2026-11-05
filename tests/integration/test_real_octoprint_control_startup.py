@@ -14,6 +14,34 @@ from octoprint_rme_compatibility.plugin import RmeCompatibilityPlugin
 
 
 class RealControlStartup(unittest.TestCase):
+    def test_starting_keepalive_bypasses_blocked_numbered_fifo(self):
+        c = MachineCom.__new__(MachineCom)
+        c.close = Mock()
+        c._state = c.STATE_STARTING
+        c._sendingLock = threading.RLock()
+        c._serial_encoding = 'ascii'
+        c._use_up_clear = Mock(return_value=False)
+        c._continue_sending = Mock()
+        c._do_send = Mock(side_effect=AssertionError('must not consume a job line'))
+        wire = []
+        clock = [0]
+        expires = [30]
+        def raw_send(command):
+            self.assertLess(clock[0], expires[0], 'firmware lease expired')
+            wire.append(command)
+            expires[0] = clock[0] + 30
+        c._do_send_without_checksum = raw_send
+        p = RmeCompatibilityPlugin()
+        p._logger = logging.getLogger(__name__)
+        p._state.update(supported=True, connected=True)
+        p._printer = types.SimpleNamespace(get_state_id=lambda: 'STARTING')
+        p._printer.commands = lambda command, **kw: p.gcode_queuing_hook(c, 'queuing', command, None, None, tags=kw['tags'])
+        p._send_command = Mock(side_effect=AssertionError('ordinary queue is held by PREPARE'))
+        for _ in range(7):  # More than two 30-second lease periods.
+            clock[0] += 10
+            p._send_session_command('@RME SESSION KEEPALIVE')
+        self.assertEqual([b'@RME SESSION KEEPALIVE'] * 7, wire)
+
     def test_firmware_stopped_cancel_completes_core_callback_while_filtering(self):
         c = MachineCom.__new__(MachineCom)
         c.close = Mock()
