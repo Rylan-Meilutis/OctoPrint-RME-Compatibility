@@ -56,7 +56,7 @@
             <button class="btn" data-bind="click: $root.applyTuneFlow, enable: $root.tuneEnabled">Apply flow</button>
         </div>
         <p data-bind="visible: !tuneEnabled()">Waiting for current printer state, or controls are locked by a transfer/printer lock.</p>
-        <h5>Planned tool changes remaining</h5><p data-bind="text: toolChangeText"></p>
+        <h5>Planned tool changes completed</h5><p data-bind="text: toolChangeText"></p>
         <small>Initial pickup excluded. Queued G-code progress; manual changes and fallback interventions are not predicted.</small>
         <h5>Live tool mapping</h5><p data-bind="text: liveMapping"></p>
         <small>Logical G-code tools are zero-based; printer tool labels are one-based. Mapping changes are made before a print.</small>

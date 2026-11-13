@@ -363,7 +363,7 @@ $(function () {
         self.dashboardWidgetOptions = [
             {key: "dashboard_rme_progress", title: "RME workflow progress circle", initial: true},
             {key: "dashboard_rme_bar", title: "RME workflow overlay on OctoPrint progress bar", initial: true},
-            {key: "dashboard_tool_changes", title: "RME planned tool changes remaining", initial: true},
+            {key: "dashboard_tool_changes", title: "RME planned tool changes completed", initial: true},
             {key: "dashboard_dock_fan", title: "RME dock fan speed", label: "Dock fan", field: "dock_fan", rpm: "dock_rpm", type: "pwm"},
             {key: "dashboard_heatbreak_fan", title: "RME heatbreak fan speed", label: "Heatbreak fan", field: "heatbreak_pwm", rpm: "heatbreak_rpm", type: "pwm"},
             {key: "dashboard_part_fan_rpm", title: "RME measured part-cooling fan RPM", label: "Part fan RPM", field: "part_fan_rpm", type: "rpm", max: 15000},
@@ -499,8 +499,8 @@ $(function () {
             var known = active && Number.isInteger(stats.remaining) && Number.isInteger(stats.total) &&
                 stats.remaining >= 0 && stats.total >= stats.remaining;
             return {active: active, known: known, text: !active ? "No active local print" :
-                known ? stats.remaining + "/" + stats.total : "Calculating…",
-                fraction: known ? (stats.total === 0 ? 1 : stats.remaining / stats.total) : 0};
+                known ? (stats.total - stats.remaining) + "/" + stats.total : "Calculating…",
+                fraction: known ? (stats.total === 0 ? 1 : (stats.total - stats.remaining) / stats.total) : 0};
         });
         self.toolChangeText = ko.pureComputed(function () { return self.toolChangeGauge().text; });
         self.renderToolChangeWidget = function () {
@@ -512,12 +512,12 @@ $(function () {
             }
             if (!widget.length) {
                 widget = $('<div id="rme-tool-changes-dashboard" class="dashboardGridItem dashboard_threeQuarterGauge rme-dashboard-gauge" role="status" aria-live="polite">' +
-                    '<svg width="140" height="140" viewBox="0 0 140 140" role="img" aria-label="Planned tool changes remaining">' +
+                    '<svg width="140" height="140" viewBox="0 0 140 140" role="img" aria-label="Planned tool changes completed">' +
                     '<path class="bg rme-tool-changes-track" stroke="#ccc" fill="none" />' +
                     '<path class="dashboardGauge rme-tool-changes-gauge" stroke="#09c" fill="none" />' +
                     '<text class="dashboardGauge rme-tool-changes-value" font-size="24" x="50%" y="48%" dominant-baseline="middle" text-anchor="middle" fill="#08c"></text>' +
                     '</svg><div class="rme-gauge-label rme-tool-changes-caption">Tool changes</div>' +
-                    '<div class="rme-gauge-detail">remaining</div></div>');
+                    '<div class="rme-gauge-detail">completed</div></div>');
             }
             var fan = root.find(".dashboard_threeQuarterGauge").filter(function () {
                 return String($(this).attr("data-bind") || "").indexOf("'fan'") >= 0;
@@ -537,8 +537,8 @@ $(function () {
             widget.find(".rme-tool-changes-gauge").attr({"stroke-dasharray": length, "stroke-dashoffset": length * (1 - value.fraction)});
             fitDashboardValue(widget.find(".rme-tool-changes-value"), value.known ? value.text : "—",
                 value.text.length > 11 ? 14 : value.text.length > 7 ? 18 : 24);
-            widget.attr("aria-label", "Planned tool changes remaining: " + value.text)
-                .attr("title", value.text + " planned tool changes remaining. Initial pickup excluded; based on queued G-code, not percentage.");
+            widget.attr("aria-label", "Planned tool changes completed: " + value.text)
+                .attr("title", value.text + " planned tool changes completed. Initial pickup excluded; based on queued G-code, not percentage.");
             refreshDashboardGrid(root);
         };
         self.toolChangeGauge.subscribe(function () { self.renderToolChangeWidget(); });

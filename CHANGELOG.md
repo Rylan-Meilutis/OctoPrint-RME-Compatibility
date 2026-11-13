@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.0b157 — 2026-11-13
+
+- Show planned tool changes as completed/total, filling the Dashboard gauge from 0/total to total/total instead of draining with the remaining count. Keep firmware remaining-count telemetry unchanged.
+
 ## 0.1.0b156 — 2026-11-05
 
 - Recognize the verified 8.0.0 RME releases for CORE One, CORE One L, INDX, MK4-family and MK3.5-family printers, and 8.0.1 for XL and MINI, including MINI language variants.
