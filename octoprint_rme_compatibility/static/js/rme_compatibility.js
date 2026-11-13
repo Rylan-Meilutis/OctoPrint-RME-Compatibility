@@ -454,6 +454,16 @@ $(function () {
         self.renderDashboardSensors = function () {
             var root = $("#tab_plugin_dashboard");
             if (!root.length) return;
+            // Dashboard's native fan updates ignore a zero value and can also
+            // miss firmware-internal M976 fan changes. Prefer fresh firmware
+            // PWM readback, not the last host M106 or a flow multiplier (F0).
+            var tune = self.state().tune || {}, age = self.tick() - Number(tune.updated || 0) * 1000;
+            var dashboard = ko.dataFor(root[0]);
+            if (self.state().supported && self.state().connected && age >= -5000 && age < 15000 &&
+                typeof tune.fan === "number" && isFinite(tune.fan) && tune.fan >= 0 && tune.fan <= 255 &&
+                dashboard && ko.isWriteableObservable(dashboard.fanSpeed)) {
+                dashboard.fanSpeed(Math.round(tune.fan * 100 / 255));
+            }
             if (!self.state().supported || !self.state().connected) {
                 root.find(".rme-dashboard-sensor").remove();
                 refreshDashboardGrid(root); return;
@@ -786,6 +796,15 @@ $(function () {
             var workflow = self.workflow();
             var recovery = workflow.recovery || {};
             return isFinite(Number(recovery.progress)) ? recovery.progress : workflow.progress;
+        });
+        self.workflowPointText = ko.pureComputed(function () {
+            var workflow = self.workflow();
+            if (workflow.workflow !== "probing") return null;
+            // These are explicit firmware counts, never reconstructed from %.
+            var points = /\b(\d+)\/(\d+) points\b/.exec(workflow.message || "");
+            if (!points) return null;
+            var current = Number(points[1]), total = Number(points[2]);
+            return total > 0 && total <= 65535 && current <= total ? current + "/" + total : null;
         });
         self.workflowIndeterminate = ko.pureComputed(function () { return !isFinite(Number(self.workflowProgress())); });
         self.workflowWidth = ko.pureComputed(function () {
@@ -2826,7 +2845,9 @@ $(function () {
             circle.find(".rme-dashboard-workflow-gauge").attr({
                 "stroke-dasharray": arcLength, "stroke-dashoffset": arcLength * (1 - bounded / 100)
             });
-            circle.find(".rme-dashboard-percentage").text(determinate ? Math.round(bounded) + "%" : (active ? "…" : ""));
+            var points = active ? self.workflowPointText() : null;
+            var value = points || (determinate ? Math.round(bounded) + "%" : (active ? "…" : ""));
+            fitDashboardValue(circle.find(".rme-dashboard-percentage"), value, value.length > 7 ? 14 : 20);
             circle.find(".rme-dashboard-workflow-caption").text(active ? "RME" : "Ready");
             circle.attr("title", label).attr("aria-label", label);
             refreshDashboardGrid(root);

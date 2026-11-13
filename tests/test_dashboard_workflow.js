@@ -34,6 +34,18 @@ const {jQueryFactory} = require('jquery/factory');
     assert.equal($('#rme-dashboard-progress > svg')[0].style.height, '');
     await render(true, true);
     assert.equal($('#rme-dashboard-progress').length, 1);
+    vm.state({connected:true,supported:true,workflow:{workflow:'probing',state:'active',progress:12,message:'Probing bed 3/25 points'}});
+    vm.onAllBound(); await new Promise(resolve=>w.setTimeout(resolve,30));
+    assert.equal($('#rme-dashboard-progress .rme-dashboard-percentage').text(),'3/25');
+    assert($('#rme-dashboard-progress').attr('title').includes('3/25 points'));
+    vm.state({connected:true,supported:true,workflow:{workflow:'probing',state:'active',progress:50,message:'Additional probing 1/2 points'}});
+    vm.onAllBound(); await new Promise(resolve=>w.setTimeout(resolve,30));
+    assert.equal($('#rme-dashboard-progress .rme-dashboard-percentage').text(),'1/2');
+    for (const message of ['Probing bed','Probing bed 26/25 points','Probing bed 0/0 points']) {
+        vm.state({connected:true,supported:true,workflow:{workflow:'probing',state:'active',progress:12,message}});
+        vm.onAllBound(); await new Promise(resolve=>w.setTimeout(resolve,30));
+        assert.equal($('#rme-dashboard-progress .rme-dashboard-percentage').text(),'12%','unknown/invalid counts do not invent points');
+    }
     await render(false, true); // Stale capabilities after disconnect must not keep it visible.
     assert.equal($('#rme-dashboard-progress').length, 0);
     assert.equal($('#fan').hasClass('rme-dashboard-fan-neighbor'), false);

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.0b158 — 2026-11-13
+
+- Synchronize Dashboard's native Fan Speed gauge from fresh firmware fan PWM, including zero and firmware-internal calibration changes, instead of leaving a stale 100% indication.
+- Show explicit bed-leveling point counts (for example, 3/25) in the RME Dashboard gauge with updated firmware. Keep percentage fallback for older firmware without point counts.
+
 ## 0.1.0b157 — 2026-11-13
 
 - Show planned tool changes as completed/total, filling the Dashboard gauge from 0/total to total/total instead of draining with the remaining count. Keep firmware remaining-count telemetry unchanged.

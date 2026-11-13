@@ -15,7 +15,7 @@ const {jQueryFactory} = require('jquery/factory');
     await new Promise(resolve => $(resolve));
     const ko = w.ko, settings = {plugins:{rme_compatibility:{dashboard_rme_progress:ko.observable(true)},
         dashboard:{useFahrenheit:ko.observable(false)}}};
-    const native = {widgetsSettings:ko.observableArray([{title:'Native fan',enabled:ko.observable(true)}]), gaugesCentreInGrid:()=>''};
+    const native = {widgetsSettings:ko.observableArray([{title:'Native fan',enabled:ko.observable(true)}]), gaugesCentreInGrid:()=>'', fanSpeed:ko.observable(100)};
     ko.applyBindings(native, w.document.querySelector('#tab_plugin_dashboard'));
     const vm = new w.OCTOPRINT_VIEWMODELS[0].construct([{settings}, {}, {}, {}]);
     vm.onAllBound(); vm.installDashboardWidgets();
@@ -28,6 +28,20 @@ const {jQueryFactory} = require('jquery/factory');
     const snapshot = extra => ({supported:true, connected:true, tool_changes:{active:true,file:'a',remaining:0,total:0},
         workflow:{workflow:'probing',state:'active',progress:50}, tune:{updated:Date.now()/1000,
             dock_fan:128,dock_rpm:3000,heatbreak_pwm:255,heatbreak_rpm:6000,buddy_mcu:35.5,head_board:'unknown', ...extra}});
+    vm.acceptState(snapshot());
+    assert.equal(native.fanSpeed(),100,'missing fan telemetry cannot invent zero');
+    for (const [pwm,percent] of [[0,0],[128,50],[255,100],[0,0]]) {
+        vm.acceptState(snapshot({fan:pwm,F0:100}));
+        assert.equal(native.fanSpeed(),percent,'fresh firmware PWM includes off and ignores flow percentage');
+    }
+    for (const fan of [null,'unknown',-1,256]) {
+        native.fanSpeed(37); vm.acceptState(snapshot({fan}));
+        assert.equal(native.fanSpeed(),37,'invalid telemetry leaves native reporting intact');
+    }
+    vm.acceptState(snapshot({fan:255})); vm.tick(Date.now()+20000);
+    native.fanSpeed(23); vm.renderDashboardSensors();
+    assert.equal(native.fanSpeed(),23,'stale telemetry cannot overwrite native fan state');
+    vm.tick(Date.now());
     vm.acceptState(snapshot());
     row('dashboard_dock_fan').enabled(true);
     row('dashboard_heatbreak_fan').enabled(true);
