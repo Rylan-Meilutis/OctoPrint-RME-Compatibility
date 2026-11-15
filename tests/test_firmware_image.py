@@ -20,7 +20,13 @@ class FirmwareImageTests(unittest.TestCase):
                 ((6, 8, 1), (7, 1, 0), "coreone", True),
                 ((6, 10, 3), (7, 1, 0), "coreone", False),
                 ((6, 5, 7), (1, 3, 5), "mk3.5", True),
-                ((6, 99, 0), (7, 10, 0), "coreone_indx", False),
+                ((6, 99, 0), (7, 10, 0), "coreone_indx", True),
+                ((8, 0, 0), (7, 10, 0), "coreone_indx", True),
+                ((9, 0, 0), (7, 10, 0), "coreone_indx", True),
+                ((10, 2, 3), (7, 10, 0), "coreone_indx", True),
+                ((9, 0, 0), (3, 1, 0), "coreone_indx", False),
+                ((8, 0, 0), (2, 1, 0), "mini", False),
+                ((9, 0, 0), (2, 1, 0), "mini-en-ja", True),
             ]
             for version, model, expected, valid in cases:
                 image.seek(0)
@@ -28,7 +34,8 @@ class FirmwareImageTests(unittest.TestCase):
                 image.write(bbf(version, model))
                 image.flush()
                 if valid:
-                    self.assertEqual(validate(image.name, expected)["variant"], expected)
+                    base = "mini" if expected.startswith("mini-en-") else expected
+                    self.assertEqual(validate(image.name, expected)["variant"], base)
                 else:
                     with self.assertRaises(UploadError):
                         validate(image.name, expected)
@@ -40,6 +47,28 @@ class FirmwareImageTests(unittest.TestCase):
             for expected in ("coreone", None):
                 with self.assertRaises(UploadError):
                     validate(image.name, expected)
+
+    def test_future_version_still_rejects_corruption_and_unknown_container_format(self):
+        for format_version, corrupt in ((2, True), (3, False), (99, False)):
+            data = bytearray(bbf((9, 0, 0), (7, 10, 0)))
+            data[112] = format_version
+            data[64:96] = hashlib.sha256(data[96:]).digest()
+            if corrupt:
+                data[-1] ^= 1
+            with tempfile.NamedTemporaryFile() as image:
+                image.write(data)
+                image.flush()
+                with self.assertRaises(UploadError):
+                    validate(image.name, "coreone_indx")
+
+    def test_legacy_v1_same_model_remains_accepted_across_major_versions(self):
+        data = bytearray(bbf((9, 0, 0), (7, 10, 0)))
+        data[112], data[114] = 10, 0
+        data[64:96] = hashlib.sha256(data[96:]).digest()
+        with tempfile.NamedTemporaryFile() as image:
+            image.write(data)
+            image.flush()
+            self.assertEqual("9.0.0", validate(image.name, "coreone_indx")["version"])
 
     def test_flash_revalidates_file_checksum_and_connected_machine(self):
         with tempfile.TemporaryDirectory() as directory:

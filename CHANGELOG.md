@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Allow future same-machine firmware versions, including new major versions, without a plugin allowlist update. Preserve known historical model/version exclusions, validate supported BBF headers and embedded machine/checksum, and require repository-owned application manifests for future automatic downloads. Bootloader signature/board checks remain authoritative; this does not patch the already installed 6.9.2 validator.
+
 ## 0.1.0b159 — 2026-11-14
 
 - Consolidate USB navigation, filtering, selection and file actions around the file list; move upload and advanced partial-file cleanup into expandable sections.

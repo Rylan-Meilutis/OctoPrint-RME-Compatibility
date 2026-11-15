@@ -6,7 +6,7 @@ import re
 import tempfile
 import time
 from urllib.parse import urlparse, urljoin
-from .firmware_support import SUPPORTED
+from .firmware_support import SUPPORTED, image_supported
 
 REPOSITORY = "Rylan-Meilutis/Prusa-Firmware-Buddy"
 API = "https://api.github.com/repos/" + REPOSITORY
@@ -91,7 +91,8 @@ def catalog(variant, running=None, token=None):
         match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)-RME(?:-b([1-9]\d*))?", tag)
         if release.get("draft") or not match:
             continue
-        if variant not in SUPPORTED.get(".".join(match.groups()[:3]), set()):
+        version = ".".join(match.groups()[:3])
+        if not image_supported(version, variant):
             continue
         name = variant + "_" + tag[1:].split("-b", 1)[0] + ".bbf"
         assets = release.get("assets", [])
@@ -114,6 +115,8 @@ def catalog(variant, running=None, token=None):
                 if digest(sha) and metadata["sha256"] != sha:
                     raise ValueError("GitHub and manifest checksum mismatch")
                 sha = metadata["sha256"]
+        if version not in SUPPORTED and not metadata:
+            continue  # Future versions need repository-owned model/app metadata.
         if not digest(sha):
             continue  # Never offer an unverifiable binary.
         status = "unknown"
@@ -135,8 +138,12 @@ def catalog(variant, running=None, token=None):
 def download(asset, directory, progress=lambda *_: None):
     name = asset["name"]
     identity = re.fullmatch(r"(.+)_(\d+\.\d+\.\d+)-RME\.bbf", name)
-    if not identity or identity[1] not in SUPPORTED.get(identity[2], set()):
+    if not identity or not image_supported(identity[2], identity[1]):
         raise ValueError("Firmware version does not support this printer variant")
+    future = identity[2] not in SUPPORTED
+    if future and (not digest(asset.get("application_sha256")) or
+                   type(asset.get("application_size")) is not int or asset["application_size"] <= 0):
+        raise ValueError("Future firmware releases require a verified application manifest")
     if not re.fullmatch(r"[a-z0-9.-]+(?:_[a-z0-9.-]+)*\.bbf", name, re.I) or not digest(asset["sha256"]):
         raise ValueError("Invalid firmware asset")
     if not 576 < int(asset["size"]) <= MAX_SIZE:
@@ -164,6 +171,9 @@ def download(asset, directory, progress=lambda *_: None):
                 payload = downloaded.read(length) if 0 < length <= MAX_SIZE - 576 else b""
             if length != asset.get("application_size") or hashlib.sha256(payload).hexdigest() != asset["application_sha256"]:
                 raise ValueError("Downloaded BBF application identity disagrees with manifest")
+        if future:
+            from .firmware_image import validate
+            validate(partial, identity[1])  # Filename/manifest cannot override embedded model or format.
         try:
             os.link(partial, target)  # Atomic publication, never overwrite a Pi file.
         except FileExistsError:

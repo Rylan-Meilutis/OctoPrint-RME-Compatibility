@@ -5,6 +5,7 @@ import tempfile
 import types
 import unittest
 from unittest.mock import patch, Mock
+from bbf_fixture import bbf
 
 from test_toolmap_gate import RmeCompatibilityPlugin
 from octoprint_rme_compatibility import github_firmware as fw
@@ -12,6 +13,42 @@ from octoprint_rme_compatibility.protocol import parse_line
 
 
 class FirmwareReleaseTests(unittest.TestCase):
+    def test_future_major_catalog_requires_model_application_manifest(self):
+        releases, metadata = self.fixture()
+        releases[0]["tag_name"] = "v9.0.0-RME"
+        name = "coreone_indx_9.0.0-RME.bbf"
+        releases[0]["assets"][0]["name"] = name
+        metadata["assets"][0]["name"] = name
+        with patch.object(fw, "get_json", side_effect=[releases, metadata]):
+            self.assertEqual("9.0.0-RME", fw.catalog("coreone_indx")[0]["version"])
+        releases[0]["assets"] = releases[0]["assets"][:1]
+        with patch.object(fw, "get_json", return_value=releases):
+            self.assertEqual([], fw.catalog("coreone_indx"))
+
+    def test_future_download_validates_embedded_model_and_format_before_publication(self):
+        for model, container_format, accepted in (((7, 10, 0), 2, True), ((3, 1, 0), 2, False), ((7, 10, 0), 3, False)):
+            data = bytearray(bbf((9, 0, 0), model))
+            data[112] = container_format
+            data[64:96] = hashlib.sha256(data[96:]).digest()
+            data = bytes(data)
+            asset = dict(name="coreone_indx_9.0.0-RME.bbf", size=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                         application_size=len(data) - 576, application_sha256=hashlib.sha256(data[576:]).hexdigest(), url="unused")
+            with tempfile.TemporaryDirectory() as directory, patch.object(fw, "chunks", return_value=[data]):
+                if accepted:
+                    name = fw.download(asset, directory)
+                    with open(os.path.join(directory, name), "rb") as image:
+                        self.assertEqual(data, image.read())
+                else:
+                    with self.assertRaises(RuntimeError):
+                        fw.download(asset, directory)
+                    self.assertEqual([], os.listdir(directory))
+
+    def test_future_download_without_application_manifest_is_rejected_before_network(self):
+        with patch.object(fw, "chunks") as chunks:
+            with self.assertRaisesRegex(ValueError, "application manifest"):
+                fw.download(dict(name="coreone_indx_9.0.0-RME.bbf"), "/tmp")
+            chunks.assert_not_called()
+
     def test_unsupported_version_is_hidden_without_fetching_manifest(self):
         releases, metadata = self.fixture()
         releases[0]["tag_name"] = "v6.10.3-RME"
