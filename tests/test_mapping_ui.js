@@ -117,7 +117,8 @@ const {jQueryFactory} = require('jquery/factory');
     assert.equal(centering.getPropertyValue('max-height'), '90vh');
     assert.equal(centering.getPropertyValue('overflow-y'), 'auto');
     assert.equal(centering.getPropertyValue('box-sizing'), 'border-box');
-    assert.equal(centering.getPropertyValue('transition'), 'opacity .3s linear');
+    // CSSOM implementations may serialize the optional leading zero.
+    assert.match(centering.getPropertyValue('transition'), /^opacity (?:0)?\.3s linear$/);
     vm.updateToolmapNotice({kind: 'toolmap', updated: 1, filename: 'test.gcode', count: 1});
     assert.equal(notices.length, 0);
     assert.deepEqual(modalCalls.at(-1), ['rme-tool-mapping', 'show']);

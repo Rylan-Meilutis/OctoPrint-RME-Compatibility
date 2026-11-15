@@ -21,7 +21,7 @@ const {jQueryFactory} = require('jquery/factory');
     w.document.body.append(host);
     w.ko.applyBindings(vm, host);
     const state = {connected: true, supported: true, storage: {supported: true, entries:
-        Array.from({length: 300}, (_, i) => ({name: 'part' + i + '.gcode', type: 'file', size: 1000}))}};
+        Array.from({length: 300}, (_, i) => ({name: 'part' + i + '.gcode', path: '/part' + i + '.gcode', type: 'file', size: 1000}))}};
     vm.acceptState(JSON.parse(JSON.stringify(state)));
     assert.equal(host.querySelectorAll('tbody tr').length, 0, 'hidden Settings storage must not render files');
     vm.settingsStorageExpanded(true);
