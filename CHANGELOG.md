@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b161 — 2026-11-15
 
 - Correct Dashboard's native fan ring at zero speed: Off now draws an empty ring rather than an almost-full ring. Preserve native nonzero/unknown formatting and live gauge geometry.
 
