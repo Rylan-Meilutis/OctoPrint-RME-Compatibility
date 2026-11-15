@@ -900,6 +900,36 @@ $(function () {
         self.stats = ko.pureComputed(function () { return self.state().stats || {}; });
         self.storage = ko.pureComputed(function () { return self.state().storage || {}; });
         self.storageEntries = ko.pureComputed(function () { return self.storage().entries || []; });
+        self.storageFilter = ko.observable("");
+        self.storageSelectedPaths = ko.observableArray([]);
+        self.storageBatchBusy = ko.observable(false);
+        self.storageVisibleEntries = ko.pureComputed(function () {
+            var query = self.storageFilter().toLowerCase();
+            return self.storageEntries().filter(function (entry) {
+                return String(entry.name || "").toLowerCase().indexOf(query) >= 0;
+            });
+        });
+        self.storageSelectedEntries = ko.pureComputed(function () {
+            return self.storageEntries().filter(function (entry) {
+                return self.storageSelectedPaths().indexOf(entry.path) >= 0;
+            });
+        });
+        self.storageAllSelected = ko.pureComputed({
+            read: function () {
+                var entries = self.storageVisibleEntries();
+                return entries.length > 0 && entries.every(function (entry) {
+                    return self.storageSelectedPaths().indexOf(entry.path) >= 0;
+                });
+            },
+            write: function (selected) {
+                var paths = self.storageVisibleEntries().map(function (entry) { return entry.path; });
+                self.storageSelectedPaths(selected ? paths : []);
+            }
+        });
+        self.storage.subscribe(function (storage) {
+            var paths = (storage.entries || []).map(function (entry) { return entry.path; });
+            self.storageSelectedPaths(self.storageSelectedPaths().filter(function (path) { return paths.indexOf(path) >= 0; }));
+        });
         self.storageDownloadJob = ko.pureComputed(function () { return self.storage().download || {}; });
         self.storageDownloadWidth = ko.pureComputed(function () {
             return Math.max(0, Math.min(100, Number(self.storageDownloadJob().progress) || 0)) + "%";
@@ -2131,7 +2161,7 @@ $(function () {
             self.command("storage_list", {path: "/" + parts.join("/")});
         };
         self.storageOpen = function (entry) {
-            if (entry.type === "dir") self.command("storage_list", {path: entry.path});
+            if (entry.type === "dir" && !self.storageBatchBusy()) self.command("storage_list", {path: entry.path});
         };
         self.startStorageDownload = function (entry, target) {
             if (!entry || !entry.path) return;
@@ -2171,10 +2201,51 @@ $(function () {
             link.click();
             document.body.removeChild(link);
         };
+        self.deleteCachedStorageFile = function (entry) {
+            if (!entry || !entry.id || !window.confirm("Delete " + entry.name +
+                " from this Pi? The printer USB copy will not be changed.")) return;
+            self.command("storage_download_delete", {id: entry.id});
+        };
         self.storageDelete = function (entry) {
-            if (window.confirm("Delete " + entry.path + " from printer USB? This cannot be undone.")) {
-                self.command("storage_delete", {path: entry.path});
+            self.deleteStorageEntries([entry]);
+        };
+        self.deleteStorageEntries = function (entries) {
+            if (!entries.length || self.storageBatchBusy()) return;
+            var recursive = entries.some(function (entry) { return entry.type === "dir"; });
+            var warning = "Delete " + entries.length + " selected USB " + (entries.length === 1 ? "entry" : "entries") + "?\n\n" +
+                entries.map(function (entry) { return entry.path; }).join("\n") +
+                (recursive ? "\n\nALL CONTENTS of selected folders will also be deleted." : "") + "\nThis cannot be undone.";
+            if (!window.confirm(warning)) return;
+            self.storageBatchBusy(true);
+            self.command("storage_delete_many", {paths: entries.map(function (entry) { return entry.path; }), recursive: recursive})
+                .done(function () { self.storageSelectedPaths([]); })
+                .always(function () { self.storageBatchBusy(false); });
+        };
+        self.storageDeleteSelected = function () {
+            self.deleteStorageEntries(self.storageSelectedEntries());
+        };
+        self.storageMoveSelected = function () {
+            var entries = self.storageSelectedEntries().slice();
+            if (!entries.length || self.storageBatchBusy()) return;
+            var directory = window.prompt("Move selected entries into existing USB folder", self.storage().path || "/");
+            if (directory === null) return;
+            directory = "/" + directory.split("/").filter(Boolean).join("/");
+            if (!window.confirm("Move " + entries.length + " entries into " + directory + "? Existing names will not be replaced.")) return;
+            self.storageBatchBusy(true);
+            var index = 0;
+            function next() {
+                if (index >= entries.length) {
+                    self.storageSelectedPaths([]);
+                    self.storageBatchBusy(false);
+                    return;
+                }
+                var entry = entries[index++];
+                var destination = directory.replace(/\/$/, "") + "/" + entry.name;
+                if (destination === entry.path) { next(); return; }
+                self.command("storage_rename", {path: entry.path, destination: destination})
+                    .done(next).fail(function () { self.storageBatchBusy(false); });
             }
+            next();
         };
         self.storageRename = function (entry) {
             var name = window.prompt("New name", entry.name);

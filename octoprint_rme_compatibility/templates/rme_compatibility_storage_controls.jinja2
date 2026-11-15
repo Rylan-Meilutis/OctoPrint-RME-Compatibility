@@ -1,33 +1,24 @@
-<p>Browse and manage the firmware-exported <code>/usb</code> volume. RME confines every operation to this user-visible storage root.</p>
-    <div class="control-group">
-        <label class="control-label">Current directory</label>
-        <div class="controls">
+<section class="rme-file-browser">
+    <div class="rme-file-toolbar">
+        <div class="rme-file-navigation">
+            <button type="button" class="btn btn-mini" data-bind="click: storageParent, enable: storageParentVisible() && !storageBatchBusy()">Up</button>
             <code data-bind="text: storage().path || '/'"></code>
-            <span class="label" data-bind="css: {'label-success': storage().supported, 'label-warning': !storage().supported}, text: storageStatus"></span>
-            <button type="button" class="btn btn-mini" data-bind="click: refreshStorage, enable: state().supported">Refresh</button>
-            <button type="button" class="btn btn-mini" data-bind="click: storageParent, visible: storageParentVisible">Up</button>
-            <button type="button" class="btn btn-mini" data-bind="click: storageMkdir, enable: storage().supported">New folder…</button>
+            <button type="button" class="btn btn-mini" data-bind="click: refreshStorage, enable: state().supported && !storageBatchBusy()">Refresh</button>
+            <button type="button" class="btn btn-mini" data-bind="click: storageMkdir, enable: storage().supported && !storageBatchBusy()">New folder…</button>
+        </div>
+        <div class="rme-file-selection">
+            <input type="search" aria-label="Filter current USB folder" placeholder="Filter this folder…" data-bind="textInput: storageFilter">
+            <span data-bind="text: storageSelectedEntries().length + ' selected'"></span>
+            <button type="button" class="btn btn-mini" data-bind="click: storageMoveSelected, enable: storageSelectedEntries().length && !storageBatchBusy()">Move selected…</button>
+            <button type="button" class="btn btn-mini btn-danger" data-bind="click: storageDeleteSelected, enable: storageSelectedEntries().length && !storageBatchBusy()">Delete selected…</button>
         </div>
     </div>
-    <div class="control-group">
-        <label class="control-label">Upload</label>
-        <div class="controls">
-            <input type="file" data-bind="event: {change: chooseStorageUpload}">
-            <button type="button" class="btn" data-bind="click: uploadStorage, enable: pendingStorageUpload">Upload to current directory</button>
-            <p class="help-block">Uploads negotiate the fastest safe RME FILE mode, pipeline bulk chunks when supported, verify SHA-256, and atomically rename the <code>.rme-part</code> file.</p>
-        </div>
-    </div>
-    <div class="control-group">
-        <label class="control-label">Lost-manifest cleanup</label>
-        <div class="controls">
-            <input type="text" placeholder="jobs/original-name.bgcode" data-bind="value: partialCleanupPath, enable: !partialTransfer()">
-            <button type="button" class="btn" data-bind="click: cleanupNamedPartial, enable: partialCleanupPath() && !partialTransfer()">Clean exact partial…</button>
-            <p class="help-block">If the host manifest was lost, enter the original final USB path. The plugin probes and removes only its derived <code>.rme-part</code> and <code>.rme-meta</code> siblings. It never scans hidden files, parses metadata, or deletes <code>.rme-old</code>.</p>
-        </div>
-    </div>
+    <p role="status" data-bind="text: storageStatus, css: {'text-error': storage().error}"></p>
+    <fieldset class="rme-file-entries" data-bind="disable: storageBatchBusy">
     <table class="table table-condensed rme-storage-table" data-bind="visible: storage().supported">
-        <thead><tr><th>Name</th><th>Type/size</th><th>Actions</th></tr></thead>
-        <tbody data-bind="foreach: storageEntries"><tr>
+        <thead><tr><th class="rme-file-checkbox"><input type="checkbox" aria-label="Select all visible entries" data-bind="checked: storageAllSelected"></th><th>Name</th><th>Type/size</th><th>Actions</th></tr></thead>
+        <tbody data-bind="foreach: storageVisibleEntries"><tr>
+            <td><input type="checkbox" data-bind="checkedValue: path, checked: $parent.storageSelectedPaths, attr: {'aria-label': 'Select ' + name}"></td>
             <td>
                 <a href="#" data-bind="visible: type === 'dir', text: name, click: $parent.storageOpen"></a>
                 <span data-bind="visible: type !== 'dir', text: name"></span>
@@ -48,6 +39,15 @@
             </div></td>
         </tr></tbody>
     </table>
+    </fieldset>
+    <p class="help-block" data-bind="visible: storage().supported && !storageEntries().length">This directory is empty.</p>
+    <p class="help-block" data-bind="visible: storageEntries().length && !storageVisibleEntries().length">No matching entries.</p>
+    <details class="rme-file-upload">
+        <summary>Upload to this USB folder</summary>
+        <input type="file" data-bind="event: {change: chooseStorageUpload}">
+        <button type="button" class="btn" data-bind="click: uploadStorage, enable: pendingStorageUpload() && !storageBatchBusy()">Upload to current directory</button>
+        <p class="help-block">Uploads verify SHA-256 before replacing the destination.</p>
+    </details>
     <div data-bind="visible: storageDownloadJob().id">
         <div class="progress progress-striped" data-bind="css: {active: storageDownloadActive}">
             <div class="bar" data-bind="style: {width: storageDownloadWidth}"></div>
@@ -61,8 +61,15 @@
                 <td data-bind="text: name"></td>
                 <td data-bind="text: $parent.storageFileSize({type: 'file', size: size})"></td>
                 <td><button type="button" class="btn btn-mini" data-bind="click: $parent.downloadCachedStorageFile">Download to device</button></td>
+                <td><button type="button" class="btn btn-mini btn-danger" data-bind="click: $parent.deleteCachedStorageFile">Delete from Pi</button></td>
             </tr></tbody>
         </table>
     </div>
-    <p class="help-block" data-bind="visible: storage().supported && !storageEntries().length">This directory is empty.</p>
+    <details class="rme-file-recovery">
+        <summary>Advanced: recover an interrupted upload</summary>
+        <input type="text" placeholder="jobs/original-name.bgcode" data-bind="value: partialCleanupPath, enable: !partialTransfer()">
+        <button type="button" class="btn" data-bind="click: cleanupNamedPartial, enable: partialCleanupPath() && !partialTransfer()">Clean exact partial…</button>
+        <p class="help-block">Enter the original final USB path. This removes only its derived <code>.rme-part</code> and <code>.rme-meta</code> siblings, never <code>.rme-old</code>.</p>
+    </details>
+</section>
     <hr>

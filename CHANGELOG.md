@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.1.0b159 — 2026-11-14
+
+- Consolidate USB navigation, filtering, selection and file actions around the file list; move upload and advanced partial-file cleanup into expandable sections.
+- Add select-all, bulk move and bulk delete. Folder deletion requires explicit confirmation of its contents, preflights the complete selection and deletes children before their parent folders. Protect the USB root and firmware/transfer metadata, bound traversal, and stop with a partial-result count on the first failure. Hidden/protected entries not exported by older firmware are never guessed or force-removed.
+- Add Delete from Pi for completed printer downloads without touching the printer's source copy. Retain deletion permissions and reject unsafe or active download identifiers.
+- Preserve b158 fan-off readback and probing point counts, plus the completed tool-change gauge from b157.
+- Known firmware limitation: installed 6.9.2's version whitelist can reject 8.x at remote flash handoff even after a correct upload. This plugin does not bypass machine/signature checks or claim a rejected flash succeeded.
+
 ## 0.1.0b158 — 2026-11-13
 
 - Synchronize Dashboard's native Fan Speed gauge from fresh firmware fan PWM, including zero and firmware-internal calibration changes, instead of leaving a stale 100% indication.

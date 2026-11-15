@@ -700,9 +700,11 @@ class RmeCompatibilityPlugin(
             "storage_mkdir": ["path"],
             "storage_rename": ["path", "destination"],
             "storage_delete": ["path"],
+            "storage_delete_many": ["paths", "recursive"],
             "storage_print": ["path"],
             "storage_flash": ["path"],
             "storage_download": ["path", "target"],
+            "storage_download_delete": ["id"],
             "partial_resume": [],
             "partial_defer": [],
             "partial_discard": [],
@@ -1035,6 +1037,14 @@ class RmeCompatibilityPlugin(
             if not permission.can():
                 flask.abort(403)
             self._start_storage_download(data["path"], data["target"], data.get("request_id"))
+        elif command == "storage_delete_many":
+            if not getattr(Permissions, "FILES_DELETE", Permissions.CONTROL).can():
+                flask.abort(403)
+            self._storage_delete_paths(data["paths"], data["recursive"])
+        elif command == "storage_download_delete":
+            if not getattr(Permissions, "FILES_DELETE", Permissions.CONTROL).can():
+                flask.abort(403)
+            self._delete_storage_download(data["id"])
         elif command == "partial_resume":
             self._resume_partial_transfer()
         elif command == "partial_defer":
@@ -6945,6 +6955,94 @@ class RmeCompatibilityPlugin(
             self._set_storage_status("error", progress=None, error=str(exc))
             raise
         return True
+
+    def _storage_delete_paths(self, paths, recursive=False):
+        """Preflight a bounded, explicit USB selection; delete children first."""
+        self._require_storage()
+        if (not isinstance(paths, list) or not 1 <= len(paths) <= 200
+                or type(recursive) is not bool):
+            raise ValueError("Select 1–200 USB entries and an explicit folder deletion policy")
+
+        def checked(path):
+            if not isinstance(path, str) or "\\" in path:
+                raise ValueError("Invalid USB path")
+            parts = [part for part in path.split("/") if part]
+            if not parts or any(part in (".", "..") for part in parts):
+                raise ValueError("Deleting the USB root or parent paths is not allowed")
+            if any(any(ord(c) < 32 for c in part) for part in parts):
+                raise ValueError("Invalid USB path")
+            for part in parts:
+                lower = part.lower()
+                if (lower.startswith("fwupd.") or lower.endswith((
+                        ".rme-part", ".rme-meta", ".rme-tmp", ".rme-old",
+                        ".rme-verified", ".rme-verified-tmp"))):
+                    raise ValueError("Protected firmware/transfer files must use their dedicated cleanup action")
+            return "/" + "/".join(parts)
+
+        roots = sorted(set(checked(path) for path in paths), key=lambda path: (path.count("/"), path.casefold()))
+        # Selecting a folder and one of its children must not delete twice.
+        selected = []
+        for path in roots:
+            if not any(path.casefold().startswith(parent.casefold() + "/") for parent in selected):
+                selected.append(path)
+        plan, seen = [], set()
+
+        def walk(path, depth=0):
+            key = path.casefold()
+            if depth > 24 or key in seen or len(seen) >= 1000:
+                raise ValueError("Folder selection is too large or cyclic; delete smaller selections")
+            seen.add(key)
+            info = self._file_service.stat(path)
+            if info.get("type") == "dir":
+                children = self._file_service.list_directory(path)
+                if children and not recursive:
+                    raise ValueError("Folder is not empty; explicitly confirm deletion of its contents")
+                for child in children:
+                    name = child.get("name", "")
+                    if not isinstance(name, str) or not name or "/" in name or "\\" in name:
+                        raise ValueError("Invalid child name in printer directory listing")
+                    walk(checked(path + "/" + name), depth + 1)
+            elif info.get("type") != "file":
+                raise ValueError("USB entry is missing or has an unsupported type")
+            plan.append(path)
+
+        # Complete validation before the first destructive command.
+        for path in selected:
+            walk(path)
+        completed = 0
+        try:
+            for path in plan:
+                self._require_storage()  # A new print must stop further deletions.
+                self._file_service.mutate("DELETE", path)
+                completed += 1
+        except Exception as exc:
+            self._set_storage_status("error", error="Deleted %d of %d entries; stopped: %s" % (completed, len(plan), exc))
+            raise FileServiceError("Deleted %d of %d entries; stopped: %s" % (completed, len(plan), exc)) from exc
+        self._refresh_storage(self._parent_storage_path(selected[0]))
+        self._refresh_native_storage_files()
+
+    def _delete_storage_download(self, job_id):
+        """Remove exactly one completed Pi copy, never the printer source."""
+        if not isinstance(job_id, str) or re.fullmatch(r"[0-9a-f]{32}", job_id) is None:
+            raise ValueError("Invalid download identifier")
+        with self._state_lock:
+            downloads = self._state["storage"].get("downloads", [])
+            item = next((entry for entry in downloads if entry.get("id") == job_id), None)
+            if item is None or item.get("status") != "ready":
+                raise ValueError("Completed Pi download not found")
+            stored_name = item.get("stored_name", "")
+            if (not stored_name.startswith(job_id + "--") or
+                    os.path.basename(stored_name) != stored_name or "\\" in stored_name):
+                raise ValueError("Invalid cached download filename")
+            path = os.path.join(self._download_directory, stored_name)
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass  # Permit clearing a stale listing of an already removed copy.
+            downloads[:] = [entry for entry in downloads if entry.get("id") != job_id]
+            if (self._state["storage"].get("download") or {}).get("id") == job_id:
+                self._state["storage"]["download"] = None
+        self._persist_and_publish()
 
     def _start_storage_download(self, remote_path, target, request_id=None):
         """Queue one printer-to-Pi transfer and optionally hand it to a browser."""

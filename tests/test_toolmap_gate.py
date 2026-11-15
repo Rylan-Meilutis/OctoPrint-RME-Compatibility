@@ -176,6 +176,95 @@ class _Comm(object):
 
 
 class ToolmapGateTests(unittest.TestCase):
+    def test_recursive_usb_deletion_preflights_and_removes_children_first(self):
+        plugin = RmeCompatibilityPlugin()
+        calls, refresh = [], []
+        tree = {"/jobs": ["part.gcode", "nested"], "/jobs/nested": ["other.gcode"]}
+        plugin._require_storage = lambda: True
+        plugin._file_service = types.SimpleNamespace(
+            stat=lambda path: dict(type="dir" if path in tree else "file"),
+            list_directory=lambda path: [dict(name=name) for name in tree[path]],
+            mutate=lambda action, path: calls.append((action, path)))
+        plugin._refresh_storage = refresh.append
+        plugin._refresh_native_storage_files = lambda: None
+        plugin._storage_delete_paths(["/jobs", "/jobs/nested/other.gcode"], True)
+        self.assertEqual([("DELETE", "/jobs/part.gcode"), ("DELETE", "/jobs/nested/other.gcode"),
+                          ("DELETE", "/jobs/nested"), ("DELETE", "/jobs")], calls)
+        self.assertEqual(["/"], refresh)
+
+    def test_usb_deletion_rejects_root_and_protected_or_unconfirmed_contents_before_writing(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._require_storage = lambda: True
+        calls = []
+        plugin._file_service = types.SimpleNamespace(
+            stat=lambda path: dict(type="dir"),
+            list_directory=lambda path: [dict(name="FWUPD.RME")],
+            mutate=lambda *args: calls.append(args))
+        for paths, recursive in [(["/"], True), (["/jobs/../other"], True),
+                                 (["/jobs"], False), (["/jobs"], True),
+                                 (["/FWUPD.RME"], True), (["/part.rme-meta"], True),
+                                 (["/jobs"], "true")]:
+            with self.assertRaises(ValueError):
+                plugin._storage_delete_paths(paths, recursive)
+        self.assertEqual([], calls)
+
+    def test_usb_deletion_stops_after_first_error_and_reports_partial_result(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._require_storage = lambda: True
+        calls, statuses = [], []
+        def remove(action, path):
+            calls.append(path)
+            if path == "/b":
+                raise FileServiceError("delete_failed")
+        plugin._file_service = types.SimpleNamespace(stat=lambda path: dict(type="file"), mutate=remove)
+        plugin._set_storage_status = lambda *args, **kwargs: statuses.append(kwargs)
+        with self.assertRaisesRegex(FileServiceError, "Deleted 1 of 3 entries"):
+            plugin._storage_delete_paths(["/a", "/b", "/c"], False)
+        self.assertEqual(["/a", "/b"], calls)
+        self.assertIn("Deleted 1 of 3", statuses[0]["error"])
+
+    def test_delete_pi_download_removes_only_selected_completed_copy(self):
+        plugin = RmeCompatibilityPlugin()
+        published = []
+        plugin._persist_and_publish = lambda: published.append(True)
+        with tempfile.TemporaryDirectory() as directory:
+            plugin._download_directory = directory
+            selected = dict(id="a" * 32, stored_name="a" * 32 + "--dump.bin", status="ready")
+            other = dict(id="b" * 32, stored_name="b" * 32 + "--dump.bin", status="ready")
+            for item in (selected, other):
+                with open(os.path.join(directory, item["stored_name"]), "wb") as copy:
+                    copy.write(b"download")
+            plugin._state["storage"].update(downloads=[selected, other], download=selected)
+            plugin._delete_storage_download(selected["id"])
+            self.assertFalse(os.path.exists(os.path.join(directory, selected["stored_name"])))
+            self.assertTrue(os.path.exists(os.path.join(directory, other["stored_name"])))
+            self.assertEqual([other], plugin._state["storage"]["downloads"])
+            self.assertIsNone(plugin._state["storage"]["download"])
+            self.assertEqual([True], published)
+            # No printer or file service is attached: local deletion needs neither.
+            os.remove(os.path.join(directory, other["stored_name"]))
+            plugin._delete_storage_download(other["id"])
+            self.assertEqual([], plugin._state["storage"]["downloads"])
+
+    def test_delete_pi_download_rejects_unknown_active_and_unsafe_paths(self):
+        plugin = RmeCompatibilityPlugin()
+        plugin._persist_and_publish = lambda: self.fail("Unsafe deletion published")
+        plugin._download_directory = "/not-used"
+        for job_id, stored_name, status in (
+                ("../outside", "outside", "ready"),
+                ("a" * 32, "a" * 32 + "--dump.bin", "downloading"),
+                ("a" * 32, "../outside", "ready"),
+                ("a" * 32, "a" * 32 + "--/../../outside", "ready"),
+                ("a" * 32, "a" * 32 + "--\\outside", "ready")):
+            plugin._state["storage"]["downloads"] = [
+                dict(id=job_id, stored_name=stored_name, status=status)]
+            with self.assertRaises(ValueError), patch("os.remove") as remove:
+                plugin._delete_storage_download(job_id)
+            remove.assert_not_called()
+        plugin._state["storage"]["downloads"] = []
+        with self.assertRaises(ValueError):
+            plugin._delete_storage_download("b" * 32)
+
     def test_mesh_preflight_analyzes_selected_local_file(self):
         plugin = RmeCompatibilityPlugin()
         plugin._logger = logging.getLogger("mesh-test")

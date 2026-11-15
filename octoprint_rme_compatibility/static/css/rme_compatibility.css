@@ -404,6 +404,15 @@
     width: 100%;
 }
 
+.rme-file-toolbar { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.rme-file-navigation, .rme-file-selection { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.rme-file-navigation code { flex: 1; overflow-wrap: anywhere; }
+.rme-file-selection input[type="search"] { flex: 1; min-width: 130px; margin: 0; }
+.rme-file-checkbox { width: 24px; }
+.rme-file-entries { border: 0; padding: 0; margin: 0; min-width: 0; }
+.rme-file-browser details { margin: 12px 0; }
+.rme-file-browser summary { cursor: pointer; font-weight: 600; margin-bottom: 8px; }
+
 .rme-storage-table th:last-child,
 .rme-storage-table .rme-storage-actions {
     min-width: 0;
