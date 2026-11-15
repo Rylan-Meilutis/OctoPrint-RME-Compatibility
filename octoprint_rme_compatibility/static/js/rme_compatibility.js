@@ -462,7 +462,30 @@ $(function () {
             if (self.state().supported && self.state().connected && age >= -5000 && age < 15000 &&
                 typeof tune.fan === "number" && isFinite(tune.fan) && tune.fan >= 0 && tune.fan <= 255 &&
                 dashboard && ko.isWriteableObservable(dashboard.fanSpeed)) {
-                dashboard.fanSpeed(Math.round(tune.fan * 100 / 255));
+                var formatterChanged = false;
+                // Dashboard formats zero as Off, but its offset formatter's
+                // truthiness check draws a 99%-full ring for that same zero.
+                // Keep native/custom nonzero behavior and live gauge geometry.
+                if (typeof dashboard.formatFanOffset === "function" && !dashboard.formatFanOffset.rmeZeroOffsetFix) {
+                    var originalFanOffset = dashboard.formatFanOffset;
+                    var fixedFanOffset = function (speed) {
+                        if (speed === 0) {
+                            var length = Number(ko.unwrap(dashboard.tempGaugePathLen));
+                            if (isFinite(length) && length > 0) return length.toFixed(2);
+                        }
+                        return originalFanOffset.apply(this, arguments);
+                    };
+                    fixedFanOffset.rmeZeroOffsetFix = true;
+                    dashboard.formatFanOffset = fixedFanOffset;
+                    formatterChanged = true;
+                }
+                var fanPercent = Math.round(tune.fan * 100 / 255);
+                var sameFanPercent = dashboard.fanSpeed() === fanPercent;
+                dashboard.fanSpeed(fanPercent);
+                // Installing a formatter is not itself an observable change.
+                if (formatterChanged && sameFanPercent && typeof dashboard.fanSpeed.valueHasMutated === "function") {
+                    dashboard.fanSpeed.valueHasMutated();
+                }
             }
             if (!self.state().supported || !self.state().connected) {
                 root.find(".rme-dashboard-sensor").remove();

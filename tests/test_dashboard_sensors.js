@@ -5,7 +5,8 @@ const {jQueryFactory} = require('jquery/factory');
 (async function () {
     const dom = new JSDOM(`<div id="tab_plugin_dashboard"><div class="dashboardGridContainer">
       <div id="fan" class="dashboard_threeQuarterGauge" data-bind="css: gaugesCentreInGrid('fan')">
-      <svg style="width:140px;height:140px" viewBox="0 0 140 140"><path class="dashboardGauge" d="native-arc" stroke-dasharray="250" /></svg></div>
+      <svg style="width:140px;height:140px" viewBox="0 0 140 140"><path class="dashboardGauge" d="native-arc"
+        data-bind="attr: {'stroke-dasharray': tempGaugePathLen(), 'stroke-dashoffset': formatFanOffset(fanSpeed())}" /></svg></div>
       </div></div><div id="state"><div class="progress"></div></div>`, {runScripts:'outside-only'});
     const w = dom.window, $ = jQueryFactory(w);
     w.$ = w.jQuery = $;
@@ -16,6 +17,12 @@ const {jQueryFactory} = require('jquery/factory');
     const ko = w.ko, settings = {plugins:{rme_compatibility:{dashboard_rme_progress:ko.observable(true)},
         dashboard:{useFahrenheit:ko.observable(false)}}};
     const native = {widgetsSettings:ko.observableArray([{title:'Native fan',enabled:ko.observable(true)}]), gaugesCentreInGrid:()=>'', fanSpeed:ko.observable(100)};
+    native.tempGaugePathLen = ko.observable('250');
+    // Reproduce Dashboard's native zero bug: text says Off, arc is 99% full.
+    native.formatFanOffset = function (speed) {
+        return speed && !isNaN(speed) ? (native.tempGaugePathLen()*(1-speed/100)).toFixed(2) : native.tempGaugePathLen()*0.01;
+    };
+    const originalFanOffset = native.formatFanOffset;
     ko.applyBindings(native, w.document.querySelector('#tab_plugin_dashboard'));
     const vm = new w.OCTOPRINT_VIEWMODELS[0].construct([{settings}, {}, {}, {}]);
     vm.onAllBound(); vm.installDashboardWidgets();
@@ -30,10 +37,24 @@ const {jQueryFactory} = require('jquery/factory');
             dock_fan:128,dock_rpm:3000,heatbreak_pwm:255,heatbreak_rpm:6000,buddy_mcu:35.5,head_board:'unknown', ...extra}});
     vm.acceptState(snapshot());
     assert.equal(native.fanSpeed(),100,'missing fan telemetry cannot invent zero');
+    native.fanSpeed(0);
+    assert.equal(Number($('#fan path.dashboardGauge').attr('stroke-dashoffset')),2.5,'fixture reproduces the native Off/full mismatch');
     for (const [pwm,percent] of [[0,0],[128,50],[255,100],[0,0]]) {
         vm.acceptState(snapshot({fan:pwm,F0:100}));
         assert.equal(native.fanSpeed(),percent,'fresh firmware PWM includes off and ignores flow percentage');
+        assert.equal(Number($('#fan path.dashboardGauge').attr('stroke-dashoffset')),250*(1-percent/100),
+            'native fan ring must agree with its percentage, especially Off');
     }
+    const fixedFanOffset = native.formatFanOffset;
+    assert.notEqual(fixedFanOffset,originalFanOffset);
+    native.tempGaugePathLen('300');
+    assert.equal(Number($('#fan path.dashboardGauge').attr('stroke-dashoffset')),300,'Off follows live gauge geometry');
+    vm.renderDashboardSensors();
+    assert.equal(native.formatFanOffset,fixedFanOffset,'periodic renders do not stack wrappers');
+    for (const speed of [1,37,100,'unknown',null]) {
+        assert.equal(native.formatFanOffset(speed),originalFanOffset(speed),'nonzero/unknown native behavior is preserved');
+    }
+    native.tempGaugePathLen('250');
     for (const fan of [null,'unknown',-1,256]) {
         native.fanSpeed(37); vm.acceptState(snapshot({fan}));
         assert.equal(native.fanSpeed(),37,'invalid telemetry leaves native reporting intact');

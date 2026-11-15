@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Correct Dashboard's native fan ring at zero speed: Off now draws an empty ring rather than an almost-full ring. Preserve native nonzero/unknown formatting and live gauge geometry.
+
 ## 0.1.0b160 — 2026-11-14
 
 - Allow future same-machine firmware versions, including new major versions, without a plugin allowlist update. Preserve known historical model/version exclusions, validate supported BBF headers and embedded machine/checksum, and require repository-owned application manifests for future automatic downloads. Bootloader signature/board checks remain authoritative; this does not patch the already installed 6.9.2 validator.
