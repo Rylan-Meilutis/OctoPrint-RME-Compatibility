@@ -28,6 +28,18 @@
             <p data-bind="visible: tune().auto_pa === undefined">Connect a compatible RME printer to read its Auto PA mode.</p>
         </div>
     </div>
+    <!-- ko if: tune().pellet_ejection_entry_only !== undefined -->
+    <div class="control-group" id="rme-pellet-ejection-setting">
+        <label class="control-label">Pellet ejection (INDX)</label>
+        <div class="controls">
+            <select data-bind="enable: tuneEnabled, rmeLightState: tune().pellet_ejection_entry_only, event: {change: changePelletEjection}">
+                <option value="0">Entry + Exit (default)</option>
+                <option value="1">Entry Only</option>
+            </select>
+            <p class="help-block">Saved immediately on the printer; LCD changes are synchronized here. Controls pellet ejection during print cleaner visits, not purge amounts, calibration cleaning or thermal waits. Existing slicer sequences need an entry eject; an explicit G12 S30 F1 exit still forces ejection. Use Entry + Exit until your material and cleaner are qualified.</p>
+        </div>
+    </div>
+    <!-- /ko -->
     <div class="control-group">
         <label class="control-label">Firmware discovery</label>
         <div class="controls">

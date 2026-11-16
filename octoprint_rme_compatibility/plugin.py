@@ -2670,7 +2670,7 @@ class RmeCompatibilityPlugin(
                 keys = ("speed", "fan", "dock_fan", "dock_rpm", "heatbreak_pwm", "heatbreak_rpm", "part_fan_rpm",
                         "controller_fan_pwm", "controller_fan_rpm", "heatbreak_temp", "buddy_mcu", "buddy_board",
                         "head_mcu", "head_board", "head_ambient", "chamber_temp",
-                        "progress_percent", "progress_remaining", "host_percent", "stealth", "auto_pa", "printing", "light", "lcd", "screen_print", "chamber_print", "status_print", "material_cooling", "print_filter", "post_filter") + tuple("F%d" % i for i in range(capacity))
+                        "progress_percent", "progress_remaining", "host_percent", "stealth", "auto_pa", "printing", "light", "lcd", "screen_print", "chamber_print", "status_print", "material_cooling", "print_filter", "post_filter", "pellet_ejection_entry_only") + tuple("F%d" % i for i in range(capacity))
                 changes = {key: record[key] for key in keys if key in record}
                 if partial:
                     self._state["tune"].update(changes)
@@ -4202,6 +4202,10 @@ class RmeCompatibilityPlugin(
             if self._state.get("tune", {}).get("auto_pa") not in (0, 1, 2):
                 raise ValueError("Firmware does not support Auto PA mode")
             command = "M976 W%d" % value
+        elif kind == "pellet_ejection_entry_only" and value in (0, 1):
+            if self._state.get("tune", {}).get(kind) not in (0, 1):
+                raise ValueError("Firmware does not support INDX pellet-ejection settings")
+            command = "@RME CLEANER SET entry_only=%d" % value
         elif kind in ("material_cooling", "print_filter", "post_filter") and value in (0, 1):
             if self._state.get("tune", {}).get(kind) not in (0, 1):
                 raise ValueError("Firmware does not support this chamber setting")
@@ -4223,7 +4227,7 @@ class RmeCompatibilityPlugin(
         else:
             raise ValueError("Invalid print override")
         # Discrete lighting clicks must not be rejected by the motion-tune throttle.
-        if kind in ("light", "lcd", "screen", "chamber", "status", "material_cooling", "print_filter", "post_filter"):
+        if kind in ("light", "lcd", "screen", "chamber", "status", "material_cooling", "print_filter", "post_filter", "pellet_ejection_entry_only"):
             if self._transport_recovery_required() or not self._printer.is_operational():
                 raise RuntimeError("Printer lighting transport is unavailable")
             self._send_priority_services([command, "@RME TUNE QUERY"], "lighting")

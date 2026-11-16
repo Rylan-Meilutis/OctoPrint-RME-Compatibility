@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0b165 — 2026-11-16
+
+- Add an INDX-only Pellet ejection setting: Entry + Exit (default) or Entry Only, saved on the printer through a guarded RME service command.
+- Synchronize the selected value with firmware full/delta readback, including changes made on the LCD. Zero/default is recognized as supported, not missing.
+- Keep the control hidden on older/non-INDX firmware. This changes exit pellet ejection only, not purge volume, forced slicer ejections, calibration cleaning, or thermal protections.
+
 ## 0.1.0b164 — 2026-11-16
 
 - Continue cancellation cleanup when startup ABORT or native review cancellation cannot be sent. Release the RME review hold even when the transport is closing, and publish the cleared startup state.

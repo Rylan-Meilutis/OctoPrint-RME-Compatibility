@@ -9,6 +9,32 @@ from octoprint_rme_compatibility.protocol import parse_line
 
 
 class PrintControlsTests(unittest.TestCase):
+    def test_pellet_ejection_settings_and_lcd_readback(self):
+        plugin = self.plugin()
+        plugin._schedule_publish = lambda: None
+        with self.assertRaises(ValueError):
+            plugin._set_print_override(dict(kind='pellet_ejection_entry_only', value=1))
+        for value in (0, 1, 0):
+            plugin._handle_record(parse_line('RME_TUNE pellet_ejection_entry_only=%d' % value))
+            self.assertEqual(plugin._state['tune']['pellet_ejection_entry_only'], value)
+            plugin._set_print_override(dict(kind='pellet_ejection_entry_only', value=value))
+            self.assertEqual(self.commands[-2:], ['@RME CLEANER SET entry_only=%d' % value, '@RME TUNE QUERY'])
+        for value in (2, -1, True, '1\nM112'):
+            with self.assertRaises(ValueError):
+                plugin._set_print_override(dict(kind='pellet_ejection_entry_only', value=value))
+        plugin._state['lock']['locked'] = True
+        with self.assertRaises(ValueError):
+            plugin._set_print_override(dict(kind='pellet_ejection_entry_only', value=1))
+        plugin._state['lock']['locked'] = False
+        plugin._handle_record(parse_line('RME_TUNE speed=100'))
+        self.assertNotIn('pellet_ejection_entry_only', plugin._state['tune'])
+        plugin._state['machine']['tune_delta'] = 1
+        plugin._handle_record(parse_line('RME_TUNE delta=0 seq=10 pellet_ejection_entry_only=0'))
+        plugin._handle_record(parse_line('RME_TUNE delta=1 seq=11 pellet_ejection_entry_only=1'))
+        self.assertEqual(plugin._state['tune']['pellet_ejection_entry_only'], 1)
+        plugin._handle_record(parse_line('RME_TUNE delta=1 seq=12 pellet_ejection_entry_only=0'))
+        self.assertEqual(plugin._state['tune']['pellet_ejection_entry_only'], 0)
+
     def test_live_snapshot_replaces_all_print_settings_without_sending_writes(self):
         plugin = self.plugin()
         plugin._schedule_publish = lambda: None

@@ -687,6 +687,10 @@ $(function () {
             self.command("set_print_override", {kind: "auto_pa", value: Number(event.target.value)});
             event.target.value = self.tune().auto_pa;
         };
+        self.changePelletEjection = function (_, event) {
+            self.command("set_print_override", {kind: "pellet_ejection_entry_only", value: Number(event.target.value)});
+            event.target.value = self.tune().pellet_ejection_entry_only;
+        };
         self.changeChamberSetting = function (_, event) {
             var kind = event.target.getAttribute("data-chamber-setting");
             self.command("set_print_override", {kind: kind, value: Number(event.target.value)});
