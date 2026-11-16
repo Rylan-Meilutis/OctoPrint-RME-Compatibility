@@ -4891,11 +4891,19 @@ class RmeCompatibilityPlugin(
             self._toolmap_hold_active = False
             self._toolmap_timer_generation += 1
         for owner in startup_holds:
-            owner.set_job_on_hold(False)
+            try:
+                owner.set_job_on_hold(False)
+            except Exception:
+                # Each ticket owns a separate counted hold. A closing owner
+                # must not prevent cleanup of the other tickets or review.
+                self._logger.warning("Could not release a startup boundary hold; continuing cancellation cleanup", exc_info=True)
         if held:
             try:
                 if preparation_id and not native_complete and self._state.get("connected"):
-                    self._send_priority_services(["@RME SESSION ABORT id=%d" % preparation_id], "startup")
+                    try:
+                        self._send_priority_services(["@RME SESSION ABORT id=%d" % preparation_id], "startup")
+                    except Exception:
+                        self._logger.warning("Could not send startup abort during cancellation; releasing the host review hold", exc_info=True)
                 if review_id and not native_complete and self._state.get("connected"):
                     try:
                         self._send_priority_services(["@RME REVIEW CANCEL id=%d" % review_id], "tool_review")
@@ -4904,9 +4912,11 @@ class RmeCompatibilityPlugin(
                         # OctoPrint's cancelled job held forever. The firmware
                         # independently cancels on lease loss.
                         self._logger.debug("Could not close native review during cancellation", exc_info=True)
-                self._printer.set_job_on_hold(False)
             finally:
-                self._persist_and_publish()
+                try:
+                    self._printer.set_job_on_hold(False)
+                finally:
+                    self._persist_and_publish()
         elif was_toolmap:
             self._persist_and_publish()
 

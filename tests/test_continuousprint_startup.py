@@ -11,6 +11,34 @@ from test_toolmap_gate import RmeCompatibilityPlugin, _Settings, _Printer
 
 
 class ContinuousPrintStartup(unittest.TestCase):
+    def test_cancel_attempts_all_owned_holds_when_one_boundary_release_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            p = self.plugin(Path(directory))
+            p._toolmap_hold_active = True
+            broken = Mock()
+            broken.set_job_on_hold.side_effect = RuntimeError('closing connection')
+            remaining = Mock()
+            p._startup_boundary_holds = {object(): broken, object(): remaining}
+            p._release_toolmap_hold()
+            broken.set_job_on_hold.assert_called_once_with(False)
+            remaining.set_job_on_hold.assert_called_once_with(False)
+            self.assertEqual([False], p._printer.holds)
+            self.assertFalse(p._startup_boundary_holds)
+            p._persist_and_publish.assert_called_once()
+
+    def test_cancel_releases_owned_hold_when_startup_abort_send_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            p = self.plugin(Path(directory))
+            p._toolmap_hold_active = True
+            p._startup_preparation_id = 42
+            p._toolmap_review_prompt = dict(review_id=17)
+            p._send_priority_services = Mock(side_effect=RuntimeError('transport unavailable'))
+            p._release_toolmap_hold()
+            self.assertFalse(p._toolmap_hold_active)
+            self.assertEqual([False], p._printer.holds)
+            self.assertIsNone(p._startup_preparation_id)
+            self.assertIsNone(p._toolmap_review_prompt)
+
     def test_host_progress_cannot_start_firmware_before_review(self):
         with tempfile.TemporaryDirectory() as directory:
             p = self.plugin(Path(directory))

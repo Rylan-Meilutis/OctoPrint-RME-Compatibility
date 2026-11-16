@@ -14,6 +14,34 @@ from octoprint_rme_compatibility.plugin import RmeCompatibilityPlugin
 
 
 class RealControlStartup(unittest.TestCase):
+    def test_failed_abort_and_boundary_cleanup_preserve_foreign_core_holds(self):
+        for foreign in (0, 1):
+            with self.subTest(foreign=foreign):
+                c = MachineCom.__new__(MachineCom)
+                c.close = Mock()
+                c._job_on_hold = CountedEvent()
+                c._continue_sending = Mock()
+                for _ in range(2 + foreign):
+                    c.set_job_on_hold(True)
+                p = RmeCompatibilityPlugin()
+                p._logger = logging.getLogger(__name__)
+                p._printer = types.SimpleNamespace(set_job_on_hold=c.set_job_on_hold)
+                p._state.update(supported=True, connected=True)
+                p._toolmap_hold_active = True
+                p._startup_preparation_id = 42
+                p._toolmap_review_prompt = dict(review_id=17)
+                closing_owner = Mock()
+                closing_owner.set_job_on_hold.side_effect = RuntimeError('closing owner')
+                p._startup_boundary_holds = {object(): closing_owner, object(): c}
+                p._send_priority_services = Mock(side_effect=RuntimeError('closed transport'))
+                p._persist_and_publish = Mock()
+                p._release_toolmap_hold()
+                self.assertEqual(foreign, c._job_on_hold.counter)
+                self.assertEqual(0 if foreign else 1, c._continue_sending.call_count)
+                self.assertEqual(2, p._send_priority_services.call_count)
+                p._release_toolmap_hold()
+                self.assertEqual(foreign, c._job_on_hold.counter, 'cleanup must be idempotent')
+
     def test_terminal_cancel_drains_suppressed_script_to_core_marker(self):
         for pending_command in (False, True):
             with self.subTest(pending_command=pending_command):

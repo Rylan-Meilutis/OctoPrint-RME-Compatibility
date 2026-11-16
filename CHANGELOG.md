@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0b164 — 2026-11-16
+
+- Continue cancellation cleanup when startup ABORT or native review cancellation cannot be sent. Release the RME review hold even when the transport is closing, and publish the cleared startup state.
+- Attempt each owned startup-boundary hold independently so one failing owner cannot strand the remaining holds. Preserve foreign counted holds and make repeated cleanup a no-op.
+- Verify the failure paths against real OctoPrint 1.11.4 counted-hold behavior; retain the b163 print-start review/progress race fixes.
+
 ## 0.1.0b163 — 2026-11-15
 
 - Prevent host-generated M73 progress updates from starting firmware printing before the startup mapping/fallback review. Preserve actual file commands and progress updates after approval.
