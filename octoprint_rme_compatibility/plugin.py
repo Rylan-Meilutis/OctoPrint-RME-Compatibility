@@ -2414,6 +2414,9 @@ class RmeCompatibilityPlugin(
                             "complete" if phase == "success" else
                             "waiting" if phase == "failed" else "active"
                         )
+                        if phase == "failed":
+                            record["message"] = ("Tool offset calibration failed; calibration has not passed. "
+                                                 "Continue closes this failed result. Inspect the tools/sensor before rerunning calibration.")
                         if phase in ("intro", "ensure_nozzles_clean", "clean_nozzles_cold", "clean_nozzles_hot"):
                             follow_up.append("query_dialog_priority")
                 previous_workflow = self._state.get("workflow") or {}
@@ -2586,6 +2589,9 @@ class RmeCompatibilityPlugin(
                 route = str(record.get("workflow", "printer"))
                 if route.startswith("indx"):
                     message = str(record.get("phase", route)).replace("_", " ").capitalize()
+                    if route == "indx_tool_offset_calibration" and record.get("phase") == "failed":
+                        message = ("Tool offset calibration failed; calibration has not passed. "
+                                   "Continue closes this failed result. Inspect the tools/sensor before rerunning calibration.")
                     self._state["workflow"] = dict(record, message=message, received_at=int(time.time()))
                 elif route == "collision":
                     if record.get("phase") == "inspection":

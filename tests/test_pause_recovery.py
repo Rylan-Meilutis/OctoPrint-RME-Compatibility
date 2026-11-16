@@ -30,6 +30,22 @@ class Comm:
 
 
 class PauseRecovery(unittest.TestCase):
+    def test_failed_tool_offset_calibration_retains_real_firmware_action(self):
+        p = self.plugin()
+        p._send_priority_service = Mock()
+        p._handle_record(dict(record='event', seq=1, type='workflow', workflow='indx_tool_offset_calibration', state='failed', message='Tool offset calibration'))
+        self.assertEqual('waiting', p._state['workflow']['state'])
+        self.assertIn('has not passed', p._state['workflow']['message'])
+        p._send_priority_service.assert_called_with('@RME DIALOG QUERY', 'dialog_query')
+        p._handle_record(dict(record='dialog', workflow='indx_tool_offset_calibration', phase='failed', state='waiting'))
+        p._handle_record(dict(record='prompt', actions=['Continue']))
+        self.assertEqual(['Continue'], p._state['prompt']['actions'])
+        self.assertIn('closes this failed result', p._state['prompt']['message'])
+        self.assertEqual('indx_tool_offset_calibration', p._state['prompt']['workflow'])
+        p._handle_record(dict(record='dialog', workflow='printer', phase='none', state='idle'))
+        p._handle_record(dict(record='prompt', actions=[]))
+        self.assertIsNone(p._state['prompt'])
+
     def test_inert_continuousprint_helpers_do_not_control_a_firmware_job(self):
         p = self.plugin('PAUSED')
         p._state['session']['printer_state'] = 'IDLE'
