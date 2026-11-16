@@ -2076,6 +2076,17 @@ class RmeCompatibilityPlugin(
             return (None,)
         if not supported:
             return None
+        if (phase == "queuing" and str(gcode or "").upper() == "M73"
+                and not {"source:file", "source:job"}.intersection(tags)):
+            # Detailed-progress callbacks can run before the synchronous
+            # review gate. Buddy treats M73 P0 R... as a print-start marker,
+            # so host telemetry here can make REVIEW BEGIN fail printer_busy.
+            # Keep real file commands and all established-print updates intact.
+            host_starting = getattr(self._printer, "get_state_id", lambda: None)() == "STARTING"
+            with self._state_lock:
+                review_waiting = self._toolmap_hold_active and not self._preflight_start_ready
+            if host_starting or review_waiting:
+                return (None,)
         implementation = self._cancel_object_implementation()
         if implementation is not None:
             object_safety.prepare_queue(implementation)
@@ -2928,7 +2939,7 @@ class RmeCompatibilityPlugin(
                 if "workflow=tool_review" in message:
                     self._toolmap_review_begin_pending = None
                 if "workflow=tool_review" in message and "printer_busy" in message and self._toolmap_review_prompt:
-                    if (self._print_job_gcode_sent and str(self._state.get("session", {}).get("printer_state", "")).upper()
+                    if (str(self._state.get("session", {}).get("printer_state", "")).upper()
                             in ("PRINTING", "PAUSED", "ATTENTION")):
                         self._toolmap_review_prompt["native_state"] = "blocked"
                         self._toolmap_review_prompt["message"] = "The printer started before tool review opened. Cancel and restart this job; changing its mapping now is unsafe."

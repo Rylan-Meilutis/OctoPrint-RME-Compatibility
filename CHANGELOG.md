@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0b163 — 2026-11-15
+
+- Prevent host-generated M73 progress updates from starting firmware printing before the startup mapping/fallback review. Preserve actual file commands and progress updates after approval.
+- When firmware has already entered printing before review, show the cancel/restart recovery message instead of asking the user to close a nonexistent dialog.
+
 ## 0.1.0b162 — 2026-11-15
 
 - Explain failed tool-offset calibration as a failure and mirror all firmware-reported recovery choices, including Retry/Cancel where offered. Explain dismissal only when Continue is the sole reported action; never replace a retryable phase with a Continue-only prompt.

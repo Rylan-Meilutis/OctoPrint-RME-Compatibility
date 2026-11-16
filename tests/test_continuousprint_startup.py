@@ -11,6 +11,24 @@ from test_toolmap_gate import RmeCompatibilityPlugin, _Settings, _Printer
 
 
 class ContinuousPrintStartup(unittest.TestCase):
+    def test_host_progress_cannot_start_firmware_before_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            p = self.plugin(Path(directory))
+            p._state['supported'] = True
+            p._printer.get_state_id = lambda: 'STARTING'
+            p._cancel_object_implementation = lambda: None
+            call = lambda tags: p.gcode_queuing_hook(None, 'queuing', 'M73 P0 R1172', None, 'M73', tags=tags)
+            self.assertEqual((None,), call({'plugin:detailedprogress'}))
+            # Actual file content is protected by the normal job hold, not dropped.
+            self.assertIsNone(call({'source:file'}))
+            p._printer.get_state_id = lambda: 'PRINTING'
+            p._toolmap_hold_active = True
+            p._preflight_start_ready = False
+            self.assertEqual((None,), call({'plugin:detailedprogress'}))
+            p._toolmap_hold_active = False
+            p._preflight_start_ready = True
+            self.assertIsNone(call({'plugin:detailedprogress'}))
+
     def test_startup_validation_cancellation_and_replacement_cannot_continue(self):
         for interruption in ('none', 'cancel', 'replace', 'reject', 'release_cancel', 'prepare_replace'):
             with self.subTest(interruption=interruption), tempfile.TemporaryDirectory() as directory:
