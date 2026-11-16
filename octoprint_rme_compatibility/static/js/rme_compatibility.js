@@ -807,6 +807,7 @@ $(function () {
             pressure_advance: "Pressure advance calibration",
             probing: "Bed probing",
             heating: "Heating",
+            chamber_temperature: "Waiting for chamber temperature",
             firmware_update: "Firmware update",
             waste_bin: "Purge bucket / waste bin",
             filament_load: "Loading filament",

@@ -9,6 +9,21 @@ from octoprint_rme_compatibility.protocol import parse_line
 
 
 class PrintControlsTests(unittest.TestCase):
+    def test_chamber_wait_native_workflow_lifecycle(self):
+        from octoprint_rme_compatibility.protocol import workflow_is_terminal
+        plugin = self.plugin()
+        plugin._schedule_publish = lambda: None
+        for seq, state, text in ((1, 'open', 'Waiting for chamber temperature'),
+                                 (2, 'active', 'Waiting for chamber: 23/50 C'),
+                                 (3, 'active', 'Waiting for chamber: unknown/50 C'),
+                                 (4, 'closed', 'Chamber temperature ready')):
+            plugin._handle_record(parse_line('RME_EVENT seq=%d type=workflow workflow=chamber_temperature state=%s message="%s"' % (seq, state, text)))
+            workflow = plugin._state['workflow']
+            self.assertEqual(workflow['message'], text)
+            self.assertEqual(workflow_is_terminal(workflow), state == 'closed')
+        for state in ('skipped', 'cancelled'):
+            self.assertTrue(workflow_is_terminal({'workflow':'chamber_temperature', 'state':state, 'type':'workflow'}))
+
     def test_pellet_ejection_settings_and_lcd_readback(self):
         plugin = self.plugin()
         plugin._schedule_publish = lambda: None

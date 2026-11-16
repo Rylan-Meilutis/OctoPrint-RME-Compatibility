@@ -5,6 +5,7 @@
 - Add an INDX-only Pellet ejection setting: Entry + Exit (default) or Entry Only, saved on the printer through a guarded RME service command.
 - Synchronize the selected value with firmware full/delta readback, including changes made on the LCD. Zero/default is recognized as supported, not missing.
 - Keep the control hidden on older/non-INDX firmware. This changes exit pellet ejection only, not purge volume, forced slicer ejections, calibration cleaning, or thermal protections.
+- Show the native chamber-temperature wait lifecycle and current/target status; close it on completion, skip or cancellation without changing heating policy.
 
 ## 0.1.0b164 — 2026-11-16
 

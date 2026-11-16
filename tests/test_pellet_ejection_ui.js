@@ -41,6 +41,16 @@ const {jQueryFactory} = require('jquery/factory');
     vm.state(state); w.ko.tasks.runEarly();
     assert.equal(w.document.querySelector('select'), null);
     assert(w.document.body.textContent.indexOf('purge amounts') === -1); // hidden with unsupported field
+    for (const phase of ['open', 'active']) {
+        vm.state({...state, workflow: {workflow: 'chamber_temperature', state: phase, code: 'temperature_wait', message: 'Waiting for chamber: 23/50 C'}});
+        assert(vm.workflowVisible());
+        assert.equal(vm.workflowTitle(), 'Waiting for chamber temperature');
+        assert.equal(vm.workflowMessage(), 'Waiting for chamber: 23/50 C');
+    }
+    for (const phase of ['closed', 'skipped', 'cancelled']) {
+        vm.state({...state, workflow: {workflow: 'chamber_temperature', state: phase}});
+        assert(!vm.workflowVisible());
+    }
     w.close();
     console.log('Pellet-ejection settings browser tests passed');
 })().catch(error => {console.error(error); process.exitCode = 1;});

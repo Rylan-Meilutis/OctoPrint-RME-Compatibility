@@ -93,10 +93,10 @@ def _retain_extrusion_fault(previous, incoming):
     return bool(
         previous.get("workflow") in EXTRUSION_FAULT_WORKFLOWS
         and not workflow_is_terminal(previous)
-        and incoming.get("workflow") in ("filament_load", "filament_unload", "tool_change", "printer", "heating")
+        and incoming.get("workflow") in ("filament_load", "filament_unload", "tool_change", "printer", "heating", "chamber_temperature")
         and incoming.get("type") in ("progress", "workflow", "notification")
         and (not workflow_is_terminal(incoming)
-             or incoming.get("workflow") in ("tool_change", "printer", "heating"))
+             or incoming.get("workflow") in ("tool_change", "printer", "heating", "chamber_temperature"))
     )
 
 

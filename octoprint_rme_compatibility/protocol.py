@@ -23,6 +23,7 @@ WORKFLOWS = {
     "pressure_advance",
     "probing",
     "heating",
+    "chamber_temperature",
     "firmware_update",
     "waste_bin",
     "chamber_vent",
