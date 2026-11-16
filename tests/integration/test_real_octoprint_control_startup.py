@@ -8,12 +8,80 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 from octoprint.util import CountedEvent
-from octoprint.util.comm import MachineCom, PrintingGcodeFileInformation, QueueMarker
+from octoprint.util.comm import MachineCom, PrintingGcodeFileInformation, QueueMarker, SendQueueMarker
 from octoprint.filemanager.storage import LocalFileStorage
 from octoprint_rme_compatibility.plugin import RmeCompatibilityPlugin
 
 
 class RealControlStartup(unittest.TestCase):
+    def test_terminal_cancel_drains_suppressed_script_to_core_marker(self):
+        for pending_command in (False, True):
+            with self.subTest(pending_command=pending_command):
+                c = MachineCom.__new__(MachineCom)
+                c.close = Mock()
+                c._state = c.STATE_CANCELLING
+                c._monitoring_active = True
+                c._send_queue_active = True
+                c._currentFile = types.SimpleNamespace(done=True)
+                c._jobLock = threading.RLock()
+                c._job_on_hold = CountedEvent()
+                c._send_queue = queue.Queue()
+                c._job_queue = queue.Queue()
+                c._send_from_command_queue = Mock(return_value=False)
+                c._cancel_preparation_done = Mock(side_effect=AssertionError('cancel callback already ran'))
+                c._changeState = lambda state: setattr(c, '_state', state)
+                p = RmeCompatibilityPlugin()
+                p._logger = logging.getLogger(__name__)
+                p._rme_comm = c
+                p._printer = types.SimpleNamespace(get_state_id=lambda: 'CANCELLING' if c._state == c.STATE_CANCELLING else 'OPERATIONAL')
+                p._state.update(supported=True, connected=True)
+                record = dict(printer_state='IDLE', pause_phase='none')
+                p._state['session'].update(active=True, **record)
+                p._skip_cancel_script = True
+                marker = SendQueueMarker(lambda: c._changeState(c.STATE_OPERATIONAL))
+                tags = {'source:job', 'script:afterPrintCancelled'}
+                for cmd in ('M104 S0', 'M140 S0', 'M107'):
+                    c._job_queue.put((cmd, None, None, tags))
+                if pending_command:
+                    c._job_queue.put(('M400', None, None, {'source:job'}))
+                c._job_queue.put((marker, None, None, {'source:job'}))
+                def enqueue(command, cmd_type=None, on_sent=None, tags=None):
+                    if isinstance(command, QueueMarker):
+                        c._send_queue.put(command)
+                        return True
+                    result = p.gcode_queuing_hook(c, 'queuing', command, cmd_type, command.split()[0], tags=tags)
+                    if result == (None,):
+                        return False
+                    c._send_queue.put(command)
+                    return True
+                c._sendCommand = enqueue
+                # Actual core stops after dropping one suppressed job command.
+                c._continue_sending()
+                self.assertEqual(0, c._send_queue.qsize())
+                self.assertGreater(c._job_queue.qsize(), 0)
+                before = c._job_queue.qsize()
+                c._job_on_hold.set()
+                p._reconcile_printer_pause(record)
+                self.assertEqual(before, c._job_queue.qsize(), 'foreign holds must not be released')
+                c._job_on_hold.clear()
+                p._state['session']['printer_state'] = 'PRINTING'
+                p._reconcile_printer_pause(record)
+                self.assertEqual(before, c._job_queue.qsize(), 'stale terminal snapshots cannot drain a queue')
+                p._state['session']['printer_state'] = 'IDLE'
+                p._reconcile_printer_pause(record)
+                self.assertEqual(1, c._send_queue.qsize())
+                self.assertEqual(c.STATE_CANCELLING, c._state)
+                queued = c._send_queue.get_nowait()
+                if pending_command:
+                    self.assertEqual('M400', queued)
+                    self.assertEqual(1, c._job_queue.qsize(), 'must not skip the real command/ACK')
+                    c._continue_sending() # ordinary core ACK advancement
+                    queued = c._send_queue.get_nowait()
+                self.assertIs(marker, queued)
+                queued.run()
+                self.assertEqual(c.STATE_OPERATIONAL, c._state)
+                c._cancel_preparation_done.assert_not_called()
+
     def test_starting_keepalive_bypasses_blocked_numbered_fifo(self):
         c = MachineCom.__new__(MachineCom)
         c.close = Mock()

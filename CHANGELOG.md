@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Show an explicit persistent material-start warning when ContinuousPrint reports a SpoolManager validation block, including the reported tool/spool and corrective action. Retain the material check and escape provider-supplied text.
+- Recover terminal cancellation when suppressed cancel-script commands strand OctoPrint's final completion marker after the file is already marked done. Advance through core's normal queue path, preserving real commands, acknowledgements and foreign holds; never fake an ACK or force the host state.
+
 ## 0.1.0b161 — 2026-11-15
 
 - Correct Dashboard's native fan ring at zero speed: Off now draws an empty ring rather than an almost-full ring. Preserve native nonzero/unknown formatting and live gauge geometry.

@@ -35,6 +35,36 @@ $(function () {
             });
         };
         self.files = parameters[3];
+        var materialWarningKey = "", materialWarningPopup = null;
+        self.showContinuousPrintMaterialWarning = function (status, statusType) {
+            var state = self.state();
+            var blocked = state.connected && state.supported && statusType === "NEEDS_ACTION" &&
+                typeof status === "string" && /^(SpoolManager:|Need .+ in tool )/i.test(status);
+            var message = blocked ? "Cannot start print: " + status + ". Check the selected spool and remaining filament in SpoolManager, then retry Continuous Print." : "";
+            var notice = $("#rme-material-start-warning");
+            if (message && !notice.length) {
+                notice = $('<div id="rme-material-start-warning" class="alert alert-warning" role="alert"></div>');
+                $("#state .progress").first().before(notice);
+            }
+            notice.text(message).toggle(!!message);
+            if (message === materialWarningKey) return;
+            materialWarningKey = message;
+            if (materialWarningPopup && typeof materialWarningPopup.remove === "function") materialWarningPopup.remove();
+            materialWarningPopup = message ? new PNotify({title: "Print start blocked: material check", text: message,
+                type: "warning", hide: false, text_escape: true}) : null;
+        };
+        self.installContinuousPrintMaterialWarning = function () {
+            if (self.continuousPrintWarningInstalled) return;
+            var native = self.printerState;
+            if (!ko.isObservable(native.continuousPrintStateString) || !ko.isObservable(native.continuousPrintStateStatus)) return;
+            self.continuousPrintWarningInstalled = true;
+            var update = function () { self.showContinuousPrintMaterialWarning(
+                native.continuousPrintStateString(), native.continuousPrintStateStatus()); };
+            native.continuousPrintStateString.subscribe(update);
+            native.continuousPrintStateStatus.subscribe(update);
+            self.state.subscribe(update);
+            update();
+        };
         self.settingsStorageExpanded = ko.observable(false);
         self.settingsPrinterExpanded = ko.observable(false);
         self.settingsFirmwareExpanded = ko.observable(false);
@@ -2388,6 +2418,7 @@ $(function () {
         };
         self.onAllBound = function () {
             self.installPauseConfirmation();
+            self.installContinuousPrintMaterialWarning();
             // Keep the bound editor outside tab overflow/transform containers.
             $("#rme-tool-mapping").detach().appendTo(document.body);
             self.installDashboardHeight();
@@ -2412,6 +2443,12 @@ $(function () {
             // Explicit refresh buttons and the regular tune poll remain active.
         };
         self.onDataUpdaterPluginMessage = function (plugin, data) {
+            if (plugin === "continuousprint" && data && data.type === "setstate") {
+                try {
+                    var cp = typeof data.state === "string" ? JSON.parse(data.state) : data.state;
+                    if (cp && typeof cp === "object") self.showContinuousPrintMaterialWarning(cp.status, cp.statusType);
+                } catch (error) { /* Leave existing warnings intact for malformed provider messages. */ }
+            }
             if (plugin === "rme_compatibility" && data.retry_notice) {
                 new PNotify({title: "RME reprint", text: data.retry_notice.message,
                     type: data.retry_notice.error ? "error" : "success"});

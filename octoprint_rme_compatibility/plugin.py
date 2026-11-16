@@ -3903,11 +3903,13 @@ class RmeCompatibilityPlugin(
             if terminal and callable(complete) and self._cancel_reconcile_lock.acquire(blocking=False):
                 try:
                     current = getattr(comm, "_currentFile", None)
-                    if self._printer.get_state_id() == "CANCELLING" and current is not None and not current.done:
-                        self._logger.info("Firmware is %s; completing host cancellation independently of post-print filtering", record["printer_state"])
-                        # Use core's callback/marker path. Do not fake ACKs,
-                        # force OPERATIONAL, or bypass pending serial cleanup.
-                        complete(check_timer=False)
+                    if self._printer.get_state_id() == "CANCELLING" and current is not None:
+                        if not current.done:
+                            self._logger.info("Firmware is %s; completing host cancellation independently of post-print filtering", record["printer_state"])
+                            # Use core's callback/marker path. Do not fake ACKs,
+                            # force OPERATIONAL, or bypass pending serial cleanup.
+                            complete(check_timer=False)
+                        self._advance_terminal_cancel_queue(comm, current, record)
                 finally:
                     self._cancel_reconcile_lock.release()
             return
@@ -3941,6 +3943,41 @@ class RmeCompatibilityPlugin(
                 self._state["pause"] = self._pause_reason.resume()
             comm.setPause(False, local_handling=False)
         self._schedule_publish()
+
+    def _advance_terminal_cancel_queue(self, comm, current_file, record):
+        """Let core reach its marker after it drops suppressed cancel G-code.
+
+        Core's _continue_sending stops after one discarded job command when
+        no print is active. Once cancellation has marked the file done there
+        may be no further job ACK to advance to the final marker. Never pop
+        entries ourselves, clear another plugin's hold, or skip a real command.
+        """
+        lock = getattr(comm, "_jobLock", None)
+        pending = getattr(comm, "_job_queue", None)
+        sending = getattr(comm, "_send_queue", None)
+        advance = getattr(comm, "_continue_sending", None)
+        if lock is None or pending is None or sending is None or not callable(advance):
+            return
+        with lock:
+            for _ in range(64):
+                with self._state_lock:
+                    session = self._state.get("session") or {}
+                    valid = (self._state.get("connected") and self._state.get("supported")
+                             and session.get("active")
+                             and all(session.get(key) == record.get(key) for key in ("printer_state", "pause_phase")))
+                if (not valid or self._rme_comm is not comm
+                        or self._printer.get_state_id() != "CANCELLING"
+                        or getattr(comm, "_currentFile", None) is not current_file
+                        or not current_file.done):
+                    return
+                before = pending.qsize()
+                if sending.qsize() or not before:
+                    return
+                advance()
+                # A queued real command or marker now belongs to core's send
+                # worker. If a foreign job hold prevented progress, leave it.
+                if sending.qsize() or pending.qsize() >= before:
+                    return
 
     @staticmethod
     def _valid_color(value):
