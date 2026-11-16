@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b162 — 2026-11-15
 
-- Explain failed tool-offset calibration as a failure, retain the actual firmware-reported Continue action and state clearly that it closes the failed result rather than passing or restarting calibration.
+- Explain failed tool-offset calibration as a failure and mirror all firmware-reported recovery choices, including Retry/Cancel where offered. Explain dismissal only when Continue is the sole reported action; never replace a retryable phase with a Continue-only prompt.
 - Show an explicit persistent material-start warning when ContinuousPrint reports a SpoolManager validation block, including the reported tool/spool and corrective action. Retain the material check and escape provider-supplied text.
 - Recover terminal cancellation when suppressed cancel-script commands strand OctoPrint's final completion marker after the file is already marked done. Advance through core's normal queue path, preserving real commands, acknowledgements and foreign holds; never fake an ACK or force the host state.
 

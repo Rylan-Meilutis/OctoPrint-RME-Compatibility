@@ -2416,7 +2416,7 @@ class RmeCompatibilityPlugin(
                         )
                         if phase == "failed":
                             record["message"] = ("Tool offset calibration failed; calibration has not passed. "
-                                                 "Continue closes this failed result. Inspect the tools/sensor before rerunning calibration.")
+                                                 "Choose from the recovery actions reported by the printer.")
                         if phase in ("intro", "ensure_nozzles_clean", "clean_nozzles_cold", "clean_nozzles_hot"):
                             follow_up.append("query_dialog_priority")
                 previous_workflow = self._state.get("workflow") or {}
@@ -2591,7 +2591,7 @@ class RmeCompatibilityPlugin(
                     message = str(record.get("phase", route)).replace("_", " ").capitalize()
                     if route == "indx_tool_offset_calibration" and record.get("phase") == "failed":
                         message = ("Tool offset calibration failed; calibration has not passed. "
-                                   "Continue closes this failed result. Inspect the tools/sensor before rerunning calibration.")
+                                   "Choose from the recovery actions reported by the printer.")
                     self._state["workflow"] = dict(record, message=message, received_at=int(time.time()))
                 elif route == "collision":
                     if record.get("phase") == "inspection":
@@ -2625,11 +2625,15 @@ class RmeCompatibilityPlugin(
                     pass
                 elif record["actions"]:
                     workflow = self._state.get("workflow") or {}
+                    message = workflow.get("message", "Printer action required")
+                    if (workflow.get("workflow") == "indx_tool_offset_calibration"
+                            and workflow.get("phase") == "failed" and record["actions"] == ["Continue"]):
+                        message += " Continue closes this failed result; it does not pass or restart calibration."
                     self._state["prompt"] = {
                         "kind": "firmware",
                         "actions": record["actions"],
                         "workflow": workflow.get("workflow", "printer"),
-                        "message": workflow.get("message", "Printer action required"),
+                        "message": message,
                         "updated": int(time.time()),
                     }
                 elif (self._state.get("prompt") or {}).get("kind") == "firmware" and not (self._state.get("prompt") or {}).get("slot_selection"):
