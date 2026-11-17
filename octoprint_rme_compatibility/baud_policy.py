@@ -21,8 +21,9 @@ def ordered_candidates(original, candidates=None):
     settings_factory = getattr(module, "settings", None)
     if callable(settings_factory):
         config = settings_factory()
-        for path in (("serial", "blacklistedBaudrates"),
-                     ("plugins", "serial_connector", "blocklistedBaudrates")):
+        modern = getattr(module, "__name__", "").startswith("octoprint.plugins.serial_connector")
+        paths = (("plugins", "serial_connector", "blocklistedBaudrates"),) if modern else (("serial", "blacklistedBaudrates"),)
+        for path in paths:
             for rate in config.get(list(path)) or []:
                 try:
                     blocked.add(int(rate))
@@ -47,6 +48,9 @@ def install(enabled):
             continue
         if callable(getattr(module, "baudrateList", None)):
             modules.append(module)
+            # 2.0 util.comm is only a deprecated forwarding module. Existing
+            # aliases are covered below; don't import it just to emit a warning.
+            break
     if not modules:
         return False
     for module in modules:

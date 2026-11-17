@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 from octoprint.util import CountedEvent
-from octoprint.util.comm import MachineCom, PrintingGcodeFileInformation, QueueMarker, SendQueueMarker
+from core_compat import MachineCom, PrintingGcodeFileInformation, QueueMarker, SendQueueMarker
 from octoprint.filemanager.storage import LocalFileStorage
 from octoprint_rme_compatibility.plugin import RmeCompatibilityPlugin
 

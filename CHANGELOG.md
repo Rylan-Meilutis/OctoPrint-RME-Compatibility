@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0b166 — 2026-11-17
+
+- Support OctoPrint 2.0's serial connector, reconnect parameters and baud settings without reusing stale connections or changing saved AUTO preferences.
+- Adapt native printer storage and the Files view to the 2.0 storage-keyed response, preserving local and third-party storages.
+- Route 2.0 native printer uploads through verified RME FILE transfers with exclusive ownership, bounded progress updates and exactly-once completion/temporary-source cleanup.
+- Retain 1.11 compatibility and qualify both real host APIs plus authenticated 2.0 browser/CSRF/Settings integration without touching a live printer.
+- Reconcile LCD pause/resume completion with host queue markers and invalidate stale callbacks so a completed resume cannot replay an old pause or retain the runout banner.
+
 ## 0.1.0b165 — 2026-11-16
 
 - Add an INDX-only Pellet ejection setting: Entry + Exit (default) or Entry Only, saved on the printer through a guarded RME service command.

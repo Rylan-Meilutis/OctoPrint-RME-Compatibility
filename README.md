@@ -1,5 +1,7 @@
 # OctoPrint RME Compatibility
 
+Host compatibility: [OctoPrint 2.0 migration and validation](docs/octoprint-2-compatibility.txt).
+
 Firmware discovery: [GitHub releases and verified Pi downloads](docs/firmware-releases.md).
 
 UI performance: [reproducible headless Chromium profiles](docs/ui-performance.md).

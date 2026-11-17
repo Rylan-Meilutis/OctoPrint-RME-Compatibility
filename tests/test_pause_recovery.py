@@ -5,6 +5,7 @@ import tempfile
 from types import SimpleNamespace
 from unittest.mock import Mock
 from test_toolmap_gate import RmeCompatibilityPlugin, _Printer
+from octoprint.events import Events
 
 
 class Comm:
@@ -30,6 +31,105 @@ class Comm:
 
 
 class PauseRecovery(unittest.TestCase):
+    def test_non_rme_or_disconnected_resume_does_not_mutate_core_or_banner(self):
+        for key in ('supported', 'connected'):
+            p = self.plugin('RESUMING')
+            p._state[key] = False
+            p._state['workflow'] = dict(workflow='filament_runout', state='waiting')
+            p._pause_reason.pause('Filament change required')
+            p._rme_comm._pause_mutex = threading.RLock()
+            timer = p._rme_comm._pause_position_timer = Mock()
+            p._rme_comm._record_pause_data = True
+            p.action_command_hook(p._rme_comm, '//action:resumed', 'resumed')
+            p._confirmed_firmware_resume(p._rme_comm)
+            timer.cancel.assert_not_called()
+            self.assertTrue(p._rme_comm._record_pause_data)
+            self.assertIsNotNone(p._state['workflow'])
+            self.assertTrue(p._pause_reason.active)
+            self.assertEqual(0, p._control_revision)
+
+    def test_resume_does_not_clear_unrelated_workflow(self):
+        p = self.plugin('RESUMING')
+        p._state['workflow'] = dict(workflow='chamber_temperature', state='active')
+        p.action_command_hook(p._rme_comm, '//action:resumed', 'resumed')
+        self.assertEqual('chamber_temperature', p._state['workflow']['workflow'])
+
+    def test_confirmed_lcd_resume_retires_pause_timer_and_old_runout_banner(self):
+        p = self.plugin('RESUMING')
+        p._pause_reason.pause('Filament change required')
+        p._state['workflow'] = dict(workflow='filament_runout', state='waiting', message='Filament change required')
+        p._state['prompt'] = dict(workflow='filament_runout', actions=['Continue'])
+        p._rme_comm._pause_mutex = threading.RLock()
+        timer = p._rme_comm._pause_position_timer = Mock()
+        p._rme_comm._record_pause_data = True
+        p.action_command_hook(p._rme_comm, '//action:resume', 'resume')
+        self.assertIsNotNone(p._state['workflow'])
+        self.assertTrue(p._rme_comm._record_pause_data)
+        p.action_command_hook(p._rme_comm, '//action:resumed', 'resumed')
+        timer.cancel.assert_called_once()
+        self.assertIsNone(p._rme_comm._pause_position_timer)
+        self.assertFalse(p._rme_comm._record_pause_data)
+        self.assertIsNone(p._state['workflow'])
+        self.assertIsNone(p._state['prompt'])
+        self.assertFalse(p._state['pause']['active'])
+        p.on_event(Events.PRINT_PAUSED, {}) # old timer's event arrived late
+        self.assertEqual([], p._printer.forced_commands)
+        self.assertFalse(p._state['pause']['active'])
+
+    def test_resume_request_keeps_runout_reason_while_firmware_is_heating(self):
+        p = self.plugin('RESUMING')
+        p._state['workflow'] = dict(workflow='filament_runout', state='waiting')
+        p._state['pause'] = p._pause_reason.pause('Filament change required')
+        p.on_event(Events.PRINT_RESUMED, {})
+        self.assertTrue(p._state['pause']['active'])
+        self.assertIsNotNone(p._state['workflow'])
+        p.action_command_hook(p._rme_comm, '//action:resumed', 'resumed')
+        self.assertFalse(p._state['pause']['active'])
+        self.assertIsNone(p._state['workflow'])
+
+    def test_old_tagged_pause_does_not_echo_after_resume_but_explicit_pause_works(self):
+        p = self.plugin('RESUMING')
+        p.action_command_hook(p._rme_comm, '//action:resumed', 'resumed')
+        p.gcode_queuing_hook(p._rme_comm, 'queuing', 'M117 old pause', None, 'M117', tags={'trigger:pause'})
+        self.assertEqual([], p._printer.forced_commands)
+        p.gcode_queuing_hook(p._rme_comm, 'queuing', 'M601', None, 'M601', tags={'source:api'})
+        self.assertEqual('M601', p._printer.forced_commands[-1][0])
+
+    def test_stale_deferred_pause_is_invalidated_but_new_operator_pause_survives(self):
+        p = self.plugin('RESUMING')
+        deferred = []
+        p._defer = lambda callback, *args: deferred.append((callback, args))
+        p._request_priority_control('pause')
+        old = deferred.pop()
+        p.action_command_hook(p._rme_comm, '//action:resume', 'resume')
+        p._request_priority_control('pause') # genuinely new operator intent
+        fresh = deferred.pop()
+        p.action_command_hook(p._rme_comm, '//action:resumed', 'resumed')
+        old[0](*old[1])
+        self.assertEqual([], p._printer.forced_commands)
+        fresh[0](*fresh[1])
+        self.assertEqual('M601', p._printer.forced_commands[-1][0])
+        p._force_send_rme_control = Mock(return_value=(None,))
+        _, tags = p._printer.forced_commands[-1]
+        self.assertEqual((None,), p.gcode_queuing_hook(p._rme_comm, 'queuing', 'M601', None, 'M601', tags=tags))
+        p._force_send_rme_control.assert_called_once()
+        p.action_command_hook(p._rme_comm, '//action:resume', 'resume')
+        p.gcode_queuing_hook(p._rme_comm, 'queuing', 'M601', None, 'M601', tags=tags)
+        p._force_send_rme_control.assert_called_once() # stale queued fast command cannot hit the wire
+
+    def test_old_snapshot_cannot_re_pause_after_lcd_resume(self):
+        p = self.plugin('RESUMING')
+        record = dict(printer_state='PAUSED', pause_phase='pausing')
+        p._state['session'].update(record)
+        revision = p._control_revision
+        p.action_command_hook(p._rme_comm, '//action:resumed', 'resumed')
+        p._reconcile_printer_pause(record, revision)
+        self.assertEqual([], p._rme_comm.calls)
+        p.on_event(Events.PRINT_RESUMED, {})
+        p._rme_comm.state = 'PAUSING'
+        p.on_event(Events.PRINT_RESUMED, {}) # stale opposite callback
+        self.assertEqual([], p._printer.forced_commands)
+
     def test_failed_tool_offset_calibration_retains_real_firmware_action(self):
         p = self.plugin()
         p._send_priority_service = Mock()

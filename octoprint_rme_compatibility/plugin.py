@@ -29,6 +29,7 @@ from werkzeug.utils import secure_filename
 from .file_service import FileServiceError, RmeFileService
 from . import github_firmware
 from . import baud_policy
+from . import host_compat
 from .protocol import (
     MAX_FIRMWARE_SIZE,
     classify_workflow,
@@ -196,8 +197,14 @@ class RmeCompatibilityPlugin(
         self._toolmap_probe_sent = False
         self._priority_controls_sent = set()
         self._firmware_completed_controls = set()
+        # Snapshot callbacks use a global revision; queued controls keep their
+        # own token so a fresh operator pause can survive a completing resume.
+        self._control_revision = 0
+        self._priority_control_revisions = {}
+        self._firmware_control_boundaries = {"pause": 0, "resume": 0}
         self._pause_reason = PauseReason()
         self._rme_comm = None
+        self._native_upload_active = False
         self._firmware_action_lock = threading.Lock()
         self._last_storage_publish = 0
         self._native_refresh_lock = threading.Lock()
@@ -257,6 +264,7 @@ class RmeCompatibilityPlugin(
     def _empty_state():
         """Build a complete JSON-safe snapshot for the UI and persistence layer."""
         return {
+            "host": {"printer_file_origin": host_compat.printer_file_origin()},
             "connected": False,
             "supported": False,
             "session": {
@@ -382,6 +390,7 @@ class RmeCompatibilityPlugin(
 
     def on_after_startup(self):
         """Restore durable UI state and start non-serial background workers."""
+        host_compat.install_printer_upload(getattr(self, "_printer", None), self._native_connector_upload)
         self._install_octopod_helper_filter()
         self._cancel_object_implementation()
         data_folder = self.get_plugin_data_folder()
@@ -591,6 +600,9 @@ class RmeCompatibilityPlugin(
              "template": "rme_compatibility_objects.jinja2", "custom_bindings": True},
             {"type": "settings", "name": "RME Compatibility", "custom_bindings": True},
         ]
+
+    def is_template_autoescaped(self):
+        return True
 
     def get_update_information(self):
         """Expose stable and beta release channels to OctoPrint Software Update.
@@ -1095,7 +1107,7 @@ class RmeCompatibilityPlugin(
         if selected.get("origin") != "local" or not path:
             return {}
         disk = self._file_manager.path_on_disk("local", path)
-        comm = self._rme_comm or getattr(self._printer, "_comm", None)
+        comm = host_compat.serial_comm(self._printer, self._rme_comm)
         current = getattr(comm, "_currentFile", None)
         if current is None or not all(callable(getattr(current, method, None)) for method in ("getFilename", "getStartTime", "getFilepos")):
             return dict(file=path, disk=disk, active=False)
@@ -1344,6 +1356,7 @@ class RmeCompatibilityPlugin(
             self._defer(self._handle_spoolman_event)
             return
         if event == Events.CONNECTED:
+            host_compat.install_printer_upload(self._printer, self._native_connector_upload)
             self._retry_file = None
             self._retry_job_path = None
             self._retry_ready = False
@@ -1517,6 +1530,9 @@ class RmeCompatibilityPlugin(
                 return
             self._request_priority_control("cancel")
         elif event == Events.PRINT_PAUSED:
+            host_state = getattr(self._printer, "get_state_id", lambda: None)()
+            if self._state.get("connected") and self._state.get("supported") and host_state is not None and host_state not in ("PAUSING", "PAUSED"):
+                return  # A delayed pause-position callback cannot undo a resume.
             with self._state_lock:
                 self._state["pause"] = self._pause_reason.pause((payload or {}).get("reason"))
                 pause = dict(self._state["pause"])
@@ -1527,10 +1543,15 @@ class RmeCompatibilityPlugin(
             if not self._consume_firmware_completed_control("pause"):
                 self._request_priority_control("pause")
         elif event == Events.PRINT_RESUMED:
+            host_state = getattr(self._printer, "get_state_id", lambda: None)()
+            if self._state.get("connected") and self._state.get("supported") and host_state is not None and host_state not in ("RESUMING", "PRINTING"):
+                return
+            completed = self._consume_firmware_completed_control("resume")
             with self._state_lock:
-                self._state["pause"] = self._pause_reason.resume()
+                if completed or not (self._state.get("connected") and self._state.get("supported")):
+                    self._state["pause"] = self._pause_reason.resume()
             self._schedule_publish()
-            if not self._consume_firmware_completed_control("resume"):
+            if not completed:
                 self._request_priority_control("resume")
         elif event in (Events.PRINT_DONE, Events.PRINT_FAILED, Events.PRINT_CANCELLED):
             with self._state_lock:
@@ -1753,11 +1774,27 @@ class RmeCompatibilityPlugin(
                 file_identity = self._retry_file
             self._defer(self._restart_confirmed_print, generation, file_identity)
             return
+        with self._state_lock:
+            if not (self._state.get("connected") and self._state.get("supported")):
+                return
         completed = {"paused": "pause", "resumed": "resume"}.get(name)
+        if name in ("pause", "resume", "paused", "resumed"):
+            with self._state_lock:
+                self._control_revision += 1
+                direction = "pause" if name in ("pause", "paused") else "resume"
+                opposite = "resume" if direction == "pause" else "pause"
+                if name in ("pause", "resume"):
+                    self._firmware_control_boundaries[direction] = self._control_revision
+                boundary = self._firmware_control_boundaries[direction] or self._control_revision
+                if self._priority_control_revisions.get(opposite, 0) <= boundary:
+                    self._priority_controls_sent.discard(opposite)
+                    self._priority_control_revisions.pop(opposite, None)
         if completed:
             with self._state_lock:
                 if self._state.get("supported"):
                     self._firmware_completed_controls.add(completed)
+            if completed == "resume":
+                self._confirmed_firmware_resume(comm_instance or self._rme_comm)
 
     def _selected_retry_file(self):
         try:
@@ -2139,6 +2176,12 @@ class RmeCompatibilityPlugin(
             if area_command and mesh_supported:
                 return [(area_command, None, {"plugin:rme_compatibility"}), (cmd, cmd_type)]
         if "rme:priority_control" in tags:
+            revisions = [tag.split(":")[-1] for tag in tags if tag.startswith("rme:control_revision:")]
+            if revisions:
+                control_action = {"M601": "pause", "M602": "resume", "M604": "cancel"}.get(str(gcode or "").upper())
+                with self._state_lock:
+                    if control_action not in self._priority_controls_sent or revisions != [str(self._priority_control_revisions.get(control_action))]:
+                        return (None,)  # A newer physical/operator transition superseded this send.
             # Recheck at the queue boundary: startup may have begun since the
             # periodic worker sampled state. Never precede OctoPrint's M110.
             if "trigger:rme.progress" in tags and not self._host_progress_ready():
@@ -2177,7 +2220,13 @@ class RmeCompatibilityPlugin(
         command_action = command_actions.get(str(gcode or "").upper())
         action = command_action or tagged_action
         if action:
-            self._request_priority_control(action)
+            host_state = getattr(self._printer, "get_state_id", lambda: None)()
+            stale_tag = tagged_action in ("pause", "resume") and host_state is not None and host_state not in (
+                ("PAUSING", "PAUSED") if tagged_action == "pause" else ("RESUMING", "PRINTING"))
+            with self._state_lock:
+                completed_tag = tagged_action in self._firmware_completed_controls
+            if not stale_tag and not completed_tag:
+                self._request_priority_control(action)
         # An explicit service command is resent with force=True below; leaving
         # its original copy queued would execute the action twice later.
         return (None,) if command_action else None
@@ -2295,6 +2344,7 @@ class RmeCompatibilityPlugin(
             record = self._normalize_machine_topology(record)
         follow_up = []
         apply_profile = False
+        pause_reconcile_revision = None
         with self._state_lock:
             if kind == "machine":
                 self._state["supported"] = True
@@ -2364,6 +2414,7 @@ class RmeCompatibilityPlugin(
                 # Clear that stale handoff before it can cancel a new print.
                 printer_state = str(record.get("printer_state", "")).upper()
                 if lease and "pause_phase" in record:
+                    pause_reconcile_revision = self._control_revision
                     follow_up.append("reconcile_printer_pause")
                 firmware_status = self._state["firmware"].get("status")
                 workflow = self._state.get("workflow") or {}
@@ -3006,7 +3057,7 @@ class RmeCompatibilityPlugin(
                     "dialog_query",
                 )
             elif item == "reconcile_printer_pause":
-                self._defer(self._reconcile_printer_pause, dict(record))
+                self._defer(self._reconcile_printer_pause, dict(record), pause_reconcile_revision)
             elif item.startswith("refresh_configuration:"):
                 self._schedule_configuration_refresh(item.split(":", 1)[1])
             else:
@@ -3116,14 +3167,7 @@ class RmeCompatibilityPlugin(
         # which may be 115200 even when this working connection used 1000000.
         # Preserve the selected rate, not the USB device path (it can change
         # on re-enumeration). Do not change an ordinary/manual connection.
-        reconnect_options = {}
-        try:
-            connection = self._printer.get_current_connection()
-            baudrate = connection[2]
-            if isinstance(baudrate, int) and not isinstance(baudrate, bool) and baudrate > 0:
-                reconnect_options["baudrate"] = baudrate
-        except (AttributeError, IndexError, TypeError):
-            pass
+        reconnect_options = host_compat.reconnect_options(getattr(self, "_printer", None))
         # If this RME installation now uses AUTO, run the same high-to-low
         # handshake on update reconnect instead of pinning a previous fallback.
         try:
@@ -3137,7 +3181,7 @@ class RmeCompatibilityPlugin(
                 else:
                     saved = None
                 if saved == 0:
-                    reconnect_options["baudrate"] = 0
+                    reconnect_options.get("parameters", reconnect_options)["baudrate"] = 0
         except (AttributeError, TypeError):
             pass
         with self._firmware_reconnect_lock:
@@ -3514,24 +3558,35 @@ class RmeCompatibilityPlugin(
             if action in self._priority_controls_sent:
                 return False
             self._priority_controls_sent.add(action)
-        self._defer(self._send_priority_control, action, commands[action])
+            self._control_revision += 1
+            revision = self._control_revision
+            self._priority_control_revisions[action] = revision
+            if action in self._firmware_control_boundaries:
+                self._firmware_control_boundaries[action] = revision
+        self._defer(self._send_priority_control, action, commands[action], revision)
         return True
 
-    def _send_priority_control(self, action, command):
+    def _send_priority_control(self, action, command, revision=None):
         """Submit a service command to the forced, out-of-band send hook."""
         try:
+            with self._state_lock:
+                if revision is not None and (revision != self._priority_control_revisions.get(action) or action not in self._priority_controls_sent):
+                    return
+                send_revision = self._priority_control_revisions.get(action, self._control_revision)
             self._printer.commands(
                 command,
                 tags={
                     "plugin:rme_compatibility",
                     "rme:priority_control",
                     "trigger:rme.fast_%s" % action,
+                    "rme:control_revision:%d" % send_revision,
                 },
                 force=True,
             )
         except Exception:
             with self._state_lock:
-                self._priority_controls_sent.discard(action)
+                if revision is None or self._priority_control_revisions.get(action) == revision:
+                    self._priority_controls_sent.discard(action)
             raise
 
     def _send_priority_service(self, command, trigger="service"):
@@ -3895,7 +3950,7 @@ class RmeCompatibilityPlugin(
         else:
             self._send_command(command)
 
-    def _reconcile_printer_pause(self, record):
+    def _reconcile_printer_pause(self, record, revision=None):
         """Recover missed actions using a precise, current firmware snapshot.
 
         Use OctoPrint's printer-completed pause path, not another M601. The
@@ -3903,6 +3958,8 @@ class RmeCompatibilityPlugin(
         complete when firmware has already parked the tool.
         """
         with self._state_lock:
+            if revision is not None and revision != self._control_revision:
+                return
             if not (self._state.get("supported") and self._state.get("connected")):
                 return
             session = self._state["session"]
@@ -3962,8 +4019,61 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 self._firmware_completed_controls.add("resume")
                 self._state["pause"] = self._pause_reason.resume()
+            self._confirmed_firmware_resume(comm)
             comm.setPause(False, local_handling=False)
+            self._advance_confirmed_resume_queue(comm, record)
         self._schedule_publish()
+
+    def _confirmed_firmware_resume(self, comm):
+        """Retire only the old pause capture after physical resume is confirmed."""
+        with self._state_lock:
+            if not (self._state.get("connected") and self._state.get("supported")):
+                return
+        host_state = getattr(self._printer, "get_state_id", lambda: None)()
+        if host_state not in ("PAUSED", "RESUMING", "PRINTING"):
+            return
+        mutex = getattr(comm, "_pause_mutex", None)
+        if mutex is not None:
+            with mutex:
+                timer = getattr(comm, "_pause_position_timer", None)
+                if timer is not None:
+                    timer.cancel()
+                    comm._pause_position_timer = None
+                comm._record_pause_data = False
+        with self._state_lock:
+            self._firmware_completed_controls.discard("pause")
+            self._state["pause"] = self._pause_reason.resume()
+            if (self._state.get("workflow") or {}).get("workflow") == "filament_runout":
+                self._state["workflow"] = None
+            if (self._state.get("prompt") or {}).get("workflow") == "filament_runout":
+                self._state["prompt"] = None
+        self._schedule_publish()
+
+    def _advance_confirmed_resume_queue(self, comm, record):
+        """Reach core's resume marker after suppressed macros, without fake ACKs."""
+        lock = getattr(comm, "_jobLock", None)
+        pending = getattr(comm, "_job_queue", None)
+        sending = getattr(comm, "_send_queue", None)
+        advance = getattr(comm, "_continue_sending", None)
+        if lock is None or pending is None or sending is None or not callable(advance):
+            return
+        with lock:
+            current_file = getattr(comm, "_currentFile", None)
+            for _ in range(64):
+                with self._state_lock:
+                    session = self._state.get("session") or {}
+                    valid = (self._state.get("connected") and self._state.get("supported") and session.get("active")
+                             and session.get("printer_state") == "PRINTING" and session.get("pause_phase") == "none")
+                if (not valid or self._rme_comm is not comm or self._printer.get_state_id() != "RESUMING"
+                        or current_file is None or current_file is not getattr(comm, "_currentFile", None)
+                        or current_file.done or getattr(comm, "job_on_hold", False)):
+                    return
+                before = pending.qsize()
+                if sending.qsize() or not before:
+                    return
+                advance()
+                if sending.qsize() or pending.qsize() >= before:
+                    return
 
     def _advance_terminal_cancel_queue(self, comm, current_file, record):
         """Let core reach its marker after it drops suppressed cancel G-code.
@@ -4278,7 +4388,8 @@ class RmeCompatibilityPlugin(
                 self._state["firmware"].get("recovery_required")
             )
         return bool(
-            (self._uploader and self._uploader.busy)
+            self._native_upload_active
+            or (self._uploader and self._uploader.busy)
             or (self._file_service and self._file_service.busy)
             or firmware_status in (
                 "queued", "canceling", "starting", "uploading", "verifying",
@@ -4607,8 +4718,8 @@ class RmeCompatibilityPlugin(
         try:
             filename = current.getFilename()
             origin = current.getFileLocation()
-            if isinstance(filename, str) and filename and origin == "sdcard":
-                return {"origin": origin, "path": filename, "name": os.path.basename(filename)}
+            if isinstance(filename, str) and filename and host_compat.is_printer_file(origin):
+                return {"origin": host_compat.printer_file_origin(), "path": filename, "name": os.path.basename(filename)}
             if isinstance(filename, str) and filename and origin == "local":
                 try:
                     path = self._file_manager.path_in_storage(origin, filename)
@@ -7202,6 +7313,73 @@ class RmeCompatibilityPlugin(
         ).start()
         return job
 
+    def _native_connector_upload(self, connection, source, target, progress_callback=None):
+        """Verified FILE uploads for 2.0's public printer-storage interface."""
+        with self._state_lock:
+            use_rme = (not self._stop.is_set() and self._state.get("connected")
+                       and self._state.get("supported") and self._state["storage"].get("supported")
+                       and self._state["storage"].get("caps", {}).get("write") == 1
+                       and self._file_service is not None)
+        if not use_rme:
+            return NotImplemented
+        from octoprint.printer import PrinterFilesUnavailableError
+
+        def notify(**status):
+            if callable(progress_callback):
+                try:
+                    progress_callback(**status)
+                except Exception:
+                    self._logger.exception("Printer upload progress callback failed")
+
+        with self._state_lock:
+            current = host_compat.current_connection(self._printer)[1]
+            if current is not connection or self._print_job_active() or self._printer_transfer_active():
+                notify(failed=True)
+                raise PrinterFilesUnavailableError("RME printer upload requires an idle, current serial connection")
+            # Reserve before starting the worker: print startup and competing
+            # uploads must see ownership even before FILE BEGIN is transmitted.
+            self._native_upload_active = True
+
+        last_progress = [0.0]
+
+        def progress(offset, size):
+            self._storage_progress(offset, size)
+            now = time.monotonic()
+            if offset >= size or now - last_progress[0] >= 0.25:
+                last_progress[0] = now
+                notify(progress=int(offset * 100 / max(1, size)))
+
+        def transfer():
+            error = None
+            try:
+                if host_compat.current_connection(self._printer)[1] is not connection:
+                    raise FileServiceError("Printer connection changed before upload")
+                self._require_print_idle("Printer USB uploads")
+                self._set_storage_status("uploading", progress=0, error=None)
+                self._write_file_with_manifest(source, target, kind="file", progress=progress)
+                self._set_storage_status("ready", progress=100, error=None)
+            except Exception as exc:
+                error = exc
+                self._logger.exception("RME printer upload failed")
+                self._set_storage_status("error", progress=None, error=str(exc))
+            finally:
+                with self._state_lock:
+                    self._native_upload_active = False
+            # The core's callback deletes its temporary source, so signal
+            # terminal status exactly once and only after the writer finishes.
+            notify(**({"failed":True} if error else {"done":True, "progress":100}))
+            if not error:
+                self._defer(self._refresh_storage_after_change, self._parent_storage_path(target))
+
+        try:
+            threading.Thread(target=transfer, name="rme-printer-upload", daemon=True).start()
+        except Exception as exc:
+            with self._state_lock:
+                self._native_upload_active = False
+            notify(failed=True)
+            raise PrinterFilesUnavailableError("Could not start RME upload worker") from exc
+        return target
+
     def sd_card_upload_hook(
         self, printer, filename, path, start_callback, success_callback,
         failure_callback, *args, **kwargs
@@ -7222,6 +7400,10 @@ class RmeCompatibilityPlugin(
         if not use_rme_file or not self._file_service:
             return None
         remote_name_factory = getattr(printer, "_get_free_remote_name", None)
+        if not callable(remote_name_factory):
+            modern, connection = host_compat.current_connection(printer)
+            if modern and connection is not None and connection.connector == "serial":
+                remote_name_factory = lambda name: connection.available_file_name("/", os.path.basename(name))
         if not callable(remote_name_factory):
             self._logger.warning("Cannot replace SD upload: OctoPrint remote-name helper is unavailable")
             return None

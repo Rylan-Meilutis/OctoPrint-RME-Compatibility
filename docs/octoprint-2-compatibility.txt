@@ -1,0 +1,47 @@
+OctoPrint 2.0 compatibility
+=========================
+
+Plugin b166 supports OctoPrint 2.0's bundled serial
+connector while retaining the OctoPrint 1.11 interface. Public b165 predates
+these changes: install b166 or later before upgrading the host.
+
+Keep USB serial for RME. The priority service writer and binary file protocol
+need the serial transport; changing to an unrelated network connector does
+not provide equivalent functionality. Offline/non-serial connections must
+not reuse a cached serial descriptor. Reconnection keeps the baud selection
+without pinning a stale USB device path. AUTO remains AUTO.
+
+OctoPrint 2.0 renames printer storage from sdcard to printer and changes the
+Files view response to a storage-keyed object. RME preserves local/third-party
+storages and supplies native printer files in the host's expected shape.
+Native uploads use the verified RME FILE writer, reserve transfer ownership
+before the worker starts, and complete the core's temporary-file callback
+only after verification. Stock/non-RME uploads keep the native route.
+
+Validation (2026-11-17)
+-----------------------
+Real OctoPrint 2.0.0: 23 core integration tests, including native storage
+uploads, callback cleanup, connector switches, reconnect options, baud
+selection, startup cancellation, and LCD resume/cancel marker handling.
+Real OctoPrint 1.11.8: 12 executed integration tests, 11 modern-only skips.
+Additional unit and JavaScript regressions exercise legacy and modern paths.
+A disposable, authenticated OctoPrint 2.0 server and headless Chromium test
+exercise actual Settings opening, native Files integration and CSRF checks
+without a global API key. No physical printer or production config is used.
+
+These checks do not certify every third-party plugin or replace a physical
+print/flash/runout qualification. Upgrade only while idle, keep a backup of
+OctoPrint data, and verify other installed plugins support OctoPrint 2.0.
+
+Docker build-context failure
+----------------------------
+Do not relax permissions on root-owned TURN replay backups. Exclude replay,
+backup and environment files from the build context, retaining only the
+TURN/video runtime sources needed by COPY. A scratch BuildKit context probe
+can verify this without rebuilding/restarting the live OctoPrint service.
+Legacy ENV syntax warnings in the upstream base recipe are not this error.
+
+References
+----------
+https://github.com/OctoPrint/OctoPrint/releases/tag/2.0.0
+https://github.com/OctoPrint/OctoPrint/blob/2.0.0/docs/plugins/migration_2_0_0.md

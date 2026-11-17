@@ -2722,6 +2722,7 @@ $(function () {
         function nativeFileTree() {
             var roots = [];
             var folders = {};
+            var origin = (self.state().host || {}).printer_file_origin || "sdcard";
             function childrenFor(parts) {
                 if (!parts.length) return roots;
                 var path = parts.join("/");
@@ -2729,7 +2730,7 @@ $(function () {
                     var parent = childrenFor(parts.slice(0, -1));
                     var folder = {
                         type: "folder", typePath: ["folder"], name: parts[parts.length - 1],
-                        display: parts[parts.length - 1], path: path, origin: "sdcard",
+                        display: parts[parts.length - 1], path: path, origin: origin,
                         children: [], size: 0, date: null, rme: true
                     };
                     folders[path] = folder;
@@ -2744,8 +2745,8 @@ $(function () {
                 childrenFor(parts).push({
                     type: item.category === "model" ? "model" : "machinecode",
                     typePath: item.category === "model" ? ["model", "rme_artifact"] : ["machinecode", "gcode"],
-                    name: filename, display: filename, path: String(item.path),
-                    origin: "sdcard", size: Number(item.size || 0),
+                    name: filename, display: filename, path: parts.concat([filename]).join("/"),
+                    origin: origin, size: Number(item.size || 0),
                     date: item.date == null ? null : Number(item.date), rme: true,
                     refs: {resource: OctoPrint.getBlueprintUrl("rme_compatibility") + "storage/download"}
                 });
@@ -2763,9 +2764,19 @@ $(function () {
                     result = originalFromResponse.call(self.files, response, params);
                 } else {
                     var merged = $.extend({}, response);
-                    merged.files = (response.files || []).filter(function (entry) {
-                        return entry.origin !== "sdcard";
-                    }).concat(nativeFileTree());
+                    if ((self.state().host || {}).printer_file_origin === "printer") {
+                        // 2.0's response is keyed by storage, not one flat list.
+                        // Preserve local/cloud blocks and native capability/usage
+                        // metadata; replace only the printer's directory tree.
+                        merged.printer = $.extend({key: "printer", name: "Printer",
+                            capabilities: {}, usage: {}}, response.printer || {});
+                        merged.printer.files = nativeFileTree();
+                        delete merged.sdcard;
+                    } else {
+                        merged.files = (response.files || []).filter(function (entry) {
+                            return entry.origin !== "sdcard" && entry.origin !== "printer";
+                        }).concat(nativeFileTree());
+                    }
                     result = originalFromResponse.call(self.files, merged, params);
                 }
                 window.setTimeout(decorateOctoprintFirmwareEntries, 0);

@@ -4,7 +4,8 @@ const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const {chromium} = require('playwright');
 (async function () {
-    const browser = await chromium.launch({headless:true});
+    const browser = await chromium.launch({headless:true,
+        executablePath: process.env.RME_CHROMIUM_EXECUTABLE || undefined});
     try {
         const page = await browser.newPage();
         // Reproduce native grid, blanket font overrides and last-row offsets.
