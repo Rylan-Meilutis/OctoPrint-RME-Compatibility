@@ -215,4 +215,3 @@ class RealOctoPrint200(unittest.TestCase):
             connector.upload_printer_file('unused','part.gco',progress_callback=callback)
         callback.assert_called_once_with(failed=True)
         connector._comm.startFileTransfer.assert_not_called()
-
