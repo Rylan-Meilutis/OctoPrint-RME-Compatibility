@@ -40,7 +40,12 @@
             <input type="number" min="0" max="100" class="input-small" data-rme-tune="fan" data-bind="value: tuneFan, enable: tuneEnabled() && tuneFanPercent() !== null">
             <button class="btn" data-bind="click: applyTuneFan, enable: tuneEnabled() && tuneFanPercent() !== null">Apply fan</button>
         </div>
-        <p data-bind="visible: tuneDockFanPercent() !== null">Dock fan — printer: <span data-bind="text: tuneDockFanPercent"></span>%</p>
+        <div data-bind="visible: tuneDockFanPercent() !== null">
+            <label>Dock fan — printer: <span data-bind="text: tuneDockFanPercent"></span>%</label>
+            <input type="number" min="0" max="100" class="input-small" data-rme-tune="dock_fan" data-bind="value: tuneDockFan, enable: tuneEnabled() && tuneDockFanPercent() !== null">
+            <button class="btn" data-bind="click: applyTuneDockFan, enable: tuneEnabled() && tuneDockFanPercent() !== null">Apply dock fan</button>
+            <small>Required hot-tool cooldown may temporarily keep the applied speed higher.</small>
+        </div>
         <button class="btn" data-bind="click: toggleTuneStealth, enable: tuneEnabled, text: Number(tune().stealth) ? 'Stealth: On' : 'Stealth: Off', attr: {'aria-pressed': !!Number(tune().stealth)}"></button>
         <label data-bind="visible: tune().auto_pa !== undefined">Auto PA
           <select data-bind="enable: tuneEnabled, rmeLightState: tune().auto_pa, event: {change: changeAutoPa}">

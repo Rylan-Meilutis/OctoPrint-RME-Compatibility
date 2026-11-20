@@ -1,0 +1,31 @@
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+const {JSDOM} = require('jsdom');
+const {jQueryFactory} = require('jquery/factory');
+(async () => {
+    const dom = new JSDOM('<html><body></body></html>', {runScripts: 'outside-only'});
+    const w = dom.window, $ = jQueryFactory(w);
+    w.$ = w.jQuery = $; w.gettext = x => x; w.PNotify = function () {};
+    w.eval(fs.readFileSync(require.resolve('knockout/build/output/knockout-latest.js'), 'utf8'));
+    w.OCTOPRINT_VIEWMODELS = [];
+    w.eval(fs.readFileSync('octoprint_rme_compatibility/static/js/rme_compatibility.js', 'utf8'));
+    await new Promise(resolve => $(resolve));
+    const vm = new w.OCTOPRINT_VIEWMODELS[0].construct([{}, {}, {isPrinting: w.ko.observable(true)}, {}]);
+    const sent = []; vm.command = (name, data) => sent.push([name, data]);
+    const template = fs.readFileSync('octoprint_rme_compatibility/templates/rme_compatibility_tab.jinja2', 'utf8');
+    const start = template.indexOf('<div data-bind="visible: tuneDockFanPercent()');
+    w.document.body.innerHTML = template.slice(start, template.indexOf('</div>', start) + 6);
+    w.ko.applyBindings(vm, w.document.body);
+    const state = {connected: true, supported: true, machine: {tune: 1}, lock: {locked: false}, tune: {updated: Date.now()/1000, dock_fan: 76}};
+    vm.state(state); vm.tick(Date.now()); w.ko.tasks.runEarly();
+    const input = w.document.querySelector('input'), button = w.document.querySelector('button');
+    assert(!input.disabled && !button.disabled);
+    assert.equal(input.min, '0'); assert.equal(input.max, '100');
+    vm.tuneDockFan(10); button.click();
+    assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1))), ['set_print_override', {kind: 'dock_fan', value: 10}]);
+    assert.equal(vm.tuneDockFanPercent(), 30); // applied readback, not optimistic success
+    vm.state({...state, lock: {locked: true}}); w.ko.tasks.runEarly(); assert(button.disabled);
+    vm.state({...state, tune: {updated: Date.now()/1000}}); w.ko.tasks.runEarly();
+    assert.equal(w.document.querySelector('div').style.display, 'none');
+    w.close(); console.log('Dock fan live-control browser regression passed');
+})().catch(error => {console.error(error); process.exitCode = 1;});

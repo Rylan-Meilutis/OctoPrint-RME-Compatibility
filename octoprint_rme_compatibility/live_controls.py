@@ -3,7 +3,8 @@ import re
 
 
 def command(code, state):
-    if state.get("machine", {}).get("live_controls") != 1:
+    if (state.get("machine", {}).get("live_controls") != 1
+            or not state.get("session", {}).get("active")):
         return None
     code = str(code).split(";", 1)[0].strip().upper()
     match = re.fullmatch(r"(M104|M140|M106|M107|M220|M221)\s*((?:[STP]\s*\d{1,4}(?:\.\d{1,3})?\s*)*)", code)
@@ -19,6 +20,11 @@ def command(code, state):
     if opcode == "M106" and set(values) <= {"S", "P"} and values.get("P", 0) == 0:
         target = values.get("S", 255)
         return "@RME CONTROL SET fan=%d" % target if target <= 255 else None
+    if (opcode in ("M106", "M107") and set(values) <= {"S", "P"}
+            and values.get("P") == 6
+            and state.get("machine", {}).get("live_dock_fan") == 1):
+        target = 0 if opcode == "M107" else values.get("S", 255)
+        return "@RME CONTROL SET dock_fan=%d" % target if target <= 255 else None
     if "S" not in values:
         return None
     target = values["S"]

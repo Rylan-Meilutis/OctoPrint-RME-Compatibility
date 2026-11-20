@@ -34,6 +34,20 @@ timing still needs confirmation after installing the update while idle.
 
 ## Operator controls
 
+Optional live-control capabilities are reset on startup and on every new machine
+snapshot; persisted flags are not proof of support on the installed firmware.
+Translation requires an active RME lease too. Otherwise M104/M140/M141 and fan
+commands stay on the native queue rather than becoming unsupported services.
+
+Firmware advertising `live_dock_fan=1` supports `CONTROL SET dock_fan=0..255`.
+Explicit M106/M107 P6 and the RME dock-fan control use that priority path during
+waits. The printer's mandatory hot-tool cooldown can keep actual PWM higher
+than requested. Older firmware retains native queued M106 P6 behavior.
+
+Updated firmware lets explicit print-fan settings, including zero and values
+below 30%, override chamber heating's default circulation during that assist
+cycle. Heatbreak cooling and heater protections are independent and unchanged.
+
 Firmware advertising live_controls=1 accepts @RME CONTROL SET with exactly one
 of bed=N, nozzle=N, fan=N, speed=N or flow=N. Nozzle and flow support tool=N
 as a direct slot; the plugin resolves logical API tool selections before sending.

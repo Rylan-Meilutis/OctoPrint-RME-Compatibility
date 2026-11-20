@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0b168 — 2026-11-20
+
+- Retire cached live-control/chamber capabilities on startup and every fresh machine snapshot. Firmware that does not advertise them keeps standard M140/M104/M141 G-code, rather than losing heater requests to unsupported RME service commands after reflashing.
+- Require a current RME lease before translating explicit operator controls; retain native G-code when the live service is unavailable.
+- Add a dock-fan control and advertised priority routing for M106/M107 P6, so updated firmware can apply it during waits. Keep mandatory hot-tool cooldown policy and actual PWM readback authoritative.
+
 ## 0.1.0b167 — 2026-11-20
 
 - Expire one-shot paused/resuming printer status notices such as “Retracting filament”, and retire them immediately on confirmed resume without hiding faults or active workflows.

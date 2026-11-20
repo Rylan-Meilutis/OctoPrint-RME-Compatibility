@@ -453,6 +453,9 @@ class RmeCompatibilityPlugin(
             ):
                 if key in persisted:
                     self._state[key] = persisted[key]
+            # These optional commands require fresh firmware advertisement.
+            # Cached discovery may come from a different installed firmware.
+            self._state['machine'].update(live_controls=0, live_chamber=0, live_dock_fan=0)
             # An uncertain raw receiver is a durable safety condition. An
             # OctoPrint restart is not evidence that the printer left binary
             # mode, so retain the lock and warning until printer reboot proof.
@@ -2171,7 +2174,8 @@ class RmeCompatibilityPlugin(
         # File G-code stays FIFO; older firmware keeps the normal M141 path.
         if (phase == "queuing" and {"source:api", "source:terminal"}.intersection(tags)
                 and not {"source:file", "source:job"}.intersection(tags)
-                and self._state.get("machine", {}).get("live_chamber") == 1):
+                and self._state.get("machine", {}).get("live_chamber") == 1
+                and self._state.get("session", {}).get("active")):
             chamber_target = re.fullmatch(r"\s*M141\s+S(\d{1,3})(?:\.0+)?\s*(?:;[^\r\n]*)?", str(cmd or ""), re.I)
             if chamber_target and int(chamber_target.group(1)) <= 255:
                 self._send_priority_services(
@@ -2366,6 +2370,10 @@ class RmeCompatibilityPlugin(
         with self._state_lock:
             if kind == "machine":
                 self._state["supported"] = True
+                # MACHINE is a capability snapshot, not a delta. Absence means
+                # unsupported, including after a downgrade/reflash in-place.
+                # Preserve separately reported envelope/limits in this mapping.
+                self._state['machine'].update(live_controls=0, live_chamber=0, live_dock_fan=0)
                 self._state["machine"].update(record)
                 if (
                     int(record.get("logical_tools", 0) or 0) > 1
@@ -4384,6 +4392,10 @@ class RmeCompatibilityPlugin(
             if not 0 <= self._state.get("tune", {}).get("fan", -1) <= 255:
                 raise ValueError("Firmware does not report synchronized fan state")
             command = "M106 S%d" % ((value * 255 + 50) // 100)
+        elif kind == "dock_fan" and 0 <= value <= 100:
+            if not 0 <= self._state.get("tune", {}).get("dock_fan", -1) <= 255:
+                raise ValueError("Firmware does not report a dock fan")
+            command = "M106 P6 S%d" % ((value * 255 + 50) // 100)
         elif kind == "flow" and 50 <= value <= 150:
             tool = str(data.get("tool", ""))
             if not re.fullmatch(r"\d", tool) or not 0 <= int(tool) < capacity:

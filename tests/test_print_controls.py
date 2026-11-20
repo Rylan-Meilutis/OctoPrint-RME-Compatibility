@@ -9,6 +9,45 @@ from octoprint_rme_compatibility.protocol import parse_line
 
 
 class PrintControlsTests(unittest.TestCase):
+    def test_dock_fan_live_path_and_old_firmware_fallback(self):
+        for live in (False, True):
+            for percent, pwm in ((0, 0), (10, 26), (29, 74), (100, 255)):
+                plugin = self.plugin()
+                plugin._state['tune']['dock_fan'] = 76
+                plugin._state['session']['active'] = True
+                plugin._state['machine'].update(live_controls=int(live), live_dock_fan=int(live))
+                self.commands.clear()
+                plugin._set_print_override(dict(kind='dock_fan', value=percent))
+                self.assertEqual(self.commands, ['@RME CONTROL SET dock_fan=%d' % pwm, '@RME TUNE QUERY'] if live else ['M106 P6 S%d' % pwm])
+
+    def test_machine_snapshot_retires_cached_live_control_capabilities(self):
+        plugin = self.plugin()
+        plugin._state.update(connected=True, supported=True)
+        plugin._state['session']['active'] = True
+        plugin._state['machine'].update(live_controls=1, live_chamber=1, live_dock_fan=1, z_max=270)
+        plugin._schedule_publish = lambda: None
+        plugin._defer = lambda *args: None
+        plugin._settings = types.SimpleNamespace(get_boolean=lambda key: False)
+        plugin._handle_record(parse_line('RME_MACHINE hotends=8 logical_tools=8 tool_capacity=8 tune=1 tune_delta=1 dashboard_sensors=1 pa_temperature_plan=1 pa_temperature_points=8 host_progress=1 host_tool_changes=1 mesh_area=1 single_nozzle=1'))
+        self.assertEqual(plugin._state['machine']['live_controls'], 0)
+        self.assertEqual(plugin._state['machine']['live_chamber'], 0)
+        self.assertEqual(plugin._state['machine']['live_dock_fan'], 0)
+        self.assertEqual(plugin._state['machine']['z_max'], 270)
+        for command in ('M140 S110', 'M104 S215', 'M141 S55'):
+            result = plugin.gcode_queuing_hook(None, 'queuing', command, None,
+                command.split()[0], tags={'source:api'})
+            self.assertIsNone(result)  # Original G-code remains in native queue.
+        self.assertEqual(self.commands, [])
+        plugin._handle_record(parse_line('RME_MACHINE hotends=8 logical_tools=8 tool_capacity=8 tune=1 live_controls=1 live_chamber=1'))
+        result = plugin.gcode_queuing_hook(None, 'queuing', 'M140 S110', None,
+            'M140', tags={'source:api'})
+        self.assertEqual(result, (None,))
+        self.assertEqual(self.commands, ['@RME CONTROL SET bed=110'])
+        self.commands.clear()
+        self.assertIsNone(plugin.gcode_queuing_hook(None, 'queuing',
+            'M140 S110.0000', None, 'M140', tags={'source:terminal'}))
+        self.assertEqual(self.commands, [])
+
     def test_chamber_wait_native_workflow_lifecycle(self):
         from octoprint_rme_compatibility.protocol import workflow_is_terminal
         plugin = self.plugin()
@@ -174,6 +213,7 @@ class PrintControlsTests(unittest.TestCase):
     def test_operator_chamber_target_is_live_only_with_capability(self):
         plugin = self.plugin()
         plugin._state.update(supported=True)
+        plugin._state['session']['active'] = True
         plugin._state["machine"]["live_chamber"] = 1
         result = plugin.gcode_queuing_hook(None, "queuing", "M141 S35", None, "M141", tags={"source:api"})
         self.assertEqual(result, (None,))
@@ -189,6 +229,7 @@ class PrintControlsTests(unittest.TestCase):
     def test_live_heaters_only_bypass_for_operator_commands(self):
         plugin = self.plugin()
         plugin._state.update(supported=True)
+        plugin._state['session']['active'] = True
         plugin._state["machine"]["live_controls"] = 1
         self.assertIsNone(plugin.gcode_queuing_hook(None, "queuing", "M140 S55", None, "M140", tags={"source:file"}))
         self.assertEqual(self.commands, [])

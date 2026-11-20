@@ -681,6 +681,8 @@ $(function () {
         };
         self.applyTuneSpeed = function () { self.command("set_print_override", {kind: "speed", value: Number(self.tuneSpeed())}); };
         self.applyTuneFan = function () { self.command("set_print_override", {kind: "fan", value: Number(self.tuneFan())}); };
+        self.tuneDockFan = ko.observable(0);
+        self.applyTuneDockFan = function () { self.command("set_print_override", {kind: "dock_fan", value: Number(self.tuneDockFan())}); };
         self.applyTuneFlow = function (row) { self.command("set_print_override", {kind: "flow", tool: row.tool, value: Number(row.draft())}); };
         self.toggleTuneStealth = function () { self.command("set_print_override", {kind: "stealth", value: Number(self.tune().stealth) ? 0 : 1}); };
         self.changeAutoPa = function (_, event) {
