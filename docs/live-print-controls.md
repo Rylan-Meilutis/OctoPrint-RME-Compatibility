@@ -1,5 +1,39 @@
 # Live print controls
 
+## Resume handoff
+
+Firmware remains responsible for reheating, priming and returning to the print
+position. RME does not advance the print during `pause_phase=resuming` alone.
+Only the physical `//action:resumed` completion or an authoritative
+`printer_state=PRINTING pause_phase=none` snapshot permits host reconciliation.
+
+After confirmation, the plugin advances the normal OctoPrint queue toward its
+resume-completion marker immediately. Suppressed host resume macros cannot
+strand that marker waiting for the next session poll or an unrelated ACK.
+Real queued commands still use core's normal ACK path, and foreign job holds
+remain owned by their original plugin. Deferred work expires if the connection,
+selected job or operator-control revision changes. No ACKs are fabricated and
+the plugin does not force OctoPrint into Printing.
+
+During Resuming, periodic non-job M117/M73 display/ETA updates are suppressed
+until normal printing resumes. File commands, explicit API/terminal commands
+and recovery controls are preserved. This changes the host handoff only, not
+firmware thermal readiness, purge/prime policy or motion safety.
+
+Code-less printer status notifications such as paused/resuming “Retracting
+filament” are snapshots, not persistent workflows: they expire 15 seconds after
+the last update and clear immediately on confirmed resume. The existing
+keepalive worker also retires expired snapshots from API state, without sending
+additional serial traffic. Explicit workflows, coded faults, runout prompts and
+pressure-advance calibration retain their own completion/recovery lifecycle.
+
+Validation includes real OctoPrint 2.0.1, 2.0.0 and 1.11.8 integration paths,
+status backlogs, long scripts, real-command ACK boundaries, counted foreign
+holds, stale callbacks and repeated pause/resume cycles. Physical printer
+timing still needs confirmation after installing the update while idle.
+
+## Operator controls
+
 Firmware advertising live_controls=1 accepts @RME CONTROL SET with exactly one
 of bed=N, nozzle=N, fan=N, speed=N or flow=N. Nozzle and flow support tool=N
 as a direct slot; the plugin resolves logical API tool selections before sending.

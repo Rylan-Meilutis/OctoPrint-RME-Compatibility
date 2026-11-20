@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0b167 — 2026-11-20
+
+- Expire one-shot paused/resuming printer status notices such as “Retracting filament”, and retire them immediately on confirmed resume without hiding faults or active workflows.
+- Advance OctoPrint's native resume-completion marker immediately after confirmed physical firmware resume, without waiting for another session poll or unrelated command acknowledgement.
+- Re-kick the queue when an intentionally suppressed resume macro would otherwise leave it stranded, including after real command ACKs or release of a foreign job hold. Long scripts advance in bounded, coalesced batches.
+- Prevent periodic host M117/M73 display updates from starving resume completion; preserve file G-code, explicit API/terminal commands, real ACK handling, safety controls and foreign job holds.
+- Scope completion work to the same connection, job and control revision, and expire old completion flags before the next pause/resume cycle. Firmware reheating, priming and positioning remain unchanged.
+
 ## 0.1.0b166 — 2026-11-17
 
 - Support OctoPrint 2.0's serial connector, reconnect parameters and baud settings without reusing stale connections or changing saved AUTO preferences.

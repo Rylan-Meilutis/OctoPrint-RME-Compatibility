@@ -202,6 +202,8 @@ class RmeCompatibilityPlugin(
         self._control_revision = 0
         self._priority_control_revisions = {}
         self._firmware_control_boundaries = {"pause": 0, "resume": 0}
+        self._resume_confirmed_context = None
+        self._resume_advance_pending = False
         self._pause_reason = PauseReason()
         self._rme_comm = None
         self._native_upload_active = False
@@ -1456,6 +1458,7 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 self._connection_generation += 1
                 self._state["connected"] = False
+                self._resume_confirmed_context = None
                 self._state["running_firmware"] = {}
                 self._state["firmware_releases"] = self._empty_state()["firmware_releases"]
                 self._state["supported"] = False
@@ -1502,6 +1505,7 @@ class RmeCompatibilityPlugin(
             with self._state_lock:
                 self._priority_controls_sent.clear()
                 self._firmware_completed_controls.clear()
+                self._resume_confirmed_context = None
             if token is not None:
                 self._prepare_print_start(self._rme_comm)
             self._handle_print_started(payload)
@@ -1566,6 +1570,7 @@ class RmeCompatibilityPlugin(
                 self._retry_ready = self._retry_file is not None
                 self._priority_controls_sent.clear()
                 self._firmware_completed_controls.clear()
+                self._resume_confirmed_context = None
                 self._transfer_conflict_cancel = False
                 self._preflight_gate_started = False
                 self._preflight_file_info = None
@@ -1789,6 +1794,7 @@ class RmeCompatibilityPlugin(
                 if self._priority_control_revisions.get(opposite, 0) <= boundary:
                     self._priority_controls_sent.discard(opposite)
                     self._priority_control_revisions.pop(opposite, None)
+                self._firmware_completed_controls.discard(opposite)
         if completed:
             with self._state_lock:
                 if self._state.get("supported"):
@@ -2113,6 +2119,13 @@ class RmeCompatibilityPlugin(
             return (None,)
         if not supported:
             return None
+        if (phase == "queuing" and str(gcode or "").upper() in ("M117", "M73")
+                and not {"source:file", "source:job", "source:api", "source:terminal", "rme:priority_control"}.intersection(tags)
+                and getattr(getattr(self, "_printer", None), "get_state_id", lambda: None)() == "RESUMING"):
+            # Periodic host display/ETA updates must not starve the resume
+            # marker. File G-code, manual commands and recovery controls stay
+            # intact; the next ordinary progress refresh updates the display.
+            return (None,)
         if (phase == "queuing" and str(gcode or "").upper() == "M73"
                 and not {"source:file", "source:job"}.intersection(tags)):
             # Detailed-progress callbacks can run before the synchronous
@@ -2141,6 +2154,11 @@ class RmeCompatibilityPlugin(
         if {"script:afterPrintPaused", "script:beforePrintResumed"}.intersection(tags):
             # RME owns retract/park/reheat/unpark. Host macros must not move
             # an empty toolhead or race restoration of the firmware resume pose.
+            if "script:beforePrintResumed" in tags:
+                # Core can stop queue advancement after discarding a macro,
+                # including after a real command ACK or foreign hold release.
+                # Only confirmed physical resume permits this deferred kick.
+                self._schedule_confirmed_resume_advance(comm_instance)
             return (None,)
         if (phase == "queuing" and {"source:api", "source:terminal"}.intersection(tags)
                 and not {"source:file", "source:job", "rme:priority_control"}.intersection(tags)):
@@ -2554,7 +2572,9 @@ class RmeCompatibilityPlugin(
                     record.get("workflow") != "pressure_advance"
                     and record.get("type") in ("notification", "progress")
                     and not record.get("code")
-                    and event_state in ("printing", "busy", "ready", "unknown")
+                    and (event_state in ("printing", "busy", "ready", "unknown")
+                         or (record.get("workflow") == "printer"
+                             and event_state in ("paused", "pausing", "resuming")))
                 ):
                     # notify_status uses printer device state, not workflow
                     # lifecycle, and need not emit a matching close event.
@@ -3557,6 +3577,9 @@ class RmeCompatibilityPlugin(
                 self._priority_controls_sent.discard("pause")
             if action in self._priority_controls_sent:
                 return False
+            self._resume_confirmed_context = None
+            if action in ("pause", "resume"):
+                self._firmware_completed_controls.discard("resume" if action == "pause" else "pause")
             self._priority_controls_sent.add(action)
             self._control_revision += 1
             revision = self._control_revision
@@ -4043,13 +4066,50 @@ class RmeCompatibilityPlugin(
         with self._state_lock:
             self._firmware_completed_controls.discard("pause")
             self._state["pause"] = self._pause_reason.resume()
-            if (self._state.get("workflow") or {}).get("workflow") == "filament_runout":
+            workflow = self._state.get("workflow") or {}
+            if (workflow.get("workflow") == "filament_runout"
+                    or (workflow.get("workflow") == "printer"
+                        and workflow.get("legacy_expires_at"))):
                 self._state["workflow"] = None
             if (self._state.get("prompt") or {}).get("workflow") == "filament_runout":
                 self._state["prompt"] = None
+            self._resume_confirmed_context = (
+                comm, self._connection_generation, self._control_revision,
+                getattr(comm, "_currentFile", None),
+            )
         self._schedule_publish()
+        self._schedule_confirmed_resume_advance(comm)
 
-    def _advance_confirmed_resume_queue(self, comm, record):
+    def _schedule_confirmed_resume_advance(self, comm):
+        """Coalesce kicks after physical completion, never during reheating."""
+        if getattr(getattr(self, "_printer", None), "get_state_id", lambda: None)() != "RESUMING":
+            return
+        with self._state_lock:
+            context = self._resume_confirmed_context
+            if (context is None or context[0] is not comm
+                    or context[1:3] != (self._connection_generation, self._control_revision)
+                    or context[3] is not getattr(comm, "_currentFile", None)
+                    or self._resume_advance_pending):
+                return
+            self._resume_advance_pending = True
+
+        def advance():
+            more = False
+            try:
+                more = self._advance_confirmed_resume_queue(comm, None, context)
+            finally:
+                with self._state_lock:
+                    self._resume_advance_pending = False
+            if more:
+                self._schedule_confirmed_resume_advance(comm)
+        try:
+            self._defer(advance)
+        except Exception:
+            with self._state_lock:
+                self._resume_advance_pending = False
+            raise
+
+    def _advance_confirmed_resume_queue(self, comm, record, confirmed_context=None):
         """Reach core's resume marker after suppressed macros, without fake ACKs."""
         lock = getattr(comm, "_jobLock", None)
         pending = getattr(comm, "_job_queue", None)
@@ -4062,8 +4122,17 @@ class RmeCompatibilityPlugin(
             for _ in range(64):
                 with self._state_lock:
                     session = self._state.get("session") or {}
+                    confirmed = (confirmed_context is not None
+                                 and self._resume_confirmed_context is confirmed_context
+                                 and confirmed_context[0] is comm
+                                 and confirmed_context[1:3] == (self._connection_generation, self._control_revision)
+                                 and confirmed_context[3] is current_file)
+                    snapshot = (confirmed_context is None and record is not None
+                                and session.get("printer_state") == record.get("printer_state") == "PRINTING"
+                                and session.get("pause_phase") == record.get("pause_phase") == "none")
                     valid = (self._state.get("connected") and self._state.get("supported") and session.get("active")
-                             and session.get("printer_state") == "PRINTING" and session.get("pause_phase") == "none")
+                             and not {"pause", "cancel"}.intersection(self._priority_controls_sent)
+                             and (confirmed or snapshot))
                 if (not valid or self._rme_comm is not comm or self._printer.get_state_id() != "RESUMING"
                         or current_file is None or current_file is not getattr(comm, "_currentFile", None)
                         or current_file.done or getattr(comm, "job_on_hold", False)):
@@ -4074,6 +4143,9 @@ class RmeCompatibilityPlugin(
                 advance()
                 if sending.qsize() or pending.qsize() >= before:
                     return
+            # A long suppressed script must not fall back to the next poll.
+            # Yield between bounded batches; each new worker rechecks context.
+            return True
 
     def _advance_terminal_cancel_queue(self, comm, current_file, record):
         """Let core reach its marker after it drops suppressed cancel G-code.
@@ -4120,10 +4192,21 @@ class RmeCompatibilityPlugin(
     def _valid_packed_brightness(value):
         return 0 <= value <= 0xFFFFFFFF and all(((value >> shift) & 0xFF) <= 100 for shift in (0, 8, 16, 24))
 
+    def _expire_transient_workflow(self, now=None):
+        """Retire unrefreshed status snapshots, never explicit workflows/faults."""
+        now = time.time() if now is None else now
+        with self._state_lock:
+            deadline = (self._state.get("workflow") or {}).get("legacy_expires_at")
+            if not deadline or now <= deadline:
+                return
+            self._state["workflow"] = None
+        self._schedule_publish()
+
     def _keepalive_loop(self):
         """Renew the required RME lease without polling configuration state."""
         next_keepalive = 0.0
         while not self._stop.wait(2):
+            self._expire_transient_workflow()
             with self._state_lock:
                 active = self._state["session"].get("active")
                 connected = self._state["connected"]

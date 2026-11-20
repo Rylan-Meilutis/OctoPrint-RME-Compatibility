@@ -31,6 +31,71 @@ class Comm:
 
 
 class PauseRecovery(unittest.TestCase):
+    def test_retraction_status_expires_and_confirmed_resume_clears_it(self):
+        p = self.plugin('RESUMING')
+        p._defer = lambda *args: None
+        p._handle_record(dict(record='event', seq=1, type='notification',
+            workflow='printer', state='paused', message='Retracting filament'))
+        deadline = p._state['workflow']['legacy_expires_at']
+        p._expire_transient_workflow(deadline - 1)
+        self.assertIsNotNone(p._state['workflow'])
+        p._confirmed_firmware_resume(p._rme_comm)
+        self.assertIsNone(p._state['workflow'])
+        p._handle_record(dict(record='event', seq=2, type='notification',
+            workflow='printer', state='paused', message='Retracting filament'))
+        p._expire_transient_workflow(p._state['workflow']['legacy_expires_at'] + 1)
+        self.assertIsNone(p._state['workflow'])
+
+    def test_transient_expiry_preserves_renewed_status_and_real_workflows(self):
+        p = self.plugin('RESUMING')
+        p._defer = lambda *args: None
+        for kind, state, code in [('workflow', 'open', None),
+                                  ('error', 'paused', None),
+                                  ('notification', 'paused', 'filament_required')]:
+            p._handle_record(dict(record='event', seq=1, type=kind,
+                workflow='printer', state=state, code=code, message='Printer operation'))
+            self.assertNotIn('legacy_expires_at', p._state['workflow'])
+            p._expire_transient_workflow(float('inf'))
+            p._confirmed_firmware_resume(p._rme_comm)
+            self.assertIsNotNone(p._state['workflow'])
+        p._state['workflow'] = dict(workflow='printer', legacy_expires_at=200)
+        p._expire_transient_workflow(150)
+        self.assertIsNotNone(p._state['workflow'])
+        p._expire_transient_workflow(201)
+        self.assertIsNone(p._state['workflow'])
+
+    def test_previous_resume_completion_cannot_swallow_the_next_resume(self):
+        for new_pause in ('host','lcd'):
+            with self.subTest(new_pause=new_pause):
+                p=self.plugin('RESUMING')
+                p.action_command_hook(p._rme_comm,'//action:resumed','resumed')
+                self.assertIn('resume',p._firmware_completed_controls)
+                p._rme_comm.state='PAUSING'
+                if new_pause=='host':
+                    p._request_priority_control('pause')
+                else:
+                    p.action_command_hook(p._rme_comm,'//action:paused','paused')
+                self.assertNotIn('resume',p._firmware_completed_controls)
+                p._printer.forced_commands.clear()
+                p._rme_comm.state='RESUMING'
+                p.on_event(Events.PRINT_RESUMED,{})
+                self.assertEqual('M602',p._printer.forced_commands[-1][0])
+
+    def test_resume_suppresses_only_nonessential_periodic_display_commands(self):
+        p=self.plugin('RESUMING')
+        for command,gcode in (('M117 ETA 05:07','M117'),('M73 P40 R147','M73')):
+            for tags in (set(),{'plugin:detailedprogress'}):
+                self.assertEqual((None,),p.gcode_queuing_hook(p._rme_comm,'queuing',command,None,gcode,tags=tags))
+            for source in ('source:file','source:job','source:terminal','source:api'):
+                self.assertIsNone(p.gcode_queuing_hook(p._rme_comm,'queuing',command,None,gcode,tags={source}))
+        for command in ('M105','M104 S260','M400','G1 X5'):
+            self.assertIsNone(p.gcode_queuing_hook(p._rme_comm,'queuing',command,None,command.split()[0],tags={'plugin:other'}))
+        p._rme_comm.state='PRINTING'
+        self.assertIsNone(p.gcode_queuing_hook(p._rme_comm,'queuing','M117 ETA',None,'M117'))
+        p._rme_comm.state='RESUMING'
+        p._state['supported']=False
+        self.assertIsNone(p.gcode_queuing_hook(p._rme_comm,'queuing','M117 ETA',None,'M117'))
+
     def test_non_rme_or_disconnected_resume_does_not_mutate_core_or_banner(self):
         for key in ('supported', 'connected'):
             p = self.plugin('RESUMING')

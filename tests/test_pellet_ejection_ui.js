@@ -51,6 +51,12 @@ const {jQueryFactory} = require('jquery/factory');
         vm.state({...state, workflow: {workflow: 'chamber_temperature', state: phase}});
         assert(!vm.workflowVisible());
     }
+    vm.state({...state, workflow: {workflow: 'printer', type: 'notification',
+        state: 'paused', message: 'Retracting filament', legacy_expires_at: Date.now()/1000 + 15}});
+    assert(vm.workflowVisible());
+    vm.state({...state, workflow: {workflow: 'printer', type: 'notification',
+        state: 'paused', message: 'Retracting filament', legacy_expires_at: Date.now()/1000 - 1}});
+    assert(!vm.workflowVisible());
     w.close();
     console.log('Pellet-ejection settings browser tests passed');
 })().catch(error => {console.error(error); process.exitCode = 1;});

@@ -28,6 +28,10 @@ const {chromium} = require('playwright');
         await page.waitForFunction(()=>window.ko && document.getElementById('tab_plugin_rme_compatibility')
             && ko.dataFor(document.getElementById('tab_plugin_rme_compatibility'))?.files?.storageFiles,
             null,{timeout:60000});
+        const versionReply = await page.request.get(url+'/api/version');
+        assert.equal(versionReply.status(),200);
+        const hostVersion = (await versionReply.json()).server;
+        assert.match(hostVersion,/^2\.0\./);
         const api = await page.request.get(url+'/api/plugin/rme_compatibility');
         assert.equal(api.status(),200);
         const state = await api.json();
@@ -62,7 +66,7 @@ const {chromium} = require('playwright');
         await page.locator('a[href="#settings_plugin_rme_compatibility"]').click();
         await page.locator('#settings_plugin_rme_compatibility').waitFor({state:'visible'});
         assert.deepEqual(errors,[],'no real OctoPrint 2.0 frontend exceptions');
-        console.log(JSON.stringify({status:'passed',octoprint:'2.0.0',authenticated:true,
+        console.log(JSON.stringify({status:'passed',octoprint:hostVersion,authenticated:true,
             globalApiKeyUsed:false,csrfEnforced:true,settingsOpened:true,files:result,errors}));
     } finally {await browser.close();}
 })().catch(e=>{console.error(e.message);process.exitCode=1;});
